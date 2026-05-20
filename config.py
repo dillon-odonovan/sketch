@@ -1,4 +1,3 @@
-import json
 import os
 
 from dotenv import load_dotenv
@@ -21,7 +20,8 @@ def _optional(name: str) -> str | None:
 DISCORD_TOKEN = _required("DISCORD_TOKEN")
 DISCORD_GUILD_ID = _optional("DISCORD_GUILD_ID")
 SPREADSHEET_ID = _required("SPREADSHEET_ID")
-GOOGLE_CREDENTIALS_INFO = json.loads(_required("GOOGLE_CREDENTIALS_JSON"))
+# Google auth is handled at use-time via Application Default Credentials
+# (see sheets_client.py). No env var is needed here.
 
 FORMAT_SHEETS: dict[str, str] = {
     "Reg M-A": "TeamBank Parser V1",

@@ -28,7 +28,7 @@ Typos return a "did you mean" suggestion.
 ### 2. Google service account
 
 1. In Google Cloud Console, create (or use) a project and enable the **Google Sheets API**.
-2. Create a **service account**, download its JSON key.
+2. Create a **service account** (no need to download a JSON key for normal local dev — see step 3 for auth).
 3. Open the target Sheet (use a **test copy** during development) and share it with the service account's email (`...@...iam.gserviceaccount.com`) as **Editor**.
 
 ### 3. Local environment
@@ -45,10 +45,14 @@ Fill in `.env`:
 
 - `DISCORD_TOKEN` — from step 1.
 - `DISCORD_GUILD_ID` — for instant slash-command sync in your dev server. Omit for global registration (~1 hour propagation).
-- `GOOGLE_CREDENTIALS_JSON` — the entire service account JSON on a single line.
 - `SPREADSHEET_ID` — the ID of the test sheet.
 
-### 5. Run
+Set up Google auth via **Application Default Credentials**. Pick one:
+
+- **Recommended**: `gcloud auth application-default login` and accept impersonation of the service account from step 2 if prompted. The Google client library finds these credentials automatically; no env var needed.
+- **Alternative**: download the service-account JSON key from step 2 to a local path *outside the repo*, then set `GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/sa-key.json` in your `.env`. ADC reads it from there.
+
+### 4. Run
 
 ```bash
 python bot.py
@@ -71,6 +75,9 @@ Restart the bot — the new format appears as a dropdown option on both commands
 
 ## Security
 
-`.env` and any `*.json` credentials are gitignored. The service-account JSON is
-read from the `GOOGLE_CREDENTIALS_JSON` env var (the JSON content itself, not a
-file path), so nothing sensitive ever lives on disk inside the repo.
+`.env` and any `*.json` credentials are gitignored. Google auth uses
+Application Default Credentials, so in production no JSON key lives on the
+VM disk — the bot picks up the attached service account via GCE's metadata
+server. The Discord bot token is the only true bearer secret; in the deploy
+scaffold it lives in Google Secret Manager and is materialized as an env var
+at process start.

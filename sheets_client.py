@@ -2,7 +2,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from google.oauth2.service_account import Credentials
+import google.auth
 from googleapiclient.discovery import build
 
 import config
@@ -22,9 +22,13 @@ class TeamRow:
 
 class SheetsClient:
     def __init__(self) -> None:
-        creds = Credentials.from_service_account_info(
-            config.GOOGLE_CREDENTIALS_INFO, scopes=_SCOPES
-        )
+        # Application Default Credentials: on GCE this resolves to the VM's
+        # attached service account via the metadata server; locally it resolves
+        # to whatever `gcloud auth application-default login` set up, or the
+        # JSON key path in GOOGLE_APPLICATION_CREDENTIALS if that env var is
+        # set. No JSON keys need to live on disk in production.
+        # https://cloud.google.com/docs/authentication/application-default-credentials
+        creds, _ = google.auth.default(scopes=_SCOPES)
         self._service = build("sheets", "v4", credentials=creds, cache_discovery=False)
         self._sheet_id_cache: dict[str, int] = {}
 
