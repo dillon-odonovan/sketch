@@ -162,28 +162,30 @@ def setup_commands(
 
     @tree.command(
         name="search-teams",
-        description="Find teams containing the given Pokémon.",
+        description="Find teams by Pokémon and/or description substring.",
         **cmd_kwargs,
     )
     @app_commands.describe(
         format="Format/regulation",
-        mon1="First Pokémon (required)",
+        mon1="First Pokémon",
         mon2="Second Pokémon",
         mon3="Third Pokémon",
         mon4="Fourth Pokémon",
         mon5="Fifth Pokémon",
         mon6="Sixth Pokémon",
+        description="Case-insensitive substring match against the team description (player, team name, concept, etc.)",
     )
     @app_commands.choices(format=_format_choices())
     async def search_teams(
         interaction: discord.Interaction,
-        mon1: str,
         format: app_commands.Choice[str] | None = None,
+        mon1: str | None = None,
         mon2: str | None = None,
         mon3: str | None = None,
         mon4: str | None = None,
         mon5: str | None = None,
         mon6: str | None = None,
+        description: str | None = None,
     ) -> None:
         trace_id_var.set(str(interaction.id))
         await interaction.response.defer(thinking=True)
@@ -195,17 +197,25 @@ def setup_commands(
         fmt_name = format.value if format else _default_format()
         sheet_name = config.FORMAT_SHEETS[fmt_name]
         queries = [m for m in [mon1, mon2, mon3, mon4, mon5, mon6] if m]
+        description_query = (description or "").strip() or None
         logger.info(
-            "search-teams invoked by user_id=%s guild_id=%s: format=%s queries=%s",
-            interaction.user.id, interaction.guild_id, fmt_name, queries,
+            "search-teams invoked by user_id=%s guild_id=%s: format=%s queries=%s description=%r",
+            interaction.user.id, interaction.guild_id, fmt_name, queries, description_query,
         )
 
-        try:
-            dex = await sheets.get_dex()
-        except Exception:
-            logger.exception("Failed to load DEX")
-            await interaction.followup.send(_GENERIC_SHEET_READ_ERROR)
+        if not queries and not description_query:
+            await interaction.followup.send(
+                "Provide at least one of `mon1`..`mon6` or `description`."
+            )
             return
+
+        if queries:
+            try:
+                dex = await sheets.get_dex()
+            except Exception:
+                logger.exception("Failed to load DEX")
+                await interaction.followup.send(_GENERIC_SHEET_READ_ERROR)
+                return
 
         resolved_groups: list[list[str]] = []
         for q in queries:
@@ -229,24 +239,33 @@ def setup_commands(
             await interaction.followup.send(_GENERIC_SHEET_READ_ERROR)
             return
 
+        description_lower = description_query.lower() if description_query else None
         matches = []
         for row in rows:
             species_lower = {s.lower() for s in row.species}
-            if all(
+            mons_ok = all(
                 any(m.lower() in species_lower for m in group)
                 for group in resolved_groups
-            ):
+            )
+            desc_ok = (
+                description_lower is None
+                or description_lower in row.description.lower()
+            )
+            if mons_ok and desc_ok:
                 matches.append(row)
 
-        query_label = ", ".join(queries)
+        label_parts = list(queries)
+        if description_query:
+            label_parts.append(f'description:"{description_query}"')
+        query_label = " + ".join(label_parts)
         if not matches:
             await interaction.followup.send(
-                f"No teams found in *{fmt_name}* containing *{query_label}*."
+                f"No teams found in *{fmt_name}* matching *{query_label}*."
             )
             return
 
         embed = discord.Embed(
-            title=f"{len(matches)} team(s) in {fmt_name} with {query_label}",
+            title=f"{len(matches)} team(s) in {fmt_name} matching {query_label}",
             color=discord.Color.blue(),
         )
         for row in matches[: config.SEARCH_RESULT_LIMIT]:
@@ -280,12 +299,16 @@ def setup_commands(
             "[replica:<hex>] [paste_type:Exact|Recreated|Unspecified]`\n"
             "  Add a team to the database.\n"
             "  Example: `/add-team url:https://pokepast.es/abcd1234 description:Calyrex-S balance`\n\n"
-            "`/search-teams mon1:<name> [mon2:<name>] ... [mon6:<name>] [format:Reg M-A]`\n"
-            "  Find teams containing all the listed Pokémon (AND across params).\n"
+            "`/search-teams [mon1:<name>] ... [mon6:<name>] [description:<text>] [format:Reg M-A]`\n"
+            "  Find teams. Filter by Pokémon (AND across mon params), by a case-insensitive\n"
+            "  description substring, or both. At least one filter is required.\n"
             "  Examples:\n"
             "    `/search-teams mon1:Calyrex-Shadow mon2:Urshifu`\n"
-            "    `/search-teams mon1:Charizard`         (matches base or Mega-X/Y)\n"
-            "    `/search-teams mon1:Charizard-Mega-Y`  (Mega-Y only)\n\n"
+            "    `/search-teams mon1:Charizard`              (matches base or Mega-X/Y)\n"
+            "    `/search-teams mon1:Charizard-Mega-Y`       (Mega-Y only)\n"
+            "    `/search-teams description:jsmithvgc`       (by player / gamertag)\n"
+            "    `/search-teams description:Shadow Rider`    (by team name / concept)\n"
+            "    `/search-teams description:jsmithvgc mon1:Charizard`  (AND)\n\n"
             f"Available formats: {formats}"
         )
         await interaction.response.send_message(msg, ephemeral=True)
