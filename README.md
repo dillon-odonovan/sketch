@@ -44,8 +44,14 @@ cp .env.example .env
 Fill in `.env`:
 
 - `DISCORD_TOKEN` — from step 1.
-- `DISCORD_GUILD_ID` — for instant slash-command sync in your dev server. Omit for global registration (~1 hour propagation).
-- `SPREADSHEET_ID` — the ID of the test sheet.
+- `DEV_GUILD_ID` — for instant slash-command sync in your dev server. Omit for global registration (~1 hour propagation). Note: this controls *where commands are registered for fast iteration*, not which guilds the bot serves — see `GUILD_CONFIG_JSON`.
+- `GUILD_CONFIG_JSON` — JSON map of `guild_id → {spreadsheet_id}`. The bot refuses commands from any guild not listed here. Each spreadsheet must be shared with the bot's service account as Editor. Example:
+
+  ```bash
+  GUILD_CONFIG_JSON='{"123456789012345678": {"spreadsheet_id": "1AbCd-Your_Sheet_Id"}, "987654321098765432": {"spreadsheet_id": "1XyZw-Another_Sheet"}}'
+  ```
+
+  In shells that strip JSON escapes, single-quote the whole value as shown. Spreadsheet IDs are restricted to `[A-Za-z0-9_-]`. The bot serves multiple guilds from one process — install the same bot in both a personal debug server and a shared production server, mapped to different sheets, and one container handles both.
 
 Set up Google auth via **Application Default Credentials**. Pick one:
 

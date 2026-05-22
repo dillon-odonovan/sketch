@@ -1,11 +1,16 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 import google.auth
 from googleapiclient.discovery import build
 
 import config
+from dex import DexIndex
+from guild_config import GuildConfigStore
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +34,23 @@ class TeamRow:
 
 
 class SheetsClient:
-    def __init__(self) -> None:
-        # Application Default Credentials: on GCE this resolves to the VM's
-        # attached service account via the metadata server; locally it resolves
-        # to whatever `gcloud auth application-default login` set up, or the
-        # JSON key path in GOOGLE_APPLICATION_CREDENTIALS if that env var is
-        # set. No JSON keys need to live on disk in production.
-        # https://cloud.google.com/docs/authentication/application-default-credentials
-        creds, _ = google.auth.default(scopes=_SCOPES)
-        self._service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    """Sheets operations against a single spreadsheet.
+
+    One instance per guild. The Google API service object is built once by the
+    registry and shared across instances (it's just an HTTP client); the
+    per-spreadsheet caches (`_sheet_id_cache`, `_dex`) are instance-scoped
+    because their keys collide across spreadsheets.
+    """
+
+    def __init__(self, service: Any, spreadsheet_id: str) -> None:
+        self._service = service
+        self._spreadsheet_id = spreadsheet_id
         self._sheet_id_cache: dict[str, int] = {}
+        self._dex: DexIndex | None = None
+        # Guards lazy DEX construction so two concurrent first-uses in one
+        # guild don't both fetch. Cheap to acquire on the fast path (when
+        # _dex is already set, we don't even take it).
+        self._dex_lock = asyncio.Lock()
 
     async def _run(self, fn, *args, **kwargs):
         # google-api-python-client is synchronous. Offload calls so we don't
@@ -50,7 +62,7 @@ class SheetsClient:
             return self._sheet_id_cache[sheet_name]
         meta = await self._run(
             self._service.spreadsheets().get(
-                spreadsheetId=config.SPREADSHEET_ID,
+                spreadsheetId=self._spreadsheet_id,
                 fields="sheets(properties(sheetId,title))",
             ).execute,
             num_retries=_API_RETRIES,
@@ -62,17 +74,37 @@ class SheetsClient:
             raise RuntimeError(f"Sheet tab not found: {sheet_name!r}")
         return self._sheet_id_cache[sheet_name]
 
-    async def load_dex_names(self) -> list[str]:
+    async def get_dex(self) -> DexIndex:
+        """Lazy-load the DEX index for this spreadsheet on first call.
+
+        Cached for the bot's lifetime — no TTL. Memory cost is ~250 KB per
+        spreadsheet (1000-entry dict with a lowercased mirror), trivial at
+        any realistic guild count. Failures are NOT cached so a retry after
+        fixing sheet permissions will succeed.
+        """
+        if self._dex is not None:
+            return self._dex
+        async with self._dex_lock:
+            # Re-check inside the lock; another waiter may have populated it.
+            if self._dex is None:
+                names = await self._load_dex_names()
+                self._dex = DexIndex(names)
+        return self._dex
+
+    async def _load_dex_names(self) -> list[str]:
         resp = await self._run(
             self._service.spreadsheets().values().get(
-                spreadsheetId=config.SPREADSHEET_ID,
+                spreadsheetId=self._spreadsheet_id,
                 range=config.DEX_NAME_RANGE,
             ).execute,
             num_retries=_API_RETRIES,
         )
         values = resp.get("values", [])
         names = [row[0].strip() for row in values if row and row[0].strip()]
-        logger.info("Loaded %d DEX species names", len(names))
+        logger.info(
+            "Loaded %d DEX species names from spreadsheet %s",
+            len(names), self._spreadsheet_id,
+        )
         return names
 
     async def add_row(
@@ -87,7 +119,7 @@ class SheetsClient:
 
         col_a = await self._run(
             self._service.spreadsheets().values().get(
-                spreadsheetId=config.SPREADSHEET_ID,
+                spreadsheetId=self._spreadsheet_id,
                 range=f"{sheet_name}!A:A",
             ).execute,
             num_retries=_API_RETRIES,
@@ -103,7 +135,7 @@ class SheetsClient:
         # https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets/request#copypasterequest
         await self._run(
             self._service.spreadsheets().batchUpdate(
-                spreadsheetId=config.SPREADSHEET_ID,
+                spreadsheetId=self._spreadsheet_id,
                 body={
                     "requests": [{
                         "copyPaste": {
@@ -131,7 +163,7 @@ class SheetsClient:
 
         await self._run(
             self._service.spreadsheets().values().update(
-                spreadsheetId=config.SPREADSHEET_ID,
+                spreadsheetId=self._spreadsheet_id,
                 range=f"{sheet_name}!A{new_row}",
                 valueInputOption="USER_ENTERED",
                 body={"values": [[url]]},
@@ -146,7 +178,7 @@ class SheetsClient:
         ]
         await self._run(
             self._service.spreadsheets().values().batchUpdate(
-                spreadsheetId=config.SPREADSHEET_ID,
+                spreadsheetId=self._spreadsheet_id,
                 body={"valueInputOption": "RAW", "data": raw_data},
             ).execute,
             num_retries=_API_RETRIES,
@@ -162,7 +194,7 @@ class SheetsClient:
         # as "not ready yet" and return None so the caller can retry.
         resp = await self._run(
             self._service.spreadsheets().values().get(
-                spreadsheetId=config.SPREADSHEET_ID,
+                spreadsheetId=self._spreadsheet_id,
                 range=f"{sheet_name}!H{row}:M{row}",
                 valueRenderOption="FORMATTED_VALUE",
             ).execute,
@@ -179,7 +211,7 @@ class SheetsClient:
     async def search_rows(self, sheet_name: str) -> list[TeamRow]:
         resp = await self._run(
             self._service.spreadsheets().values().get(
-                spreadsheetId=config.SPREADSHEET_ID,
+                spreadsheetId=self._spreadsheet_id,
                 range=f"{sheet_name}!A{config.FIRST_DATA_ROW}:M",
                 valueRenderOption="FORMATTED_VALUE",
             ).execute,
@@ -203,3 +235,36 @@ class SheetsClient:
                 species=species,
             ))
         return out
+
+
+class SheetsClientRegistry:
+    """Maps guild_id → SheetsClient, lazily constructed on first use.
+
+    Owns the shared Google Sheets service object (built once via ADC). Returns
+    None for guilds not present in the configured GuildConfigStore — callers
+    use that to send a "this server isn't configured" refusal.
+    """
+
+    def __init__(self, store: GuildConfigStore) -> None:
+        self._store = store
+        # Application Default Credentials: on GCE this resolves to the VM's
+        # attached service account via the metadata server; locally it resolves
+        # to whatever `gcloud auth application-default login` set up, or the
+        # JSON key path in GOOGLE_APPLICATION_CREDENTIALS if that env var is
+        # set. No JSON keys need to live on disk in production.
+        # https://cloud.google.com/docs/authentication/application-default-credentials
+        creds, _ = google.auth.default(scopes=_SCOPES)
+        self._service = build(
+            "sheets", "v4", credentials=creds, cache_discovery=False
+        )
+        self._clients: dict[int, SheetsClient] = {}
+
+    def get(self, guild_id: int) -> SheetsClient | None:
+        cfg = self._store.get(guild_id)
+        if cfg is None:
+            return None
+        client = self._clients.get(guild_id)
+        if client is None:
+            client = SheetsClient(self._service, cfg.spreadsheet_id)
+            self._clients[guild_id] = client
+        return client

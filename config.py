@@ -18,8 +18,21 @@ def _optional(name: str) -> str | None:
 
 
 DISCORD_TOKEN = _required("DISCORD_TOKEN")
-DISCORD_GUILD_ID = _optional("DISCORD_GUILD_ID")
-SPREADSHEET_ID = _required("SPREADSHEET_ID")
+
+# Dev-only slash-command sync target. When set, slash commands are registered
+# against just this guild for instant (~5s) iteration during development. When
+# unset, commands sync globally (Discord propagates to every guild the bot is
+# in over ~1h — the production posture for multi-guild). This is independent
+# of GUILD_CONFIG_JSON, which controls *which guilds the bot serves at runtime*.
+DEV_GUILD_ID = _optional("DEV_GUILD_ID")
+
+# Per-guild routing. JSON object keyed by Discord guild_id (numeric string).
+# Each value is an object with at least `spreadsheet_id`. Parsed at startup
+# by bot.py via guild_config.parse_guild_config_json — a malformed value or
+# an empty object fails startup loudly. Example:
+#   GUILD_CONFIG_JSON='{"123456789012345678": {"spreadsheet_id": "1AbCd..."}}'
+GUILD_CONFIG_JSON = _required("GUILD_CONFIG_JSON")
+
 # Google auth is handled at use-time via Application Default Credentials
 # (see sheets_client.py). No env var is needed here.
 

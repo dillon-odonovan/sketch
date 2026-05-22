@@ -1,19 +1,21 @@
 import asyncio
-import difflib
 import logging
-from dataclasses import dataclass
 
 import discord
 from discord import app_commands
 
 import config
+from dex import DexIndex  # re-exported for backwards-compatible callers
+from guild_config import GuildConfigStore
 from logging_setup import trace_id_var
 from pokepaste_validator import (
     ValidationError,
     normalize_replica,
     validate_pokepaste_url,
 )
-from sheets_client import SheetsClient
+from sheets_client import SheetsClient, SheetsClientRegistry
+
+__all__ = ["DexIndex", "setup_commands"]
 
 logger = logging.getLogger(__name__)
 
@@ -23,42 +25,10 @@ _GENERIC_SHEET_READ_ERROR = (
 _GENERIC_SHEET_WRITE_ERROR = (
     "Couldn't add the team right now — please try again in a moment."
 )
-
-
-@dataclass
-class ResolveResult:
-    canonical_matches: list[str]
-    suggestions: list[str]
-
-
-class DexIndex:
-    def __init__(self, names: list[str]):
-        self._lower_to_canonical = {n.lower(): n for n in names}
-
-    def resolve(self, query: str) -> ResolveResult:
-        norm = query.strip().lower()
-        if not norm:
-            return ResolveResult([], [])
-        # Prefix-group rule: a DEX name matches the query if it equals the
-        # query OR starts with `query + "-"`. So "charizard" matches
-        # Charizard / Charizard-Mega-X / Charizard-Mega-Y, but "char" matches
-        # nothing (no full-name boundary). Letting users type the base form
-        # is the natural search behavior; typing a specific form (e.g.
-        # "charizard-mega-y") narrows to just that one.
-        matches = [
-            self._lower_to_canonical[k]
-            for k in self._lower_to_canonical
-            if k == norm or k.startswith(norm + "-")
-        ]
-        if matches:
-            return ResolveResult(canonical_matches=matches, suggestions=[])
-        close = difflib.get_close_matches(
-            norm, list(self._lower_to_canonical.keys()), n=5, cutoff=0.6
-        )
-        return ResolveResult(
-            canonical_matches=[],
-            suggestions=[self._lower_to_canonical[k] for k in close],
-        )
+_UNCONFIGURED_GUILD_ERROR = (
+    "This server isn't configured to use Sketch. Ask the bot owner to "
+    "register a spreadsheet for this server."
+)
 
 
 def _format_choices() -> list[app_commands.Choice[str]]:
@@ -73,13 +43,50 @@ def _default_format() -> str:
     return next(iter(config.FORMAT_SHEETS))
 
 
+async def _resolve_guild_sheets(
+    interaction: discord.Interaction,
+    registry: SheetsClientRegistry,
+) -> SheetsClient | None:
+    """Look up the per-guild SheetsClient, or refuse via followup.
+
+    Assumes the interaction has already been deferred — sends the refusal as
+    an ephemeral followup and returns None when the guild isn't configured
+    (or the interaction came from a DM with no guild_id). Callers should
+    bail out on None.
+
+    Returns just the SheetsClient (not DEX); commands that need DEX call
+    `await sheets.get_dex()` themselves so /add-team doesn't pay the DEX
+    load cost on cold start.
+    """
+    guild_id = interaction.guild_id
+    if guild_id is None:
+        await interaction.followup.send(_UNCONFIGURED_GUILD_ERROR, ephemeral=True)
+        return None
+    sheets = registry.get(guild_id)
+    if sheets is None:
+        logger.info(
+            "Refusing command from unconfigured guild_id=%s user_id=%s",
+            guild_id, interaction.user.id,
+        )
+        await interaction.followup.send(_UNCONFIGURED_GUILD_ERROR, ephemeral=True)
+        return None
+    return sheets
+
+
 def setup_commands(
     tree: app_commands.CommandTree,
-    sheets: SheetsClient,
-    dex: DexIndex,
-    guild: discord.Object | None = None,
+    store: GuildConfigStore,
+    registry: SheetsClientRegistry,
+    dev_guild: discord.Object | None = None,
 ) -> None:
-    cmd_kwargs = {"guild": guild} if guild else {}
+    """Register slash commands on `tree`.
+
+    `store` is currently unused inside handlers (the registry consults it),
+    but is accepted here so a future runtime-config path (e.g. an admin
+    `/set-spreadsheet`) has the seam already wired.
+    """
+    del store  # currently only consulted via the registry
+    cmd_kwargs = {"guild": dev_guild} if dev_guild else {}
 
     @tree.command(
         name="add-team",
@@ -112,12 +119,17 @@ def setup_commands(
         # visible only to the invoker.
         # https://discord.com/developers/docs/interactions/receiving-and-responding
         await interaction.response.defer(ephemeral=True, thinking=True)
+
+        sheets = await _resolve_guild_sheets(interaction, registry)
+        if sheets is None:
+            return
+
         fmt_name = format.value if format else _default_format()
         sheet_name = config.FORMAT_SHEETS[fmt_name]
         paste_type_value = paste_type.value if paste_type else config.PASTE_TYPE_DEFAULT
         logger.info(
-            "add-team invoked by user_id=%s: url=%s description=%r format=%s replica=%s paste_type=%s",
-            interaction.user.id, url, description, fmt_name, replica, paste_type_value,
+            "add-team invoked by user_id=%s guild_id=%s: url=%s description=%r format=%s replica=%s paste_type=%s",
+            interaction.user.id, interaction.guild_id, url, description, fmt_name, replica, paste_type_value,
         )
 
         try:
@@ -175,13 +187,25 @@ def setup_commands(
     ) -> None:
         trace_id_var.set(str(interaction.id))
         await interaction.response.defer(thinking=True)
+
+        sheets = await _resolve_guild_sheets(interaction, registry)
+        if sheets is None:
+            return
+
         fmt_name = format.value if format else _default_format()
         sheet_name = config.FORMAT_SHEETS[fmt_name]
         queries = [m for m in [mon1, mon2, mon3, mon4, mon5, mon6] if m]
         logger.info(
-            "search-teams invoked by user_id=%s: format=%s queries=%s",
-            interaction.user.id, fmt_name, queries,
+            "search-teams invoked by user_id=%s guild_id=%s: format=%s queries=%s",
+            interaction.user.id, interaction.guild_id, fmt_name, queries,
         )
+
+        try:
+            dex = await sheets.get_dex()
+        except Exception:
+            logger.exception("Failed to load DEX")
+            await interaction.followup.send(_GENERIC_SHEET_READ_ERROR)
+            return
 
         resolved_groups: list[list[str]] = []
         for q in queries:
@@ -245,6 +269,8 @@ def setup_commands(
         **cmd_kwargs,
     )
     async def help_cmd(interaction: discord.Interaction) -> None:
+        # /help is intentionally guild-agnostic — it doesn't touch any sheet,
+        # so it works in DMs and in unconfigured guilds without refusal.
         trace_id_var.set(str(interaction.id))
         logger.info("help invoked by user_id=%s", interaction.user.id)
         formats = ", ".join(config.FORMAT_SHEETS.keys())
