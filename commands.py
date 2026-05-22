@@ -62,7 +62,8 @@ async def _broadcast_team_added(
         logger.warning(
             "Broadcast channel %s not in cache (deleted? bot missing access?); "
             "skipping broadcast for guild_id=%s",
-            channel_id, interaction.guild_id,
+            channel_id,
+            interaction.guild_id,
         )
         return None
 
@@ -82,7 +83,8 @@ async def _broadcast_team_added(
     except (discord.Forbidden, discord.HTTPException, AttributeError):
         logger.warning(
             "Failed to send broadcast to channel %s in guild_id=%s",
-            channel_id, interaction.guild_id,
+            channel_id,
+            interaction.guild_id,
             exc_info=True,
         )
         return None

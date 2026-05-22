@@ -81,12 +81,14 @@ class TestParseGuildConfigJson:
             parse_guild_config_json(raw)
 
     def test_broadcast_channel_id_present(self):
-        raw = _dump({
-            "123": {
-                "spreadsheet_id": "abc",
-                "broadcast_channel_id": "987654321098765432",
-            },
-        })
+        raw = _dump(
+            {
+                "123": {
+                    "spreadsheet_id": "abc",
+                    "broadcast_channel_id": "987654321098765432",
+                },
+            }
+        )
         result = parse_guild_config_json(raw)
         assert result[123].broadcast_channel_id == 987654321098765432
 
@@ -96,23 +98,32 @@ class TestParseGuildConfigJson:
         assert result[123].broadcast_channel_id is None
 
     def test_broadcast_channel_id_non_numeric_raises(self):
-        raw = _dump({
-            "123": {"spreadsheet_id": "abc", "broadcast_channel_id": "not-a-snowflake"},
-        })
+        raw = _dump(
+            {
+                "123": {
+                    "spreadsheet_id": "abc",
+                    "broadcast_channel_id": "not-a-snowflake",
+                },
+            }
+        )
         with pytest.raises(ValueError, match="broadcast_channel_id"):
             parse_guild_config_json(raw)
 
     def test_broadcast_channel_id_non_string_raises(self):
-        raw = _dump({
-            "123": {"spreadsheet_id": "abc", "broadcast_channel_id": 987654321},
-        })
+        raw = _dump(
+            {
+                "123": {"spreadsheet_id": "abc", "broadcast_channel_id": 987654321},
+            }
+        )
         with pytest.raises(ValueError, match="broadcast_channel_id"):
             parse_guild_config_json(raw)
 
     def test_broadcast_channel_id_empty_string_raises(self):
-        raw = _dump({
-            "123": {"spreadsheet_id": "abc", "broadcast_channel_id": ""},
-        })
+        raw = _dump(
+            {
+                "123": {"spreadsheet_id": "abc", "broadcast_channel_id": ""},
+            }
+        )
         with pytest.raises(ValueError, match="broadcast_channel_id"):
             parse_guild_config_json(raw)
 
