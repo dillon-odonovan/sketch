@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches-ignore:
+    branches:
       - main
 
 permissions:
@@ -11,10 +11,31 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on feature branches / PRs, but never on main —
+  # each commit to main needs its own independent green/red signal because
+  # Deploy gates on it.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  lint-and-test:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dev dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run pre-commit hooks
+        uses: pre-commit/action@v3.0.1
+
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,10 +48,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
-
-      - name: Run pre-commit hooks
-        uses: pre-commit/action@v3.0.1
+          pip install -r requirements-dev.txt
 
       - name: Run tests
         run: pytest -q

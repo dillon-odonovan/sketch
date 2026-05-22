@@ -1,9 +1,14 @@
 name: Deploy
 
 on:
-  push:
-    branches:
-      - main
+  # Triggered after CI completes on main. The job's `if:` guard refuses to run
+  # unless CI was green, so a failed lint/test blocks the deploy.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # Manual rollback path. Not gated on CI — the operator is explicitly
+  # promoting a previously-built image known to be good.
   workflow_dispatch:
     inputs:
       image_tag:
@@ -26,8 +31,17 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # workflow_run fires for *every* CI completion (success or failure); gate on
+    # conclusion. workflow_dispatch bypasses the gate (rollback case).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_run defaults to checking out the default branch; pin to the
+          # commit that triggered CI so we build/deploy exactly that revision.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Authenticate to Google Cloud
         id: auth
