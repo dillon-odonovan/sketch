@@ -1,0 +1,108 @@
+name: Deploy
+
+on:
+  # Triggered after CI completes on main. The job's `if:` guard refuses to run
+  # unless CI was green, so a failed lint/test blocks the deploy.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # Manual rollback path. Not gated on CI — the operator is explicitly
+  # promoting a previously-built image known to be good.
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Existing image tag to roll out as :current (e.g. sha-abc1234). Leave blank to build from the current commit."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write # required by google-github-actions/auth for OIDC
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  VM_NAME: sketch
+  VM_ZONE: us-west1-a
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # workflow_run fires for *every* CI completion (success or failure); gate on
+    # conclusion. workflow_dispatch bypasses the gate (rollback case).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_run defaults to checking out the default branch; pin to the
+          # commit that triggered CI so we build/deploy exactly that revision.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          REPO="${{ vars.GCP_ARTIFACT_REPO }}"
+          if [[ -n "${{ inputs.image_tag }}" ]]; then
+            # Rollback path: re-tag an existing image as :current without rebuilding.
+            echo "mode=rollback" >> "$GITHUB_OUTPUT"
+            echo "source_image=${REPO}/bot:${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=build" >> "$GITHUB_OUTPUT"
+            echo "sha_image=${REPO}/bot:sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            echo "current_image=${REPO}/bot:current" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push image
+        if: steps.tags.outputs.mode == 'build'
+        run: |
+          docker build \
+            --tag "${{ steps.tags.outputs.sha_image }}" \
+            --tag "${{ steps.tags.outputs.current_image }}" \
+            .
+          docker push "${{ steps.tags.outputs.sha_image }}"
+          docker push "${{ steps.tags.outputs.current_image }}"
+
+      - name: Re-tag existing image as current (rollback)
+        if: steps.tags.outputs.mode == 'rollback'
+        run: |
+          gcloud artifacts docker tags add \
+            "${{ steps.tags.outputs.source_image }}" \
+            "${{ vars.GCP_ARTIFACT_REPO }}/bot:current"
+
+      - name: Restart sketch service on the VM
+        run: |
+          gcloud compute ssh "$VM_NAME" \
+            --zone="$VM_ZONE" \
+            --tunnel-through-iap \
+            --command="sudo systemctl restart sketch"
+
+      - name: Wait for service to settle
+        run: sleep 15
+
+      - name: Smoke check service is active
+        run: |
+          STATUS=$(gcloud compute ssh "$VM_NAME" \
+            --zone="$VM_ZONE" \
+            --tunnel-through-iap \
+            --command="sudo systemctl is-active sketch" \
+            --quiet)
+          echo "Service status: $STATUS"
+          test "$STATUS" = "active"

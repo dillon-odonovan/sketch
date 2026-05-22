@@ -32,7 +32,7 @@ _UNCONFIGURED_GUILD_ERROR = (
 
 
 def _format_choices() -> list[app_commands.Choice[str]]:
-    return [app_commands.Choice(name=k, value=k) for k in config.FORMAT_SHEETS.keys()]
+    return [app_commands.Choice(name=k, value=k) for k in config.FORMAT_SHEETS]
 
 
 def _paste_type_choices() -> list[app_commands.Choice[str]]:
@@ -62,7 +62,8 @@ async def _broadcast_team_added(
         logger.warning(
             "Broadcast channel %s not in cache (deleted? bot missing access?); "
             "skipping broadcast for guild_id=%s",
-            channel_id, interaction.guild_id,
+            channel_id,
+            interaction.guild_id,
         )
         return None
 
@@ -82,7 +83,8 @@ async def _broadcast_team_added(
     except (discord.Forbidden, discord.HTTPException, AttributeError):
         logger.warning(
             "Failed to send broadcast to channel %s in guild_id=%s",
-            channel_id, interaction.guild_id,
+            channel_id,
+            interaction.guild_id,
             exc_info=True,
         )
         return None
@@ -130,7 +132,8 @@ async def _resolve_guild_sheets(
     if sheets is None:
         logger.info(
             "Refusing command from unconfigured guild_id=%s user_id=%s",
-            guild_id, interaction.user.id,
+            guild_id,
+            interaction.user.id,
         )
         await interaction.followup.send(_UNCONFIGURED_GUILD_ERROR, ephemeral=True)
         return None
@@ -191,14 +194,20 @@ def setup_commands(
         sheet_name = config.FORMAT_SHEETS[fmt_name]
         paste_type_value = paste_type.value if paste_type else config.PASTE_TYPE_DEFAULT
         logger.info(
-            "add-team invoked by user_id=%s guild_id=%s: url=%s description=%r format=%s replica=%s paste_type=%s",
-            interaction.user.id, interaction.guild_id, url, description, fmt_name, replica, paste_type_value,
+            "add-team invoked by user_id=%s guild_id=%s: url=%s description=%r "
+            "format=%s replica=%s paste_type=%s",
+            interaction.user.id,
+            interaction.guild_id,
+            url,
+            description,
+            fmt_name,
+            replica,
+            paste_type_value,
         )
 
         try:
             await validate_pokepaste_url(url)
-            normalized_replica = normalize_replica(
-                replica) if replica else None
+            normalized_replica = normalize_replica(replica) if replica else None
         except ValidationError as e:
             await interaction.followup.send(str(e), ephemeral=True)
             return
@@ -209,9 +218,7 @@ def setup_commands(
             )
         except Exception:
             logger.exception("Failed to add row")
-            await interaction.followup.send(
-                _GENERIC_SHEET_WRITE_ERROR, ephemeral=True
-            )
+            await interaction.followup.send(_GENERIC_SHEET_WRITE_ERROR, ephemeral=True)
             return
 
         msg = f"Added team to row {row} in *{fmt_name}*."
@@ -253,7 +260,10 @@ def setup_commands(
         mon4="Fourth Pokémon",
         mon5="Fifth Pokémon",
         mon6="Sixth Pokémon",
-        description="Case-insensitive substring match against the team description (player, team name, concept, etc.)",
+        description=(
+            "Case-insensitive substring match against the team description "
+            "(player, team name, concept, etc.)"
+        ),
     )
     @app_commands.choices(format=_format_choices())
     async def search_teams(
@@ -279,8 +289,13 @@ def setup_commands(
         queries = [m for m in [mon1, mon2, mon3, mon4, mon5, mon6] if m]
         description_query = (description or "").strip() or None
         logger.info(
-            "search-teams invoked by user_id=%s guild_id=%s: format=%s queries=%s description=%r",
-            interaction.user.id, interaction.guild_id, fmt_name, queries, description_query,
+            "search-teams invoked by user_id=%s guild_id=%s: format=%s "
+            "queries=%s description=%r",
+            interaction.user.id,
+            interaction.guild_id,
+            fmt_name,
+            queries,
+            description_query,
         )
 
         if not queries and not description_query:
@@ -357,9 +372,8 @@ def setup_commands(
                 inline=False,
             )
         if len(matches) > config.SEARCH_RESULT_LIMIT:
-            embed.set_footer(
-                text=f"+{len(matches) - config.SEARCH_RESULT_LIMIT} more — narrow your search."
-            )
+            remaining = len(matches) - config.SEARCH_RESULT_LIMIT
+            embed.set_footer(text=f"+{remaining} more — narrow your search.")
         await interaction.followup.send(embed=embed)
 
     @tree.command(
@@ -378,16 +392,19 @@ def setup_commands(
             "`/add-team url:<paste> description:<text> [format:Reg M-A] "
             "[replica:<hex>] [paste_type:Exact|Recreated|Unspecified]`\n"
             "  Add a team to the database.\n"
-            "  Example: `/add-team url:https://pokepast.es/abcd1234 description:Calyrex-S balance`\n\n"
-            "`/search-teams [mon1:<name>] ... [mon6:<name>] [description:<text>] [format:Reg M-A]`\n"
-            "  Find teams. Filter by Pokémon (AND across mon params), by a case-insensitive\n"
+            "  Example: `/add-team url:https://pokepast.es/abcd1234 "
+            "description:Calyrex-S balance`\n\n"
+            "`/search-teams [mon1:<name>] ... [mon6:<name>] "
+            "[description:<text>] [format:Reg M-A]`\n"
+            "  Find teams. Filter by Pokémon (AND across mon params), "
+            "by a case-insensitive\n"
             "  description substring, or both. At least one filter is required.\n"
             "  Examples:\n"
             "    `/search-teams mon1:Calyrex-Shadow mon2:Urshifu`\n"
-            "    `/search-teams mon1:Charizard`              (matches base or Mega-X/Y)\n"
-            "    `/search-teams mon1:Charizard-Mega-Y`       (Mega-Y only)\n"
-            "    `/search-teams description:jsmithvgc`       (by player / gamertag)\n"
-            "    `/search-teams description:Shadow Rider`    (by team name / concept)\n"
+            "    `/search-teams mon1:Charizard`     (matches base or Mega-X/Y)\n"
+            "    `/search-teams mon1:Charizard-Mega-Y`     (Mega-Y only)\n"
+            "    `/search-teams description:jsmithvgc`     (by player / gamertag)\n"
+            "    `/search-teams description:Shadow Rider`  (by team name)\n"
             "    `/search-teams description:jsmithvgc mon1:Charizard`  (AND)\n\n"
             f"Available formats: {formats}"
         )

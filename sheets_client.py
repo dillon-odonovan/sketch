@@ -61,10 +61,12 @@ class SheetsClient:
         if sheet_name in self._sheet_id_cache:
             return self._sheet_id_cache[sheet_name]
         meta = await self._run(
-            self._service.spreadsheets().get(
+            self._service.spreadsheets()
+            .get(
                 spreadsheetId=self._spreadsheet_id,
                 fields="sheets(properties(sheetId,title))",
-            ).execute,
+            )
+            .execute,
             num_retries=_API_RETRIES,
         )
         for s in meta.get("sheets", []):
@@ -93,17 +95,21 @@ class SheetsClient:
 
     async def _load_dex_names(self) -> list[str]:
         resp = await self._run(
-            self._service.spreadsheets().values().get(
+            self._service.spreadsheets()
+            .values()
+            .get(
                 spreadsheetId=self._spreadsheet_id,
                 range=config.DEX_NAME_RANGE,
-            ).execute,
+            )
+            .execute,
             num_retries=_API_RETRIES,
         )
         values = resp.get("values", [])
         names = [row[0].strip() for row in values if row and row[0].strip()]
         logger.info(
             "Loaded %d DEX species names from spreadsheet %s",
-            len(names), self._spreadsheet_id,
+            len(names),
+            self._spreadsheet_id,
         )
         return names
 
@@ -118,10 +124,13 @@ class SheetsClient:
         sheet_id = await self._get_sheet_id(sheet_name)
 
         col_a = await self._run(
-            self._service.spreadsheets().values().get(
+            self._service.spreadsheets()
+            .values()
+            .get(
                 spreadsheetId=self._spreadsheet_id,
                 range=f"{sheet_name}!A:A",
-            ).execute,
+            )
+            .execute,
             num_retries=_API_RETRIES,
         )
         existing = len(col_a.get("values", []))
@@ -134,40 +143,47 @@ class SheetsClient:
         # cell formatting (e.g., the checkbox styling in column B).
         # https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets/request#copypasterequest
         await self._run(
-            self._service.spreadsheets().batchUpdate(
+            self._service.spreadsheets()
+            .batchUpdate(
                 spreadsheetId=self._spreadsheet_id,
                 body={
-                    "requests": [{
-                        "copyPaste": {
-                            "source": {
-                                "sheetId": sheet_id,
-                                "startRowIndex": template_row - 1,
-                                "endRowIndex": template_row,
-                                "startColumnIndex": 1,   # B
-                                "endColumnIndex": 19,    # S exclusive
-                            },
-                            "destination": {
-                                "sheetId": sheet_id,
-                                "startRowIndex": new_row - 1,
-                                "endRowIndex": new_row,
-                                "startColumnIndex": 1,
-                                "endColumnIndex": 19,
-                            },
-                            "pasteType": "PASTE_NORMAL",
+                    "requests": [
+                        {
+                            "copyPaste": {
+                                "source": {
+                                    "sheetId": sheet_id,
+                                    "startRowIndex": template_row - 1,
+                                    "endRowIndex": template_row,
+                                    "startColumnIndex": 1,  # B
+                                    "endColumnIndex": 19,  # S exclusive
+                                },
+                                "destination": {
+                                    "sheetId": sheet_id,
+                                    "startRowIndex": new_row - 1,
+                                    "endRowIndex": new_row,
+                                    "startColumnIndex": 1,
+                                    "endColumnIndex": 19,
+                                },
+                                "pasteType": "PASTE_NORMAL",
+                            }
                         }
-                    }]
+                    ]
                 },
-            ).execute,
+            )
+            .execute,
             num_retries=_API_RETRIES,
         )
 
         await self._run(
-            self._service.spreadsheets().values().update(
+            self._service.spreadsheets()
+            .values()
+            .update(
                 spreadsheetId=self._spreadsheet_id,
                 range=f"{sheet_name}!A{new_row}",
                 valueInputOption="USER_ENTERED",
                 body={"values": [[url]]},
-            ).execute,
+            )
+            .execute,
             num_retries=_API_RETRIES,
         )
 
@@ -177,10 +193,13 @@ class SheetsClient:
             {"range": f"{sheet_name}!G{new_row}", "values": [[description]]},
         ]
         await self._run(
-            self._service.spreadsheets().values().batchUpdate(
+            self._service.spreadsheets()
+            .values()
+            .batchUpdate(
                 spreadsheetId=self._spreadsheet_id,
                 body={"valueInputOption": "RAW", "data": raw_data},
-            ).execute,
+            )
+            .execute,
             num_retries=_API_RETRIES,
         )
 
@@ -193,11 +212,14 @@ class SheetsClient:
         # render "#N/A" if the formula is mid-evaluation. Treat any of those
         # as "not ready yet" and return None so the caller can retry.
         resp = await self._run(
-            self._service.spreadsheets().values().get(
+            self._service.spreadsheets()
+            .values()
+            .get(
                 spreadsheetId=self._spreadsheet_id,
                 range=f"{sheet_name}!H{row}:M{row}",
                 valueRenderOption="FORMATTED_VALUE",
-            ).execute,
+            )
+            .execute,
             num_retries=_API_RETRIES,
         )
         rows = resp.get("values", [])
@@ -210,11 +232,14 @@ class SheetsClient:
 
     async def search_rows(self, sheet_name: str) -> list[TeamRow]:
         resp = await self._run(
-            self._service.spreadsheets().values().get(
+            self._service.spreadsheets()
+            .values()
+            .get(
                 spreadsheetId=self._spreadsheet_id,
                 range=f"{sheet_name}!A{config.FIRST_DATA_ROW}:M",
                 valueRenderOption="FORMATTED_VALUE",
-            ).execute,
+            )
+            .execute,
             num_retries=_API_RETRIES,
         )
         rows = resp.get("values", [])
@@ -228,12 +253,14 @@ class SheetsClient:
                 continue
             if any(s == "" or s == "#N/A" or s == "Loading..." for s in species):
                 continue
-            out.append(TeamRow(
-                row_number=config.FIRST_DATA_ROW + idx,
-                url=url,
-                description=description,
-                species=species,
-            ))
+            out.append(
+                TeamRow(
+                    row_number=config.FIRST_DATA_ROW + idx,
+                    url=url,
+                    description=description,
+                    species=species,
+                )
+            )
         return out
 
 
@@ -254,9 +281,7 @@ class SheetsClientRegistry:
         # set. No JSON keys need to live on disk in production.
         # https://cloud.google.com/docs/authentication/application-default-credentials
         creds, _ = google.auth.default(scopes=_SCOPES)
-        self._service = build(
-            "sheets", "v4", credentials=creds, cache_discovery=False
-        )
+        self._service = build("sheets", "v4", credentials=creds, cache_discovery=False)
         self._clients: dict[int, SheetsClient] = {}
 
     def get(self, guild_id: int) -> SheetsClient | None:

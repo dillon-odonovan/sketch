@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+project_id   = "your-gcp-project-id"
+github_owner = "dillon-odonovan"
+github_repo  = "sketch"
+
+# Per-guild routing. One entry per Discord guild the bot should serve.
+# Keys are Discord guild IDs as strings (Discord IDs are 64-bit; HCL number
+# precision is 53 bits, so quote them). The VM service account must be shared
+# on every listed sheet as an Editor.
+guild_config = {
+  "123456789012345678" = { spreadsheet_id = "your-google-spreadsheet-id" }
+  # "987654321098765432" = { spreadsheet_id = "another-spreadsheet-id" }
+}
+
+# Optional — uncomment to override defaults.
+# region        = "us-west1"
+# zone          = "us-west1-a"
+# dev_guild_id  = "1234567890"
+# image_tag     = "current"

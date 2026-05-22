@@ -22,11 +22,13 @@ class TestParseGuildConfigJson:
         }
 
     def test_many_guilds(self):
-        raw = _dump({
-            "111": {"spreadsheet_id": "sheet-A"},
-            "222": {"spreadsheet_id": "sheet-B"},
-            "333": {"spreadsheet_id": "sheet-C"},
-        })
+        raw = _dump(
+            {
+                "111": {"spreadsheet_id": "sheet-A"},
+                "222": {"spreadsheet_id": "sheet-B"},
+                "333": {"spreadsheet_id": "sheet-C"},
+            }
+        )
         result = parse_guild_config_json(raw)
         assert set(result.keys()) == {111, 222, 333}
         assert result[111].spreadsheet_id == "sheet-A"
@@ -79,12 +81,14 @@ class TestParseGuildConfigJson:
             parse_guild_config_json(raw)
 
     def test_broadcast_channel_id_present(self):
-        raw = _dump({
-            "123": {
-                "spreadsheet_id": "abc",
-                "broadcast_channel_id": "987654321098765432",
-            },
-        })
+        raw = _dump(
+            {
+                "123": {
+                    "spreadsheet_id": "abc",
+                    "broadcast_channel_id": "987654321098765432",
+                },
+            }
+        )
         result = parse_guild_config_json(raw)
         assert result[123].broadcast_channel_id == 987654321098765432
 
@@ -94,45 +98,60 @@ class TestParseGuildConfigJson:
         assert result[123].broadcast_channel_id is None
 
     def test_broadcast_channel_id_non_numeric_raises(self):
-        raw = _dump({
-            "123": {"spreadsheet_id": "abc", "broadcast_channel_id": "not-a-snowflake"},
-        })
+        raw = _dump(
+            {
+                "123": {
+                    "spreadsheet_id": "abc",
+                    "broadcast_channel_id": "not-a-snowflake",
+                },
+            }
+        )
         with pytest.raises(ValueError, match="broadcast_channel_id"):
             parse_guild_config_json(raw)
 
     def test_broadcast_channel_id_non_string_raises(self):
-        raw = _dump({
-            "123": {"spreadsheet_id": "abc", "broadcast_channel_id": 987654321},
-        })
+        raw = _dump(
+            {
+                "123": {"spreadsheet_id": "abc", "broadcast_channel_id": 987654321},
+            }
+        )
         with pytest.raises(ValueError, match="broadcast_channel_id"):
             parse_guild_config_json(raw)
 
     def test_broadcast_channel_id_empty_string_raises(self):
-        raw = _dump({
-            "123": {"spreadsheet_id": "abc", "broadcast_channel_id": ""},
-        })
+        raw = _dump(
+            {
+                "123": {"spreadsheet_id": "abc", "broadcast_channel_id": ""},
+            }
+        )
         with pytest.raises(ValueError, match="broadcast_channel_id"):
             parse_guild_config_json(raw)
 
 
 class TestStaticGuildConfigStore:
     def test_get_hit(self):
-        store = StaticGuildConfigStore({
-            42: GuildConfig(spreadsheet_id="sheet-A"),
-        })
+        store = StaticGuildConfigStore(
+            {
+                42: GuildConfig(spreadsheet_id="sheet-A"),
+            }
+        )
         assert store.get(42) == GuildConfig(spreadsheet_id="sheet-A")
 
     def test_get_miss(self):
-        store = StaticGuildConfigStore({
-            42: GuildConfig(spreadsheet_id="sheet-A"),
-        })
+        store = StaticGuildConfigStore(
+            {
+                42: GuildConfig(spreadsheet_id="sheet-A"),
+            }
+        )
         assert store.get(99) is None
 
     def test_configured_guild_ids(self):
-        store = StaticGuildConfigStore({
-            1: GuildConfig(spreadsheet_id="A"),
-            2: GuildConfig(spreadsheet_id="B"),
-        })
+        store = StaticGuildConfigStore(
+            {
+                1: GuildConfig(spreadsheet_id="A"),
+                2: GuildConfig(spreadsheet_id="B"),
+            }
+        )
         assert sorted(store.configured_guild_ids()) == [1, 2]
 
     def test_empty_store(self):

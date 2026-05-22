@@ -1,33 +1,34 @@
 [Unit]
-Description=Sketch Discord bot
-After=network-online.target
+Description=Sketch Discord bot (containerised)
+After=network-online.target docker.service
 Wants=network-online.target
+Requires=docker.service
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
 Type=simple
-User=sketch
-Group=sketch
-WorkingDirectory=/opt/sketch
 EnvironmentFile=/etc/sketch/env
-ExecStart=/opt/sketch/deploy/launch.sh
+# Best-effort pull (leading "-"): if Artifact Registry is unreachable on boot,
+# fall back to the locally cached image rather than failing the service.
+ExecStartPre=-/usr/bin/docker pull ${SKETCH_IMAGE}
+# `--rm` cleans up the stopped container; systemd is the supervisor, not docker
+# (so `--restart=no` would be the docker default anyway). Hardening flags here
+# replace the host-level seccomp/AppArmor directives the previous unit used.
+ExecStart=/usr/bin/docker run --rm --name sketch \
+  --read-only --tmpfs /tmp \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --pids-limit=256 \
+  -e DEV_GUILD_ID \
+  -e GUILD_CONFIG_JSON \
+  -e GCP_PROJECT \
+  -e SKETCH_SECRET_DISCORD_TOKEN \
+  ${SKETCH_IMAGE}
+ExecStop=/usr/bin/docker stop sketch
 Restart=always
 RestartSec=10
-
-# Hardening — the bot is stateless and needs no special privileges.
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/sketch
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-LockPersonality=true
-MemoryDenyWriteExecute=true
-SystemCallArchitectures=native
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

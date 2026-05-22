@@ -1,0 +1,43 @@
+#!/bin/bash
+# Idempotent — GCE re-runs this script on every boot. Safe to re-run.
+set -euo pipefail
+exec > >(tee -a /var/log/sketch-startup.log) 2>&1
+echo "[$(date -Is)] sketch startup script begin"
+
+# --- Install Docker (apt cache may already have it on second boot) ----------
+if ! command -v docker >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y docker.io
+  systemctl enable --now docker
+fi
+
+# --- Configure Docker to pull from Artifact Registry ------------------------
+# Uses the VM's attached service account via the metadata-server credential
+# helper installed by `gcloud`. `--quiet` skips the interactive confirm.
+gcloud auth configure-docker ${region}-docker.pkg.dev --quiet
+
+# --- Write the systemd environment file -------------------------------------
+mkdir -p /etc/sketch
+cat > /etc/sketch/env <<ENV_FILE
+SKETCH_IMAGE=${image_url}
+GCP_PROJECT=${project_id}
+DEV_GUILD_ID=${dev_guild_id}
+GUILD_CONFIG_JSON=${guild_config_json}
+ENV_FILE
+chmod 644 /etc/sketch/env
+
+# --- Drop the systemd unit --------------------------------------------------
+# The unit is the source of truth in deploy/sketch.service; templatefile
+# inserts its contents here verbatim (variable values are not re-interpolated
+# by templatefile, so the unit's own $${...} references stay intact).
+cat > /etc/systemd/system/sketch.service <<UNIT_FILE
+${sketch_service}
+UNIT_FILE
+
+# --- Activate ---------------------------------------------------------------
+systemctl daemon-reload
+systemctl enable sketch
+# Restart (not just `start`) so configuration changes from re-runs take effect.
+systemctl restart sketch
+
+echo "[$(date -Is)] sketch startup script complete"

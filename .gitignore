@@ -8,3 +8,19 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# Terraform
+# Note: .terraform.lock.hcl IS committed — it pins provider versions across
+# machines, same role as requirements.lock for pip.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+*.tfplan
+crash.log
+crash.*.log
+
+# Test/cache
+.pytest_cache/
+.ruff_cache/
