@@ -43,6 +43,70 @@ def _default_format() -> str:
     return next(iter(config.FORMAT_SHEETS))
 
 
+async def _broadcast_team_added(
+    interaction: discord.Interaction,
+    channel_id: int,
+    *,
+    fmt_name: str,
+    url: str,
+    description: str,
+) -> discord.Message | None:
+    """Post the public 'new team' embed to the configured channel.
+
+    Returns the sent Message so it can be enriched with parsed species once
+    they're available, or None if the broadcast couldn't be sent. Never raises
+    into the caller — broadcast failures must not fail the user's command.
+    """
+    channel = interaction.client.get_channel(channel_id)
+    if channel is None:
+        logger.warning(
+            "Broadcast channel %s not in cache (deleted? bot missing access?); "
+            "skipping broadcast for guild_id=%s",
+            channel_id, interaction.guild_id,
+        )
+        return None
+
+    user = interaction.user
+    embed = discord.Embed(
+        title=f"New team added to {fmt_name}",
+        url=url,
+        description=description,
+        color=discord.Color.green(),
+    )
+    embed.set_author(
+        name=user.display_name,
+        icon_url=user.display_avatar.url,
+    )
+    try:
+        return await channel.send(embed=embed)
+    except (discord.Forbidden, discord.HTTPException, AttributeError):
+        logger.warning(
+            "Failed to send broadcast to channel %s in guild_id=%s",
+            channel_id, interaction.guild_id,
+            exc_info=True,
+        )
+        return None
+
+
+async def _enrich_broadcast_with_species(
+    message: discord.Message,
+    species: list[str],
+) -> None:
+    """Edit the broadcast embed to add a Pokémon field. Best-effort."""
+    if not message.embeds:
+        return
+    embed = message.embeds[0]
+    embed.add_field(name="Pokémon", value=", ".join(species), inline=False)
+    try:
+        await message.edit(embed=embed)
+    except (discord.Forbidden, discord.HTTPException):
+        logger.warning(
+            "Failed to enrich broadcast message %s with species",
+            message.id,
+            exc_info=True,
+        )
+
+
 async def _resolve_guild_sheets(
     interaction: discord.Interaction,
     registry: SheetsClientRegistry,
@@ -81,11 +145,10 @@ def setup_commands(
 ) -> None:
     """Register slash commands on `tree`.
 
-    `store` is currently unused inside handlers (the registry consults it),
-    but is accepted here so a future runtime-config path (e.g. an admin
-    `/set-spreadsheet`) has the seam already wired.
+    The registry handles spreadsheet routing; `store` is captured here so
+    handlers can read other per-guild settings (e.g., broadcast_channel_id)
+    that don't belong to the SheetsClient.
     """
-    del store  # currently only consulted via the registry
     cmd_kwargs = {"guild": dev_guild} if dev_guild else {}
 
     @tree.command(
@@ -154,11 +217,28 @@ def setup_commands(
         msg = f"Added team to row {row} in *{fmt_name}*."
         await interaction.followup.send(msg, ephemeral=True)
 
+        broadcast_message: discord.Message | None = None
+        guild_cfg = (
+            store.get(interaction.guild_id)
+            if interaction.guild_id is not None
+            else None
+        )
+        if guild_cfg and guild_cfg.broadcast_channel_id is not None:
+            broadcast_message = await _broadcast_team_added(
+                interaction,
+                guild_cfg.broadcast_channel_id,
+                fmt_name=fmt_name,
+                url=url,
+                description=description,
+            )
+
         species = await _await_species(sheets, sheet_name, row)
         if species:
             await interaction.edit_original_response(
                 content=f"{msg}\nParsed: {', '.join(species)}"
             )
+            if broadcast_message is not None:
+                await _enrich_broadcast_with_species(broadcast_message, species)
 
     @tree.command(
         name="search-teams",

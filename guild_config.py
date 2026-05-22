@@ -17,18 +17,20 @@ from typing import Protocol
 # Reject anything else early so we fail at startup rather than on first write.
 _SPREADSHEET_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-_ALLOWED_GUILD_KEYS = frozenset({"spreadsheet_id"})
+_ALLOWED_GUILD_KEYS = frozenset({"spreadsheet_id", "broadcast_channel_id"})
+
+# Discord snowflake IDs (channels, guilds) are 64-bit unsigned integers, but
+# we accept them as numeric strings in JSON to stay consistent with how guild
+# IDs are encoded as keys in GUILD_CONFIG_JSON.
+_SNOWFLAKE_RE = re.compile(r"^[0-9]+$")
 
 
 @dataclass(frozen=True)
 class GuildConfig:
-    """Configuration for a single guild. Frozen so it can be cached safely.
-
-    Keep this a dataclass even with one field — future per-guild settings
-    (e.g., `default_format`) can be added without churning callsites.
-    """
+    """Configuration for a single guild. Frozen so it can be cached safely."""
 
     spreadsheet_id: str
+    broadcast_channel_id: int | None = None
 
 
 class GuildConfigStore(Protocol):
@@ -61,15 +63,21 @@ def parse_guild_config_json(raw: str) -> dict[int, GuildConfig]:
 
     Expected shape:
         {
-          "<guild_id>": {"spreadsheet_id": "<id>"},
+          "<guild_id>": {
+            "spreadsheet_id": "<id>",
+            "broadcast_channel_id": "<channel_id>"  # optional
+          },
           ...
         }
 
     Validations:
     - JSON object at the top level
     - Guild keys must be numeric strings (Discord snowflake IDs)
-    - Each value must be a JSON object with exactly `spreadsheet_id` (string)
+    - Each value must be a JSON object with `spreadsheet_id` (string), and an
+      optional `broadcast_channel_id` (numeric snowflake string). Unknown keys
+      are rejected.
     - `spreadsheet_id` must match Google's URL-safe charset
+    - `broadcast_channel_id`, when present, must be a non-empty numeric string
     - Empty `{}` is rejected — a bot with zero configured guilds is almost
       certainly a misconfiguration
     """
@@ -123,6 +131,20 @@ def parse_guild_config_json(raw: str) -> dict[int, GuildConfig]:
                 "(allowed: letters, digits, underscore, hyphen)"
             )
 
-        result[guild_id] = GuildConfig(spreadsheet_id=spreadsheet_id)
+        broadcast_channel_id: int | None = None
+        if "broadcast_channel_id" in value:
+            raw_channel = value["broadcast_channel_id"]
+            if not isinstance(raw_channel, str) or not _SNOWFLAKE_RE.match(raw_channel):
+                raise ValueError(
+                    f"GUILD_CONFIG_JSON guild {guild_id} has broadcast_channel_id "
+                    f"{raw_channel!r}; expected a non-empty numeric string "
+                    "(Discord channel snowflake ID)"
+                )
+            broadcast_channel_id = int(raw_channel)
+
+        result[guild_id] = GuildConfig(
+            spreadsheet_id=spreadsheet_id,
+            broadcast_channel_id=broadcast_channel_id,
+        )
 
     return result

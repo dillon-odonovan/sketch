@@ -78,6 +78,42 @@ class TestParseGuildConfigJson:
         with pytest.raises(ValueError, match="disallowed characters"):
             parse_guild_config_json(raw)
 
+    def test_broadcast_channel_id_present(self):
+        raw = _dump({
+            "123": {
+                "spreadsheet_id": "abc",
+                "broadcast_channel_id": "987654321098765432",
+            },
+        })
+        result = parse_guild_config_json(raw)
+        assert result[123].broadcast_channel_id == 987654321098765432
+
+    def test_broadcast_channel_id_absent_defaults_to_none(self):
+        raw = _dump({"123": {"spreadsheet_id": "abc"}})
+        result = parse_guild_config_json(raw)
+        assert result[123].broadcast_channel_id is None
+
+    def test_broadcast_channel_id_non_numeric_raises(self):
+        raw = _dump({
+            "123": {"spreadsheet_id": "abc", "broadcast_channel_id": "not-a-snowflake"},
+        })
+        with pytest.raises(ValueError, match="broadcast_channel_id"):
+            parse_guild_config_json(raw)
+
+    def test_broadcast_channel_id_non_string_raises(self):
+        raw = _dump({
+            "123": {"spreadsheet_id": "abc", "broadcast_channel_id": 987654321},
+        })
+        with pytest.raises(ValueError, match="broadcast_channel_id"):
+            parse_guild_config_json(raw)
+
+    def test_broadcast_channel_id_empty_string_raises(self):
+        raw = _dump({
+            "123": {"spreadsheet_id": "abc", "broadcast_channel_id": ""},
+        })
+        with pytest.raises(ValueError, match="broadcast_channel_id"):
+            parse_guild_config_json(raw)
+
 
 class TestStaticGuildConfigStore:
     def test_get_hit(self):
