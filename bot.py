@@ -29,13 +29,12 @@ class SketchBot(discord.Client):
         self._registry = SheetsClientRegistry(self._store)
         logger.info(
             "Loaded guild config for %d guild(s): %s",
-            len(guild_map), self._store.configured_guild_ids(),
+            len(guild_map),
+            self._store.configured_guild_ids(),
         )
 
         self._dev_guild = (
-            discord.Object(id=int(config.DEV_GUILD_ID))
-            if config.DEV_GUILD_ID
-            else None
+            discord.Object(id=int(config.DEV_GUILD_ID)) if config.DEV_GUILD_ID else None
         )
         if self._dev_guild is not None:
             logger.warning(
@@ -50,7 +49,9 @@ class SketchBot(discord.Client):
         # and sync them. DEX is no longer preloaded here — each per-guild
         # SheetsClient lazy-loads its own DEX on first /search-teams.
         # https://discordpy.readthedocs.io/en/stable/api.html#discord.Client.setup_hook
-        setup_commands(self.tree, self._store, self._registry, dev_guild=self._dev_guild)
+        setup_commands(
+            self.tree, self._store, self._registry, dev_guild=self._dev_guild
+        )
         if self._dev_guild:
             await self.tree.sync(guild=self._dev_guild)
             logger.info("Synced commands to dev guild %s", self._dev_guild.id)

@@ -68,6 +68,30 @@ python bot.py
 
 Look for `Logged in as <bot>` and `Synced commands to guild <id>`. Slash commands should appear in your Discord server immediately.
 
+### 5. (Optional) Install pre-commit hooks
+
+```bash
+pip install -r requirements-dev.txt
+pre-commit install
+```
+
+`ruff` lints and formats on commit; the same hooks run in CI as a backstop.
+
+## Running tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+## Deploying
+
+The bot ships as a container running under systemd on a GCE `e2-micro`. Infrastructure is fully described in Terraform; deploys are driven by GitHub Actions.
+
+- **First-time setup**: see [infra/terraform/README.md](infra/terraform/README.md) — a `terraform apply` provisions the VM, secret, Artifact Registry, and Workload Identity Federation.
+- **Updating the bot**: merge to `main`. The `Deploy` workflow builds the image, pushes to Artifact Registry, and restarts the VM service via IAP SSH.
+- **Rolling back**: trigger the `Deploy` workflow via *Run workflow* in the Actions tab and provide a previous `:sha-<sha>` tag as `image_tag`.
+
 ## Adding a new format / sheet tab
 
 Edit `FORMAT_SHEETS` in [`config.py`](config.py):
@@ -86,6 +110,7 @@ Restart the bot — the new format appears as a dropdown option on both commands
 `.env` and any `*.json` credentials are gitignored. Google auth uses
 Application Default Credentials, so in production no JSON key lives on the
 VM disk — the bot picks up the attached service account via GCE's metadata
-server. The Discord bot token is the only true bearer secret; in the deploy
-scaffold it lives in Google Secret Manager and is materialized as an env var
-at process start.
+server. The Discord bot token is the only true bearer secret; it lives in
+Google Secret Manager and is fetched by `entrypoint.py` at container start.
+GitHub Actions authenticates to GCP via Workload Identity Federation — no
+long-lived JSON keys exist anywhere.

@@ -21,12 +21,12 @@ async def validate_pokepaste_url(url: str) -> None:
             "Expected something like `https://pokepast.es/abc123`."
         )
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, allow_redirects=True, timeout=10) as resp:
-                if resp.status != 200:
-                    raise ValidationError(
-                        f"Could not fetch `{url}`: HTTP {resp.status}."
-                    )
+        async with (
+            aiohttp.ClientSession() as session,
+            session.get(url, allow_redirects=True, timeout=10) as resp,
+        ):
+            if resp.status != 200:
+                raise ValidationError(f"Could not fetch `{url}`: HTTP {resp.status}.")
     except aiohttp.ClientError as exc:
         raise ValidationError(f"Could not fetch `{url}`: {exc}") from exc
 

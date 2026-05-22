@@ -22,11 +22,13 @@ class TestParseGuildConfigJson:
         }
 
     def test_many_guilds(self):
-        raw = _dump({
-            "111": {"spreadsheet_id": "sheet-A"},
-            "222": {"spreadsheet_id": "sheet-B"},
-            "333": {"spreadsheet_id": "sheet-C"},
-        })
+        raw = _dump(
+            {
+                "111": {"spreadsheet_id": "sheet-A"},
+                "222": {"spreadsheet_id": "sheet-B"},
+                "333": {"spreadsheet_id": "sheet-C"},
+            }
+        )
         result = parse_guild_config_json(raw)
         assert set(result.keys()) == {111, 222, 333}
         assert result[111].spreadsheet_id == "sheet-A"
@@ -117,22 +119,28 @@ class TestParseGuildConfigJson:
 
 class TestStaticGuildConfigStore:
     def test_get_hit(self):
-        store = StaticGuildConfigStore({
-            42: GuildConfig(spreadsheet_id="sheet-A"),
-        })
+        store = StaticGuildConfigStore(
+            {
+                42: GuildConfig(spreadsheet_id="sheet-A"),
+            }
+        )
         assert store.get(42) == GuildConfig(spreadsheet_id="sheet-A")
 
     def test_get_miss(self):
-        store = StaticGuildConfigStore({
-            42: GuildConfig(spreadsheet_id="sheet-A"),
-        })
+        store = StaticGuildConfigStore(
+            {
+                42: GuildConfig(spreadsheet_id="sheet-A"),
+            }
+        )
         assert store.get(99) is None
 
     def test_configured_guild_ids(self):
-        store = StaticGuildConfigStore({
-            1: GuildConfig(spreadsheet_id="A"),
-            2: GuildConfig(spreadsheet_id="B"),
-        })
+        store = StaticGuildConfigStore(
+            {
+                1: GuildConfig(spreadsheet_id="A"),
+                2: GuildConfig(spreadsheet_id="B"),
+            }
+        )
         assert sorted(store.configured_guild_ids()) == [1, 2]
 
     def test_empty_store(self):

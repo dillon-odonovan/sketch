@@ -19,9 +19,11 @@ class _TraceIdFilter(logging.Filter):
 
 def configure() -> None:
     handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] [trace=%(trace_id)s] %(name)s: %(message)s"
-    ))
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)s] [trace=%(trace_id)s] %(name)s: %(message)s"
+        )
+    )
     handler.addFilter(_TraceIdFilter())
     root = logging.getLogger()
     root.setLevel(logging.INFO)
