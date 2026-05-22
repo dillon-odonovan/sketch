@@ -4,13 +4,11 @@ import discord
 from discord import app_commands
 
 import config
+import logging_setup
 from commands import DexIndex, setup_commands
 from sheets_client import SheetsClient
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+logging_setup.configure()
 logger = logging.getLogger(__name__)
 
 

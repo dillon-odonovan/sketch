@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 import config
+from logging_setup import trace_id_var
 from pokepaste_validator import (
     ValidationError,
     normalize_replica,
@@ -15,6 +16,13 @@ from pokepaste_validator import (
 from sheets_client import SheetsClient
 
 logger = logging.getLogger(__name__)
+
+_GENERIC_SHEET_READ_ERROR = (
+    "Couldn't read the sheet right now — please try again in a moment."
+)
+_GENERIC_SHEET_WRITE_ERROR = (
+    "Couldn't add the team right now — please try again in a moment."
+)
 
 
 @dataclass
@@ -97,6 +105,7 @@ def setup_commands(
         replica: str | None = None,
         paste_type: app_commands.Choice[str] | None = None,
     ) -> None:
+        trace_id_var.set(str(interaction.id))
         # Discord requires interactions to be acknowledged within 3 seconds;
         # deferring buys us up to 15 minutes for the actual work (URL fetch,
         # Sheets writes, species poll). ephemeral=True keeps the reply
@@ -105,6 +114,11 @@ def setup_commands(
         await interaction.response.defer(ephemeral=True, thinking=True)
         fmt_name = format.value if format else _default_format()
         sheet_name = config.FORMAT_SHEETS[fmt_name]
+        paste_type_value = paste_type.value if paste_type else config.PASTE_TYPE_DEFAULT
+        logger.info(
+            "add-team invoked by user_id=%s: url=%s description=%r format=%s replica=%s paste_type=%s",
+            interaction.user.id, url, description, fmt_name, replica, paste_type_value,
+        )
 
         try:
             await validate_pokepaste_url(url)
@@ -114,15 +128,14 @@ def setup_commands(
             await interaction.followup.send(str(e), ephemeral=True)
             return
 
-        paste_type = paste_type.value if paste_type else config.PASTE_TYPE_DEFAULT
         try:
             row = await sheets.add_row(
-                sheet_name, url, description, normalized_replica, paste_type
+                sheet_name, url, description, normalized_replica, paste_type_value
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to add row")
             await interaction.followup.send(
-                f"Couldn't add the team: {e}", ephemeral=True
+                _GENERIC_SHEET_WRITE_ERROR, ephemeral=True
             )
             return
 
@@ -160,10 +173,15 @@ def setup_commands(
         mon5: str | None = None,
         mon6: str | None = None,
     ) -> None:
+        trace_id_var.set(str(interaction.id))
         await interaction.response.defer(thinking=True)
         fmt_name = format.value if format else _default_format()
         sheet_name = config.FORMAT_SHEETS[fmt_name]
         queries = [m for m in [mon1, mon2, mon3, mon4, mon5, mon6] if m]
+        logger.info(
+            "search-teams invoked by user_id=%s: format=%s queries=%s",
+            interaction.user.id, fmt_name, queries,
+        )
 
         resolved_groups: list[list[str]] = []
         for q in queries:
@@ -182,9 +200,9 @@ def setup_commands(
 
         try:
             rows = await sheets.search_rows(sheet_name)
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to read sheet")
-            await interaction.followup.send(f"Couldn't read the sheet: {e}")
+            await interaction.followup.send(_GENERIC_SHEET_READ_ERROR)
             return
 
         matches = []
@@ -227,6 +245,8 @@ def setup_commands(
         **cmd_kwargs,
     )
     async def help_cmd(interaction: discord.Interaction) -> None:
+        trace_id_var.set(str(interaction.id))
+        logger.info("help invoked by user_id=%s", interaction.user.id)
         formats = ", ".join(config.FORMAT_SHEETS.keys())
         msg = (
             "**Sketch** — Pokepaste team bank\n\n"

@@ -11,6 +11,14 @@ logger = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+# Transparent retry on transient socket / 5xx errors. Most notably this covers
+# `BrokenPipeError` when a pooled httplib2 connection (to Sheets *or* to the
+# GCE metadata server during token refresh) has gone stale after an idle
+# period. googleapiclient's _retry_request wraps the entire `http.request`
+# call including the `before_request` credential-refresh hook, so one knob
+# handles both failure points.
+_API_RETRIES = 3
+
 
 @dataclass
 class TeamRow:
@@ -44,7 +52,8 @@ class SheetsClient:
             self._service.spreadsheets().get(
                 spreadsheetId=config.SPREADSHEET_ID,
                 fields="sheets(properties(sheetId,title))",
-            ).execute
+            ).execute,
+            num_retries=_API_RETRIES,
         )
         for s in meta.get("sheets", []):
             props = s["properties"]
@@ -58,7 +67,8 @@ class SheetsClient:
             self._service.spreadsheets().values().get(
                 spreadsheetId=config.SPREADSHEET_ID,
                 range=config.DEX_NAME_RANGE,
-            ).execute
+            ).execute,
+            num_retries=_API_RETRIES,
         )
         values = resp.get("values", [])
         names = [row[0].strip() for row in values if row and row[0].strip()]
@@ -79,7 +89,8 @@ class SheetsClient:
             self._service.spreadsheets().values().get(
                 spreadsheetId=config.SPREADSHEET_ID,
                 range=f"{sheet_name}!A:A",
-            ).execute
+            ).execute,
+            num_retries=_API_RETRIES,
         )
         existing = len(col_a.get("values", []))
         new_row = max(config.FIRST_DATA_ROW, existing + 1)
@@ -114,7 +125,8 @@ class SheetsClient:
                         }
                     }]
                 },
-            ).execute
+            ).execute,
+            num_retries=_API_RETRIES,
         )
 
         await self._run(
@@ -123,7 +135,8 @@ class SheetsClient:
                 range=f"{sheet_name}!A{new_row}",
                 valueInputOption="USER_ENTERED",
                 body={"values": [[url]]},
-            ).execute
+            ).execute,
+            num_retries=_API_RETRIES,
         )
 
         raw_data = [
@@ -135,7 +148,8 @@ class SheetsClient:
             self._service.spreadsheets().values().batchUpdate(
                 spreadsheetId=config.SPREADSHEET_ID,
                 body={"valueInputOption": "RAW", "data": raw_data},
-            ).execute
+            ).execute,
+            num_retries=_API_RETRIES,
         )
 
         return new_row
@@ -151,7 +165,8 @@ class SheetsClient:
                 spreadsheetId=config.SPREADSHEET_ID,
                 range=f"{sheet_name}!H{row}:M{row}",
                 valueRenderOption="FORMATTED_VALUE",
-            ).execute
+            ).execute,
+            num_retries=_API_RETRIES,
         )
         rows = resp.get("values", [])
         if not rows or not rows[0]:
@@ -167,7 +182,8 @@ class SheetsClient:
                 spreadsheetId=config.SPREADSHEET_ID,
                 range=f"{sheet_name}!A{config.FIRST_DATA_ROW}:M",
                 valueRenderOption="FORMATTED_VALUE",
-            ).execute
+            ).execute,
+            num_retries=_API_RETRIES,
         )
         rows = resp.get("values", [])
         out: list[TeamRow] = []
