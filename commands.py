@@ -149,20 +149,22 @@ def setup_commands(
     tree: app_commands.CommandTree,
     store: GuildConfigStore,
     registry: SheetsClientRegistry,
-    dev_guild: discord.Object | None = None,
 ) -> None:
     """Register slash commands on `tree`.
+
+    Commands are always registered in the global scope. Dev-mode fast
+    iteration is handled in bot.py via `tree.copy_global_to(guild=...)`,
+    which mirrors these globals into a single dev guild without creating
+    a second source of truth here. See bot.py:setup_hook.
 
     The registry handles spreadsheet routing; `store` is captured here so
     handlers can read other per-guild settings (e.g., broadcast_channel_id)
     that don't belong to the SheetsClient.
     """
-    cmd_kwargs = {"guild": dev_guild} if dev_guild else {}
 
     @tree.command(
         name="add-team",
         description="Add a Pokepaste team to the database.",
-        **cmd_kwargs,
     )
     @app_commands.describe(
         url="Pokepaste URL (e.g., https://pokepast.es/abc123)",
@@ -261,7 +263,6 @@ def setup_commands(
     @tree.command(
         name="search-teams",
         description="Find teams by Pokémon and/or description substring.",
-        **cmd_kwargs,
     )
     @app_commands.describe(
         format="Format/regulation",
@@ -390,7 +391,6 @@ def setup_commands(
     @tree.command(
         name="help",
         description="How to use this bot.",
-        **cmd_kwargs,
     )
     async def help_cmd(interaction: discord.Interaction) -> None:
         # /help is intentionally guild-agnostic — it doesn't touch any sheet,
