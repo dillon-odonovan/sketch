@@ -337,6 +337,21 @@ def setup_commands(
             )
             if broadcast_message is not None:
                 await _enrich_broadcast_with_species(broadcast_message, species)
+            # Drop the cached search snapshot so the next /search-teams
+            # rebuilds and includes this row. We deliberately wait until
+            # species columns settle: invalidating earlier would just cause
+            # `search_rows` to skip this row on the rebuild (it filters
+            # rows whose species cells read "Loading..." / "#N/A"). On
+            # timeout the snapshot stays stale, but the 5-minute TTL
+            # backstop in SheetsClient eventually catches it.
+            sheets.invalidate_snapshot(sheet_name)
+        else:
+            logger.info(
+                "Species poll timed out for row %d in %s; skipping snapshot "
+                "invalidation (TTL backstop will catch it)",
+                row,
+                sheet_name,
+            )
 
     @tree.command(
         name="search-teams",
