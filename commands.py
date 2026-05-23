@@ -10,6 +10,7 @@ from guild_config import GuildConfigStore
 from logging_setup import trace_id_var
 from pokepaste_validator import (
     ValidationError,
+    canonicalize_pokepaste_url,
     normalize_replica,
     validate_pokepaste_url,
 )
@@ -211,6 +212,39 @@ def setup_commands(
             replica,
             paste_type_value,
         )
+
+        # Cheap shape check first so we can dedup against the sheet before
+        # paying for the live HTTP fetch in validate_pokepaste_url. The
+        # canonical form is comparison-only — the row we eventually write
+        # stores the user-provided string.
+        try:
+            canonical_url = canonicalize_pokepaste_url(url)
+        except ValidationError as e:
+            await interaction.followup.send(str(e), ephemeral=True)
+            return
+
+        try:
+            existing = await sheets.find_row_by_url(sheet_name, canonical_url)
+        except Exception:
+            logger.exception("Failed to check for existing team")
+            await interaction.followup.send(_GENERIC_SHEET_READ_ERROR, ephemeral=True)
+            return
+
+        if existing is not None:
+            logger.info(
+                "add-team dedup hit: user_id=%s guild_id=%s format=%s row=%d",
+                interaction.user.id,
+                interaction.guild_id,
+                fmt_name,
+                existing.row_number,
+            )
+            existing_desc = existing.description or "(no description)"
+            await interaction.followup.send(
+                f"This Pokepaste is already in *{fmt_name}* on row "
+                f'{existing.row_number}: "{existing_desc}".',
+                ephemeral=True,
+            )
+            return
 
         try:
             await validate_pokepaste_url(url)
