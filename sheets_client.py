@@ -339,16 +339,21 @@ class SheetsClient:
     async def get_search_snapshot(self, sheet_name: str) -> SearchSnapshot:
         """Return rows + a tokenized description index.
 
-        Freshness model: bot-driven writes are responsible for invalidation.
-        /add-team (and any future /edit-team) calls `invalidate_snapshot`
-        once the species poll has settled, so the next /search-teams sees
-        the new row and re-builds the index. The TTL configured in
-        `config.SEARCH_CACHE_TTL_SECONDS` is a *backstop* — only relevant
-        when someone edits the Google Sheet directly through its UI,
-        bypassing bot commands. Under normal bot-driven traffic the cache
-        effectively never expires. Index construction itself is ~1–5 ms
-        for 1000 rows; the win on the cache hit is primarily skipping the
+        Realistic hit profile: /add-team is infrequent and /search-teams
+        sessions are typically minutes apart, so most calls are cache
+        misses on TTL expiry. The cache is a *burst* amortizer — its
+        value shows up when one user iterates several /search-teams
+        within a session, or when /add-team is immediately followed by
+        /search-teams to verify the new row. Index construction itself
+        is ~1–5 ms for 1000 rows; the cache-hit win is skipping the
         ~200–500 ms Sheets API round-trip.
+
+        Freshness model: bot-driven writes invalidate explicitly.
+        /add-team (and any future /edit-team) calls `invalidate_snapshot`
+        once the species poll settles. The TTL configured in
+        `config.SEARCH_CACHE_TTL_SECONDS` bounds staleness for direct
+        Sheet edits (Google UI bypassing the bot) and caps memory held
+        by long-idle guilds.
 
         Failures are not cached so a retry after fixing sheet permissions
         still works.
