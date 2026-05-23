@@ -33,7 +33,7 @@ DEV_GUILD_ID = _optional("DEV_GUILD_ID")
 # login` locally; metadata server on GCE).
 
 FORMAT_SHEETS: dict[str, str] = {
-    "Reg M-A": "TeamBank Parser V1",
+    "Reg M-A": "Regulation M-A",
 }
 
 DEX_SHEET_NAME = "DEX"
