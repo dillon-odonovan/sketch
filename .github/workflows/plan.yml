@@ -21,16 +21,14 @@ concurrency:
 
 env:
   TF_IN_AUTOMATION: "true"
-  # Variables for `terraform plan`. The project_id / github_* values are pulled
-  # from repo context; guild_config and dev_guild_id come from repo variables
-  # so the local terraform.tfvars (which is gitignored) doesn't need to be
-  # mirrored into the workflow. If you'd rather commit a guild_config.auto.tfvars
-  # instead, drop the TF_VAR_guild_config repo variable — terraform will pick
-  # the committed file up.
+  # Variables for `terraform plan`. project_id / github_* come from repo
+  # context; dev_guild_id from a repo variable so the local terraform.tfvars
+  # (which is gitignored) doesn't need to be mirrored into the workflow.
+  # Per-guild config (spreadsheet_id, broadcast_channel_id) lives in
+  # Firestore, not Terraform — see bin/seed_guilds.py.
   TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
   TF_VAR_github_owner: ${{ github.repository_owner }}
   TF_VAR_github_repo: ${{ github.event.repository.name }}
-  TF_VAR_guild_config: ${{ vars.TF_GUILD_CONFIG }}
   TF_VAR_dev_guild_id: ${{ vars.TF_DEV_GUILD_ID }}
 
 jobs:

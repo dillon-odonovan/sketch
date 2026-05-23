@@ -3,17 +3,10 @@ project_id   = "your-gcp-project-id"
 github_owner = "dillon-odonovan"
 github_repo  = "sketch"
 
-# Per-guild routing. One entry per Discord guild the bot should serve.
-# Keys are Discord guild IDs as strings (Discord IDs are 64-bit; HCL number
-# precision is 53 bits, so quote them). The VM service account must be shared
-# on every listed sheet as an Editor.
-guild_config = {
-  "123456789012345678" = { spreadsheet_id = "your-google-spreadsheet-id" }
-  # Optional broadcast_channel_id: when set, every successful /add-team posts
-  # a public "new team added" embed to that channel. Quote the channel ID — it
-  # is a 64-bit Discord snowflake. Bot needs Send Messages + Embed Links there.
-  # "987654321098765432" = { spreadsheet_id = "another-spreadsheet-id", broadcast_channel_id = "112233445566778899" }
-}
+# Per-guild routing (spreadsheet_id, broadcast_channel_id) lives in Firestore,
+# not Terraform — Terraform only provisions the empty database. Add or update
+# a guild with bin/seed_guilds.py (see README). The future /register-guild
+# slash command writes to the same collection at runtime.
 
 # Optional — uncomment to override defaults.
 # region        = "us-west1"

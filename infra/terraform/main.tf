@@ -21,12 +21,20 @@ locals {
   image_basename = "bot"
   image_url      = "${var.region}-docker.pkg.dev/${var.project_id}/${local.repo_name}/${local.image_basename}:${var.image_tag}"
 
+  # "(default)" is the sentinel name Firestore reserves for a project's
+  # singleton database — not auto-generated. Naming it anything else would
+  # require every client (bot.py, bin/seed_guilds.py) to pass
+  # `database="..."`, which `firestore.Client()` doesn't need today. Hoisted
+  # to a local so the choice is visible from the top of the file.
+  firestore_database_name = "(default)"
+
   required_apis = [
     "sheets.googleapis.com",
     "secretmanager.googleapis.com",
     "iap.googleapis.com",
     "compute.googleapis.com",
     "artifactregistry.googleapis.com",
+    "firestore.googleapis.com",
     # cloudresourcemanager and iam are tracked here so they're protected
     # against accidental disable, but the very first enablement of both has
     # to happen manually via gcloud — terraform's `google_project_service`
@@ -86,6 +94,40 @@ resource "google_secret_manager_secret_iam_member" "vm_token_access" {
   secret_id = google_secret_manager_secret.discord_token.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# ----------------------------------------------------------------------------
+# Firestore — per-guild runtime config (spreadsheet_id, broadcast_channel_id)
+# ----------------------------------------------------------------------------
+#
+# Each guild is one document in the `guild_configs` collection, doc_id =
+# Discord guild_id (as string). Terraform owns the *database* — the empty
+# Firestore instance and the IAM binding that lets the VM read/write it. The
+# *contents* are owned by whoever writes: today, an operator running
+# bin/seed_guilds.py; later, a /register-guild slash command writing through
+# the bot. Keeping the data out of Terraform means future server owners can
+# self-register without anyone running `terraform apply`.
+#
+# `location_id` is permanent — Firestore cannot be moved between regions
+# without recreating the database (and re-seeding). We co-locate with the
+# rest of the project's resources via var.region.
+
+resource "google_firestore_database" "default" {
+  name        = local.firestore_database_name
+  location_id = var.region
+  type        = "FIRESTORE_NATIVE"
+
+  depends_on = [google_project_service.enabled]
+}
+
+# `roles/datastore.user` is Firestore's read+write role (the role still
+# carries the legacy Datastore name from when Firestore launched as
+# Datastore-in-Datastore-mode). Scoped to the project because Firestore IAM
+# doesn't support per-collection bindings on the (default) database.
+resource "google_project_iam_member" "vm_firestore_user" {
+  project = var.project_id
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${google_service_account.vm.email}"
 }
 
 # ----------------------------------------------------------------------------
@@ -202,19 +244,10 @@ resource "google_compute_instance" "sketch" {
   metadata = {
     enable-oslogin = "TRUE"
     startup-script = templatefile("${path.module}/startup.sh.tftpl", {
-      region       = var.region
-      image_url    = local.image_url
-      project_id   = var.project_id
-      dev_guild_id = var.dev_guild_id
-      # Drop unset broadcast_channel_id entries before encoding so the JSON the
-      # Python validator parses doesn't carry an explicit null for guilds that
-      # don't broadcast — keeps the env-var payload clean either way.
-      guild_config_json = jsonencode({
-        for guild_id, cfg in var.guild_config : guild_id => merge(
-          { spreadsheet_id = cfg.spreadsheet_id },
-          cfg.broadcast_channel_id != null ? { broadcast_channel_id = cfg.broadcast_channel_id } : {}
-        )
-      })
+      region         = var.region
+      image_url      = local.image_url
+      project_id     = var.project_id
+      dev_guild_id   = var.dev_guild_id
       sketch_service = file("${path.module}/../../deploy/sketch.service")
     })
   }

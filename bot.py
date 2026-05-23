@@ -2,11 +2,12 @@ import logging
 
 import discord
 from discord import app_commands
+from google.cloud import firestore
 
 import config
 import logging_setup
 from commands import setup_commands
-from guild_config import StaticGuildConfigStore, parse_guild_config_json
+from guild_config import FirestoreGuildConfigStore
 from sheets_client import SheetsClientRegistry
 
 logging_setup.configure()
@@ -22,16 +23,12 @@ class SketchBot(discord.Client):
         super().__init__(intents=discord.Intents.default())
         self.tree = app_commands.CommandTree(self)
 
-        # Fail fast on malformed GUILD_CONFIG_JSON — better a startup crash
-        # with a clear message than a runtime KeyError on the first command.
-        guild_map = parse_guild_config_json(config.GUILD_CONFIG_JSON)
-        self._store = StaticGuildConfigStore(guild_map)
+        # Firestore.Client() auto-detects the project via ADC (the metadata
+        # server on GCE, or `gcloud auth application-default login` locally).
+        # No explicit project arg — passing `None` keeps the same auto-detect
+        # path the Sheets and Secret Manager clients already use.
+        self._store = FirestoreGuildConfigStore(firestore.Client())
         self._registry = SheetsClientRegistry(self._store)
-        logger.info(
-            "Loaded guild config for %d guild(s): %s",
-            len(guild_map),
-            self._store.configured_guild_ids(),
-        )
 
         self._dev_guild = (
             discord.Object(id=int(config.DEV_GUILD_ID)) if config.DEV_GUILD_ID else None

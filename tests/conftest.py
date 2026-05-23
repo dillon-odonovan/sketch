@@ -1,9 +1,7 @@
 import os
 
-# config.py reads DISCORD_TOKEN and GUILD_CONFIG_JSON at import time. Set stub
-# values before any test imports a module that pulls in config.
+# config.py reads DISCORD_TOKEN at import time. Set a stub value before any
+# test imports a module that pulls in config. Guild config is no longer an
+# env var — tests that need a store instantiate StaticGuildConfigStore
+# directly with a hand-built mapping.
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
-os.environ.setdefault(
-    "GUILD_CONFIG_JSON",
-    '{"111111111111111111": {"spreadsheet_id": "test-spreadsheet"}}',
-)
