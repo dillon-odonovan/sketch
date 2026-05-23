@@ -226,6 +226,45 @@ class TestTTLCache:
         assert service.execute_count == 1
 
 
+class TestInvalidate:
+    async def test_invalidate_forces_refetch_on_next_get(self):
+        # The primary use case: /add-team invalidates after species settle,
+        # the next /search-teams must rebuild the snapshot from a fresh
+        # Sheets fetch even though the TTL hasn't expired.
+        client, service, clock = _make_client(ttl=300.0)
+        snap1 = await client.get_search_snapshot("MySheet")
+        assert service.execute_count == 1
+
+        client.invalidate_snapshot("MySheet")
+
+        snap2 = await client.get_search_snapshot("MySheet")
+        assert service.execute_count == 2
+        assert snap1 is not snap2
+
+    async def test_invalidate_noop_when_no_entry(self):
+        # First /add-team after bot start may invalidate before anyone has
+        # called /search-teams — should be a clean noop, not an error.
+        client, service, _ = _make_client(ttl=300.0)
+        client.invalidate_snapshot("NeverFetched")  # must not raise
+        # And the cache stays cold afterwards: a subsequent get is the
+        # first execute, not the second.
+        await client.get_search_snapshot("NeverFetched")
+        assert service.execute_count == 1
+
+    async def test_invalidate_is_scoped_to_one_sheet_name(self):
+        client, service, _ = _make_client(ttl=300.0)
+        await client.get_search_snapshot("SheetA")
+        await client.get_search_snapshot("SheetB")
+        assert service.execute_count == 2
+
+        # Invalidate only SheetA; SheetB should remain cached.
+        client.invalidate_snapshot("SheetA")
+
+        await client.get_search_snapshot("SheetA")  # refetches
+        await client.get_search_snapshot("SheetB")  # still cached
+        assert service.execute_count == 3
+
+
 class TestDefaults:
     async def test_default_ttl_pulls_from_config(self):
         # When `search_cache_ttl` is omitted, the client should consult

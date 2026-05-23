@@ -53,11 +53,18 @@ SEARCH_RESULT_LIMIT = 15
 
 # How long a `/search-teams` result snapshot (sheet rows + the tokenized
 # description index built over them) stays valid in process memory before the
-# next /search-teams call re-fetches from Sheets. Trades responsiveness to new
-# /add-team rows against avoiding redundant Sheets fetches when the same user
-# iterates queries in quick succession. We deliberately do NOT invalidate this
-# cache on /add-team — the new row's species columns are populated async by an
-# AppsScript and take ~10s to settle anyway, so a sub-30s window of staleness
-# is already baked into the UX. If users routinely report "just-added team
-# doesn't show up", tighten to 10s or wire invalidation in /add-team.
-SEARCH_CACHE_TTL_SECONDS = 30.0
+# next /search-teams call re-fetches from Sheets.
+#
+# Freshness is driven primarily by explicit cache invalidation on writes
+# (see SheetsClient.invalidate_snapshot, called by /add-team after the
+# species poll settles). The TTL exists only as a *backstop* to eventually
+# pick up out-of-band edits — i.e., changes made directly to the Google
+# Sheet through its UI rather than through a bot command — without
+# requiring a bot restart.
+#
+# 5 minutes is the sweet spot: short enough that direct-Sheet edits surface
+# in reasonable time, long enough that the cache essentially never expires
+# under normal bot-driven traffic (since each /add-team invalidates
+# explicitly). Sheets API quota is generous, but good citizenship still
+# argues against re-fetching every 30 s when nothing has changed.
+SEARCH_CACHE_TTL_SECONDS = 300.0

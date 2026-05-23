@@ -337,20 +337,25 @@ class SheetsClient:
         return None
 
     async def get_search_snapshot(self, sheet_name: str) -> SearchSnapshot:
-        """Return rows + a tokenized description index, with a short TTL.
+        """Return rows + a tokenized description index.
 
-        Builds on `search_rows` and adds a per-instance, per-sheet_name cache
-        with the TTL configured in `config.SEARCH_CACHE_TTL_SECONDS` (30s by
-        default). The TTL is intentionally short: a hard invalidation on
-        `/add-team` would race the species-poll AppsScript and complicate
-        the add path, while still-stale results past 30s are very rare in
-        practice. Failures are not cached, so a retry after fixing sheet
-        permissions still works.
+        Freshness model: bot-driven writes are responsible for invalidation.
+        /add-team (and any future /edit-team) calls `invalidate_snapshot`
+        once the species poll has settled, so the next /search-teams sees
+        the new row and re-builds the index. The TTL configured in
+        `config.SEARCH_CACHE_TTL_SECONDS` is a *backstop* — only relevant
+        when someone edits the Google Sheet directly through its UI,
+        bypassing bot commands. Under normal bot-driven traffic the cache
+        effectively never expires. Index construction itself is ~1–5 ms
+        for 1000 rows; the win on the cache hit is primarily skipping the
+        ~200–500 ms Sheets API round-trip.
+
+        Failures are not cached so a retry after fixing sheet permissions
+        still works.
 
         Concurrency model:
           - Fast path (cache hit, not expired): lockless dict read. Two
-            successive search calls in the same TTL window pay no Sheets
-            cost and reuse the same `SearchSnapshot` object.
+            successive search calls reuse the same `SearchSnapshot` object.
           - Slow path (miss or expired): acquire `_snapshot_lock`, recheck
             under the lock, then fetch + build + store. Concurrent first-
             uses for the same sheet collapse to a single fetch.
@@ -378,6 +383,28 @@ class SheetsClient:
                 self._search_cache_ttl,
             )
             return snapshot
+
+    def invalidate_snapshot(self, sheet_name: str) -> None:
+        """Drop the cached snapshot for `sheet_name` so the next call refetches.
+
+        Called from bot-driven write paths (/add-team today, /edit-team in
+        the future) once the species poll has settled — invalidating before
+        species populate would just cause the next snapshot rebuild to skip
+        the new row again (since `search_rows` filters out rows whose
+        species cells still read "Loading..." or "#N/A").
+
+        Synchronous and lock-free on purpose: `dict.pop` is atomic in
+        CPython, and the worst case if a /search-teams is racing us is one
+        more stale read before the next call rebuilds. Safe to call when
+        there's no cache entry (e.g., the first /add-team after bot start).
+        """
+        removed = self._snapshot_cache.pop(sheet_name, None)
+        if removed is not None:
+            logger.info(
+                "Invalidated search snapshot for %s (was %d rows)",
+                sheet_name,
+                len(removed[0].rows),
+            )
 
     async def search_rows(self, sheet_name: str) -> list[TeamRow]:
         resp = await self._run(
