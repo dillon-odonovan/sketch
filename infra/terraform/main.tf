@@ -21,6 +21,13 @@ locals {
   image_basename = "bot"
   image_url      = "${var.region}-docker.pkg.dev/${var.project_id}/${local.repo_name}/${local.image_basename}:${var.image_tag}"
 
+  # "(default)" is the sentinel name Firestore reserves for a project's
+  # singleton database — not auto-generated. Naming it anything else would
+  # require every client (bot.py, bin/seed_guilds.py) to pass
+  # `database="..."`, which `firestore.Client()` doesn't need today. Hoisted
+  # to a local so the choice is visible from the top of the file.
+  firestore_database_name = "(default)"
+
   required_apis = [
     "sheets.googleapis.com",
     "secretmanager.googleapis.com",
@@ -106,7 +113,7 @@ resource "google_secret_manager_secret_iam_member" "vm_token_access" {
 # rest of the project's resources via var.region.
 
 resource "google_firestore_database" "default" {
-  name        = "(default)"
+  name        = local.firestore_database_name
   location_id = var.region
   type        = "FIRESTORE_NATIVE"
 
