@@ -14,7 +14,7 @@ from pokepaste_validator import (
     normalize_replica,
     validate_pokepaste_url,
 )
-from sheets_client import SheetsClient, SheetsClientRegistry
+from sheets_client import SheetsClient, SheetsClientRegistry, TeamRow
 
 __all__ = ["DexIndex", "setup_commands"]
 
@@ -42,6 +42,49 @@ def _paste_type_choices() -> list[app_commands.Choice[str]]:
 
 def _default_format() -> str:
     return next(iter(config.FORMAT_SHEETS))
+
+
+def _filter_team_rows(
+    rows: list[TeamRow],
+    *,
+    resolved_groups: list[list[str]],
+    description_query: str | None,
+    url_target: str | None,
+) -> list[TeamRow]:
+    """Apply `/search-teams` filters to `rows`. Filters AND together.
+
+    - `resolved_groups`: each inner list is one user-supplied mon param after
+      DEX resolution (e.g., "Charizard" → ["Charizard", "Charizard-Mega-X",
+      "Charizard-Mega-Y"]). A row passes a group if ANY species in the row
+      matches ANY name in the group; the row passes the mon filter overall
+      only if it passes EVERY group. Empty list = no mon filter.
+    - `description_query`: case-insensitive substring on `row.description`.
+      None = no description filter.
+    - `url_target`: already-canonicalized Pokepaste URL. None = no URL filter.
+      Stored URLs are canonicalized per-row for comparison; malformed stored
+      URLs are treated as non-matching rather than raising (mirrors
+      `SheetsClient.find_row_by_url`).
+    """
+    description_lower = description_query.lower() if description_query else None
+    matches: list[TeamRow] = []
+    for row in rows:
+        species_lower = {s.lower() for s in row.species}
+        mons_ok = all(
+            any(m.lower() in species_lower for m in group) for group in resolved_groups
+        )
+        desc_ok = (
+            description_lower is None or description_lower in row.description.lower()
+        )
+        if url_target is None:
+            url_ok = True
+        else:
+            try:
+                url_ok = canonicalize_pokepaste_url(row.url) == url_target
+            except ValidationError:
+                url_ok = False
+        if mons_ok and desc_ok and url_ok:
+            matches.append(row)
+    return matches
 
 
 async def _broadcast_team_added(
@@ -391,29 +434,12 @@ def setup_commands(
             await interaction.followup.send(_GENERIC_SHEET_READ_ERROR)
             return
 
-        description_lower = description_query.lower() if description_query else None
-        matches = []
-        for row in rows:
-            species_lower = {s.lower() for s in row.species}
-            mons_ok = all(
-                any(m.lower() in species_lower for m in group)
-                for group in resolved_groups
-            )
-            desc_ok = (
-                description_lower is None
-                or description_lower in row.description.lower()
-            )
-            if url_target is None:
-                url_ok = True
-            else:
-                try:
-                    url_ok = canonicalize_pokepaste_url(row.url) == url_target
-                except ValidationError:
-                    # Stored URL is malformed (e.g., =HYPERLINK display text).
-                    # Mirror find_row_by_url and treat as non-matching.
-                    url_ok = False
-            if mons_ok and desc_ok and url_ok:
-                matches.append(row)
+        matches = _filter_team_rows(
+            rows,
+            resolved_groups=resolved_groups,
+            description_query=description_query,
+            url_target=url_target,
+        )
 
         label_parts = list(queries)
         if description_query:
