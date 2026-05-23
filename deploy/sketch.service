@@ -9,9 +9,14 @@ StartLimitBurst=5
 [Service]
 Type=simple
 EnvironmentFile=/etc/sketch/env
+# Pull+extract can exceed systemd's 90s default on cold layers; give it room
+# so a slow first-boot pull doesn't fail the unit. The inner `timeout 240`
+# bounds the pull itself so a hung registry falls through to the cached image
+# before systemd kills the whole start.
+TimeoutStartSec=300
 # Best-effort pull (leading "-"): if Artifact Registry is unreachable on boot,
 # fall back to the locally cached image rather than failing the service.
-ExecStartPre=-/usr/bin/docker pull ${SKETCH_IMAGE}
+ExecStartPre=-/usr/bin/timeout 240 /usr/bin/docker pull ${SKETCH_IMAGE}
 # `--rm` cleans up the stopped container; systemd is the supervisor, not docker
 # (so `--restart=no` would be the docker default anyway). Hardening flags here
 # replace the host-level seccomp/AppArmor directives the previous unit used.
