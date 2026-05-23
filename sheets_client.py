@@ -11,6 +11,7 @@ from googleapiclient.discovery import build
 import config
 from dex import DexIndex
 from guild_config import GuildConfigStore
+from pokepaste_validator import ValidationError, canonicalize_pokepaste_url
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +230,55 @@ class SheetsClient:
         if any(c is None or c == "" or c == "#N/A" or c == "Loading..." for c in cells):
             return None
         return [str(c).strip() for c in cells]
+
+    async def find_row_by_url(self, sheet_name: str, url: str) -> TeamRow | None:
+        """Return the first existing row whose URL canonicalizes to `url`.
+
+        Reads only A:G (URL + description) — species columns are deliberately
+        skipped so this is safe to call against rows that were just written and
+        whose TEAMDATAFROMPASTE formula is still loading. The returned TeamRow
+        therefore always has `species=[]`; callers that need species must use
+        `search_rows` or `poll_species` instead.
+
+        `url` does not need to be pre-canonicalized; both sides are normalized.
+        Raises ValidationError if `url` isn't a valid Pokepaste URL. Returns
+        None when the sheet has no matching row.
+        """
+        target = canonicalize_pokepaste_url(url)
+        resp = await self._run(
+            self._service.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=self._spreadsheet_id,
+                range=f"{sheet_name}!A{config.FIRST_DATA_ROW}:G",
+                valueRenderOption="FORMATTED_VALUE",
+            )
+            .execute,
+            num_retries=_API_RETRIES,
+        )
+        rows = resp.get("values", [])
+        for idx, row in enumerate(rows):
+            # Sheets truncates trailing empty cells, so a row with data only
+            # through column D comes back as a 4-element list. Pad to length 7
+            # so row[6] (description) is always indexable.
+            row = row + [""] * (7 - len(row))
+            cell_url = (row[0] or "").strip()
+            if not cell_url:
+                continue
+            try:
+                if canonicalize_pokepaste_url(cell_url) != target:
+                    continue
+            except ValidationError:
+                # Malformed URL already in the sheet — skip rather than error.
+                continue
+            description = (row[6] or "").strip()
+            return TeamRow(
+                row_number=config.FIRST_DATA_ROW + idx,
+                url=cell_url,
+                description=description,
+                species=[],
+            )
+        return None
 
     async def search_rows(self, sheet_name: str) -> list[TeamRow]:
         resp = await self._run(

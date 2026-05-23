@@ -37,3 +37,24 @@ def normalize_replica(replica: str) -> str:
             f"`replica` must be a 10-character hex string. Got `{replica}`."
         )
     return replica.upper()
+
+
+def canonicalize_pokepaste_url(url: str) -> str:
+    # The paste ID is case-sensitive — `pokepast.es/Abc` and `pokepast.es/abc`
+    # are different pastes — so we lowercase only the scheme + host and leave
+    # the ID untouched. Forcing https and stripping a trailing slash collapses
+    # the four common ways the same paste gets typed into one comparable form.
+    stripped = url.strip()
+    if not _POKEPASTE_URL_RE.match(stripped):
+        raise ValidationError(
+            f"`{url}` doesn't look like a Pokepaste URL. "
+            "Expected something like `https://pokepast.es/abc123`."
+        )
+    if stripped.startswith("http://"):
+        stripped = "https://" + stripped[len("http://") :]
+    if stripped.endswith("/"):
+        stripped = stripped[:-1]
+    prefix = "https://pokepast.es/"
+    if stripped.lower().startswith(prefix):
+        stripped = prefix + stripped[len(prefix) :]
+    return stripped

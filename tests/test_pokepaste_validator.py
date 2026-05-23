@@ -3,6 +3,7 @@ from aioresponses import aioresponses
 
 from pokepaste_validator import (
     ValidationError,
+    canonicalize_pokepaste_url,
     normalize_replica,
     validate_pokepaste_url,
 )
@@ -68,3 +69,72 @@ class TestValidatePokepasteUrl:
             mock.get(url, status=404)
             with pytest.raises(ValidationError, match="HTTP 404"):
                 await validate_pokepaste_url(url)
+
+
+class TestCanonicalizePokepasteUrl:
+    def test_strips_trailing_slash(self):
+        assert (
+            canonicalize_pokepaste_url("https://pokepast.es/abc123/")
+            == "https://pokepast.es/abc123"
+        )
+
+    def test_upgrades_http_to_https(self):
+        assert (
+            canonicalize_pokepaste_url("http://pokepast.es/abc123")
+            == "https://pokepast.es/abc123"
+        )
+
+    def test_preserves_paste_id_case(self):
+        assert (
+            canonicalize_pokepaste_url("https://pokepast.es/AbCdEf")
+            == "https://pokepast.es/AbCdEf"
+        )
+
+    def test_strips_surrounding_whitespace(self):
+        assert (
+            canonicalize_pokepaste_url("  https://pokepast.es/abc123  ")
+            == "https://pokepast.es/abc123"
+        )
+
+    def test_passes_through_already_canonical(self):
+        assert (
+            canonicalize_pokepaste_url("https://pokepast.es/abc123")
+            == "https://pokepast.es/abc123"
+        )
+
+    @pytest.mark.parametrize(
+        "variant",
+        [
+            "https://pokepast.es/abc123",
+            "https://pokepast.es/abc123/",
+            "http://pokepast.es/abc123",
+            "http://pokepast.es/abc123/",
+            "  https://pokepast.es/abc123  ",
+        ],
+    )
+    def test_equivalent_forms_collapse_to_same_canonical(self, variant):
+        # The load-bearing dedup invariant: every way to spell the same paste
+        # canonicalizes to one string we can compare.
+        assert canonicalize_pokepaste_url(variant) == "https://pokepast.es/abc123"
+
+    def test_distinguishes_case_variants_of_paste_id(self):
+        # Pokepaste IDs are case-sensitive: `abc` and `ABC` are different
+        # pastes and must not collide after canonicalization.
+        assert canonicalize_pokepaste_url(
+            "https://pokepast.es/abc"
+        ) != canonicalize_pokepaste_url("https://pokepast.es/ABC")
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "https://example.com/abc",
+            "http://pokepaste.es/abc",  # missing dot in host
+            "https://pokepast.es/",  # no id
+            "https://pokepast.es/abc?query",
+            "ftp://pokepast.es/abc",
+            "",
+        ],
+    )
+    def test_rejects_malformed_url(self, value):
+        with pytest.raises(ValidationError):
+            canonicalize_pokepaste_url(value)
