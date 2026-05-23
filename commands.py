@@ -48,7 +48,7 @@ def _filter_team_rows(
     rows: list[TeamRow],
     *,
     resolved_groups: list[list[str]],
-    description_query: str | None,
+    description_match_indices: set[int] | None,
     url_target: str | None,
 ) -> list[TeamRow]:
     """Apply `/search-teams` filters to `rows`. Filters AND together.
@@ -58,23 +58,24 @@ def _filter_team_rows(
       "Charizard-Mega-Y"]). A row passes a group if ANY species in the row
       matches ANY name in the group; the row passes the mon filter overall
       only if it passes EVERY group. Empty list = no mon filter.
-    - `description_query`: case-insensitive substring on `row.description`.
-      None = no description filter.
+    - `description_match_indices`: positional indices into `rows` whose
+      descriptions pass the tokenized description filter. The set comes from
+      `SearchSnapshot.desc_index.match(query)` upstream — this helper stays
+      ignorant of tokenization rules. ``None`` means "no description filter
+      applied" (all rows pass); an empty set means "filter applied, zero
+      matches" (no rows pass).
     - `url_target`: already-canonicalized Pokepaste URL. None = no URL filter.
       Stored URLs are canonicalized per-row for comparison; malformed stored
       URLs are treated as non-matching rather than raising (mirrors
       `SheetsClient.find_row_by_url`).
     """
-    description_lower = description_query.lower() if description_query else None
     matches: list[TeamRow] = []
-    for row in rows:
+    for idx, row in enumerate(rows):
         species_lower = {s.lower() for s in row.species}
         mons_ok = all(
             any(m.lower() in species_lower for m in group) for group in resolved_groups
         )
-        desc_ok = (
-            description_lower is None or description_lower in row.description.lower()
-        )
+        desc_ok = description_match_indices is None or idx in description_match_indices
         if url_target is None:
             url_ok = True
         else:
@@ -336,6 +337,21 @@ def setup_commands(
             )
             if broadcast_message is not None:
                 await _enrich_broadcast_with_species(broadcast_message, species)
+            # Drop the cached search snapshot so the next /search-teams
+            # rebuilds and includes this row. We deliberately wait until
+            # species columns settle: invalidating earlier would just cause
+            # `search_rows` to skip this row on the rebuild (it filters
+            # rows whose species cells read "Loading..." / "#N/A"). On
+            # timeout the snapshot stays stale, but the 5-minute TTL
+            # backstop in SheetsClient eventually catches it.
+            sheets.invalidate_snapshot(sheet_name)
+        else:
+            logger.info(
+                "Species poll timed out for row %d in %s; skipping snapshot "
+                "invalidation (TTL backstop will catch it)",
+                row,
+                sheet_name,
+            )
 
     @tree.command(
         name="search-teams",
@@ -350,8 +366,10 @@ def setup_commands(
         mon5="Fifth Pokémon",
         mon6="Sixth Pokémon",
         description=(
-            "Case-insensitive substring match against the team description "
-            "(player, team name, concept, etc.)"
+            "Tokenized description search: order-independent, per-token "
+            "substring match (e.g. 'caly zama' matches 'Calyrex Zamazenta'; "
+            "'pex' matches 'Toxapex'). Query tokens shorter than 3 chars "
+            "require an exact word match."
         ),
         url="Pokepaste URL — check whether this paste is already in the bank.",
     )
@@ -428,16 +446,24 @@ def setup_commands(
             resolved_groups.append(r.canonical_matches)
 
         try:
-            rows = await sheets.search_rows(sheet_name)
+            snapshot = await sheets.get_search_snapshot(sheet_name)
         except Exception:
             logger.exception("Failed to read sheet")
             await interaction.followup.send(_GENERIC_SHEET_READ_ERROR)
             return
 
+        # `desc_index.match` returns positional indices into `snapshot.rows`,
+        # which `_filter_team_rows` enumerates 1:1. None = no filter applied;
+        # empty set = filter ran and matched nothing (caller still ANDs it in
+        # so the result is empty, which is what we want).
+        description_match_indices: set[int] | None = (
+            snapshot.desc_index.match(description_query) if description_query else None
+        )
+
         matches = _filter_team_rows(
-            rows,
+            snapshot.rows,
             resolved_groups=resolved_groups,
-            description_query=description_query,
+            description_match_indices=description_match_indices,
             url_target=url_target,
         )
 
@@ -490,15 +516,19 @@ def setup_commands(
             "`/search-teams [mon1:<name>] ... [mon6:<name>] "
             "[description:<text>] [url:<paste>] [format:Reg M-A]`\n"
             "  Find teams. Filter by Pokémon (AND across mon params), "
-            "by a case-insensitive\n"
-            "  description substring, by Pokepaste URL, or any combination. "
-            "At least one filter is required.\n"
+            "by tokenized\n"
+            "  description (order-independent, per-token substring), by "
+            "Pokepaste URL,\n"
+            "  or any combination. At least one filter is required.\n"
             "  Examples:\n"
             "    `/search-teams mon1:Calyrex-Shadow mon2:Urshifu`\n"
             "    `/search-teams mon1:Charizard`     (matches base or Mega-X/Y)\n"
             "    `/search-teams mon1:Charizard-Mega-Y`     (Mega-Y only)\n"
             "    `/search-teams description:jsmithvgc`     (by player / gamertag)\n"
-            "    `/search-teams description:Shadow Rider`  (by team name)\n"
+            "    `/search-teams description:caly zama`     "
+            "(matches 'Calyrex Zamazenta')\n"
+            "    `/search-teams description:pex`     "
+            "(matches descriptions containing 'Toxapex')\n"
             "    `/search-teams description:jsmithvgc mon1:Charizard`  (AND)\n"
             "    `/search-teams url:https://pokepast.es/abcd1234`  "
             "(is this paste already banked?)\n\n"
