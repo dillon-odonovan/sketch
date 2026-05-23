@@ -1,0 +1,97 @@
+name: Terraform Plan
+
+# Gates infra changes on a clean `fmt`, `validate`, and `plan` before they can
+# land on `main`. Apply is still manual — the operator reviews the plan in the
+# PR comment, merges, then runs `terraform apply` locally.
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/plan.yml'
+
+permissions:
+  contents: read
+  id-token: write          # WIF auth
+  pull-requests: write     # post plan as PR comment
+
+concurrency:
+  group: terraform-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+  # Variables for `terraform plan`. The project_id / github_* values are pulled
+  # from repo context; guild_config and dev_guild_id come from repo variables
+  # so the local terraform.tfvars (which is gitignored) doesn't need to be
+  # mirrored into the workflow. If you'd rather commit a guild_config.auto.tfvars
+  # instead, drop the TF_VAR_guild_config repo variable — terraform will pick
+  # the committed file up.
+  TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+  TF_VAR_github_owner: ${{ github.repository_owner }}
+  TF_VAR_github_repo: ${{ github.event.repository.name }}
+  TF_VAR_guild_config: ${{ vars.TF_GUILD_CONFIG }}
+  TF_VAR_dev_guild_id: ${{ vars.TF_DEV_GUILD_ID }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+          # Explicit project_id pins the quota project on the generated
+          # credentials so API calls bill to GCP_PROJECT_ID and not whatever
+          # default the SDK picks. Without this, terraform plan was getting
+          # `SERVICE_DISABLED` for iam.googleapis.com from CI even though
+          # the API was enabled in the resource project.
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: terraform init
+        run: terraform init -backend-config="bucket=${{ vars.GCP_PROJECT_ID }}-tfstate"
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      - name: terraform plan
+        run: terraform plan -no-color -input=false -out=tfplan
+
+      - name: Render plan for comment
+        run: terraform show -no-color tfplan > plan.txt
+
+      - name: Post plan to PR
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infra/terraform/plan.txt', 'utf8');
+            const max = 60000;
+            const truncated = plan.length > max;
+            const body = [
+              '### Terraform plan',
+              truncated ? `_(truncated to ${max} chars — full output in the workflow log)_` : '',
+              '```hcl',
+              plan.slice(0, max),
+              '```',
+            ].filter(Boolean).join('\n');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });

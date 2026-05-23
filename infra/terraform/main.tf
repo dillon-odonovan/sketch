@@ -2,6 +2,18 @@ provider "google" {
   project = var.project_id
   region  = var.region
   zone    = var.zone
+
+  # `billing_project` + `user_project_override` make the provider send the
+  # X-Goog-User-Project header on every API call, pinning the "consumer"
+  # (the project that's billed and that needs the API enabled) to
+  # var.project_id. Without these, WIF-impersonated calls from CI default
+  # to a consumer the provider picks server-side, which manifests as
+  # `SERVICE_DISABLED` 403s referring to a project number that isn't the
+  # one we're managing. Local applies don't surface this because ADC from
+  # `gcloud auth application-default login` already has a user project
+  # pinned by gcloud config.
+  billing_project       = var.project_id
+  user_project_override = true
 }
 
 locals {
@@ -15,6 +27,15 @@ locals {
     "iap.googleapis.com",
     "compute.googleapis.com",
     "artifactregistry.googleapis.com",
+    # cloudresourcemanager and iam are tracked here so they're protected
+    # against accidental disable, but the very first enablement of both has
+    # to happen manually via gcloud — terraform's `google_project_service`
+    # itself goes through Cloud Resource Manager, so it can't bootstrap CRM
+    # from nothing, and `google_service_account` needs IAM API just to read
+    # state. See infra/terraform/README.md §2 for the one-time gcloud
+    # commands. After the manual bootstrap these stay terraform-managed.
+    "cloudresourcemanager.googleapis.com",
+    "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",
   ]
@@ -170,26 +191,33 @@ resource "google_compute_instance" "sketch" {
 
   # OS Login lets the deployer service account SSH in via IAP without
   # managing SSH keys.
+  #
+  # `startup-script` is set as a key inside `metadata` (not via the top-level
+  # `metadata_startup_script` attribute) because changes to entries inside the
+  # `metadata` map are updated in-place by the GCP API, while changes to
+  # `metadata_startup_script` are ForceNew and recreate the VM. Since the
+  # startup script's content depends on guild_config, image_url, etc. — values
+  # we expect to edit routinely — keeping the script in `metadata` lets those
+  # edits propagate without destroying the running bot.
   metadata = {
     enable-oslogin = "TRUE"
-  }
-
-  metadata_startup_script = templatefile("${path.module}/startup.sh.tftpl", {
-    region       = var.region
-    image_url    = local.image_url
-    project_id   = var.project_id
-    dev_guild_id = var.dev_guild_id
-    # Drop unset broadcast_channel_id entries before encoding so the JSON the
-    # Python validator parses doesn't carry an explicit null for guilds that
-    # don't broadcast — keeps the env-var payload clean either way.
-    guild_config_json = jsonencode({
-      for guild_id, cfg in var.guild_config : guild_id => merge(
-        { spreadsheet_id = cfg.spreadsheet_id },
-        cfg.broadcast_channel_id != null ? { broadcast_channel_id = cfg.broadcast_channel_id } : {}
-      )
+    startup-script = templatefile("${path.module}/startup.sh.tftpl", {
+      region       = var.region
+      image_url    = local.image_url
+      project_id   = var.project_id
+      dev_guild_id = var.dev_guild_id
+      # Drop unset broadcast_channel_id entries before encoding so the JSON the
+      # Python validator parses doesn't carry an explicit null for guilds that
+      # don't broadcast — keeps the env-var payload clean either way.
+      guild_config_json = jsonencode({
+        for guild_id, cfg in var.guild_config : guild_id => merge(
+          { spreadsheet_id = cfg.spreadsheet_id },
+          cfg.broadcast_channel_id != null ? { broadcast_channel_id = cfg.broadcast_channel_id } : {}
+        )
+      })
+      sketch_service = file("${path.module}/../../deploy/sketch.service")
     })
-    sketch_service = file("${path.module}/../../deploy/sketch.service")
-  })
+  }
 
   allow_stopping_for_update = true
 
@@ -257,6 +285,56 @@ resource "google_service_account_iam_member" "deployer_acts_as_vm" {
   service_account_id = google_service_account.vm.name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.deployer.email}"
+}
+
+# `terraform plan` in CI needs to read every managed resource to refresh state.
+# `roles/viewer` is the canonical project-wide read role; granting individual
+# *.viewer roles per service would be ~8 bindings with no real safety benefit
+# (none of them grant mutate perms).
+resource "google_project_iam_member" "deployer_plan_viewer" {
+  project = var.project_id
+  role    = "roles/viewer"
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+}
+
+# Required because the google provider runs with `user_project_override = true`
+# (see the provider block above). With that header set, every API call from
+# the deployer SA needs `serviceusage.services.use` on the billing project —
+# which `roles/viewer` does not include.
+resource "google_project_iam_member" "deployer_service_usage_consumer" {
+  project = var.project_id
+  role    = "roles/serviceusage.serviceUsageConsumer"
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+}
+
+# Plan in CI runs `terraform init` against the GCS state backend and
+# acquires the state lock — both are object-level operations covered by
+# `storage.objectUser`.
+resource "google_storage_bucket_iam_member" "deployer_tfstate_access" {
+  bucket = "${var.project_id}-tfstate"
+  role   = "roles/storage.objectUser"
+  member = "serviceAccount:${google_service_account.deployer.email}"
+}
+
+# Plan also has to refresh the IAM binding above, which calls
+# `storage.buckets.getIamPolicy`. No stock GCP role grants only that
+# permission — `roles/storage.admin` and `roles/storage.legacyBucketOwner`
+# both include it but also grant bucket-delete and setIamPolicy, which the
+# deployer SA does not need. A custom role keeps the permission set
+# minimal: object IO via objectUser above, plus literally just this one
+# read permission, with no ability to mutate the bucket or its IAM policy.
+resource "google_project_iam_custom_role" "tfstate_iam_reader" {
+  project     = var.project_id
+  role_id     = "tfstateIamReader"
+  title       = "Terraform tfstate Bucket IAM Reader"
+  description = "Grants storage.buckets.getIamPolicy so terraform plan can refresh bucket-IAM binding state."
+  permissions = ["storage.buckets.getIamPolicy"]
+}
+
+resource "google_storage_bucket_iam_member" "deployer_tfstate_iam_reader" {
+  bucket = "${var.project_id}-tfstate"
+  role   = google_project_iam_custom_role.tfstate_iam_reader.name
+  member = "serviceAccount:${google_service_account.deployer.email}"
 }
 
 # ----------------------------------------------------------------------------
