@@ -648,6 +648,13 @@ def setup_commands(
             )
             return
 
+        # TODO: re-evaluate once the per-sheet format-set work lands. Today
+        # config.FORMAT_SHEETS is a single global {format -> tab} map, so
+        # every registered sheet must carry every tab. Once Sheet 1 and
+        # Sheet 2 can advertise different format sets (e.g. Sheet 1: "Reg
+        # F"/"Reg I"; Sheet 2: "Reg I"/"Reg M-A"), this rigid all-or-nothing
+        # check will reject legitimate sheets and needs to flip to "at least
+        # one known format tab exists" (or whatever the new contract is).
         missing_tabs = [t for t in config.FORMAT_SHEETS.values() if t not in tabs]
         if missing_tabs:
             await interaction.followup.send(
