@@ -27,11 +27,14 @@ locals {
     "iap.googleapis.com",
     "compute.googleapis.com",
     "artifactregistry.googleapis.com",
-    # iam.googleapis.com is needed for any service-account CRUD. Locally it
-    # gets auto-enabled the first time you create an SA via gcloud/console,
-    # which is why apply has always worked from a laptop. Plan-from-CI hits
-    # it via the deployer SA before it's ever been "used" by that consumer
-    # and gets a SERVICE_DISABLED 403, so list it explicitly.
+    # cloudresourcemanager and iam are tracked here so they're protected
+    # against accidental disable, but the very first enablement of both has
+    # to happen manually via gcloud — terraform's `google_project_service`
+    # itself goes through Cloud Resource Manager, so it can't bootstrap CRM
+    # from nothing, and `google_service_account` needs IAM API just to read
+    # state. See infra/terraform/README.md §2 for the one-time gcloud
+    # commands. After the manual bootstrap these stay terraform-managed.
+    "cloudresourcemanager.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",

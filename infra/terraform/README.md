@@ -30,14 +30,28 @@ gcloud storage buckets update gs://$PROJECT-tfstate --versioning
 
 Versioning + soft-delete give you state-file rollback if a destructive apply ever lands by mistake.
 
-### 2. Configure variables
+### 2. Enable the bootstrap APIs
+
+Two APIs cannot be enabled by Terraform itself: `cloudresourcemanager.googleapis.com` (Terraform's own `google_project_service` resource depends on it) and `iam.googleapis.com` (required to read/manage service accounts during state refresh). Enable both manually, once, before the first `terraform apply`:
+
+```bash
+PROJECT=$(gcloud config get-value project)
+gcloud services enable cloudresourcemanager.googleapis.com --project="$PROJECT"
+gcloud services enable iam.googleapis.com --project="$PROJECT"
+```
+
+Both APIs are free. From this point on Terraform manages them via `required_apis` in `main.tf` — re-enabling them in code protects against an accidental disable, but the very first enablement has to happen out-of-band because of the chicken-and-egg.
+
+You may not have hit this if you previously created any service accounts via the gcloud CLI or the Cloud Console (those flows auto-enable both APIs as a side effect). It only surfaces on a truly fresh project, or when Terraform routes calls through a CI service account that has never used these APIs before.
+
+### 3. Configure variables
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
 $EDITOR terraform.tfvars   # fill in project_id, github_owner, guild_config, etc.
 ```
 
-### 3. Initialise and apply
+### 4. Initialise and apply
 
 ```bash
 PROJECT=$(gcloud config get-value project)
@@ -47,7 +61,7 @@ terraform apply
 
 On the first apply you may need to re-run if API enablement is slow to propagate (Google occasionally returns `accessNotConfigured` briefly even after `google_project_service` succeeds).
 
-### 4. Drop the Discord token into Secret Manager
+### 5. Drop the Discord token into Secret Manager
 
 The secret slot is Terraform-managed; its **value** is supplied out-of-band so the token never enters Terraform state.
 
@@ -55,7 +69,7 @@ The secret slot is Terraform-managed; its **value** is supplied out-of-band so t
 echo -n 'YOUR_BOT_TOKEN' | gcloud secrets versions add sketch-discord-token --data-file=-
 ```
 
-### 5. Share the spreadsheet with the VM's service account
+### 6. Share the spreadsheet with the VM's service account
 
 ```bash
 terraform output vm_service_account_email
@@ -63,7 +77,7 @@ terraform output vm_service_account_email
 
 Copy that email, open the target Google Sheet → **Share** → paste → **Editor** → uncheck "Notify people" → **Share**.
 
-### 6. Configure GitHub repository variables
+### 7. Configure GitHub repository variables
 
 In the repo's Settings → Secrets and variables → Actions → **Variables**:
 
@@ -80,7 +94,7 @@ In the repo's Settings → Secrets and variables → Actions → **Variables**:
 
 None of these are secrets — they're all public identifiers. `TF_GUILD_CONFIG` and `TF_DEV_GUILD_ID` only exist because `terraform.tfvars` is gitignored and the plan workflow needs the same variable values that your local `apply` uses. If you'd rather commit them, add a `guild_config.auto.tfvars` next to `main.tf` (Terraform auto-loads `*.auto.tfvars`) and skip these two repo variables.
 
-### 7. Remove GCP's auto-created public SSH/RDP rules (one-time)
+### 8. Remove GCP's auto-created public SSH/RDP rules (one-time)
 
 Default GCE firewall rules expose port 22 to the public internet. Terraform doesn't import them cleanly, so delete them by hand:
 
@@ -90,7 +104,7 @@ gcloud compute firewall-rules delete default-allow-ssh default-allow-rdp --quiet
 
 After this, SSH only flows through IAP (via `gcloud compute ssh --tunnel-through-iap`).
 
-### 8. Push to `main` to deploy the first image
+### 9. Push to `main` to deploy the first image
 
 Once GitHub Actions has its WIF credentials, `git push origin main` triggers the deploy workflow, which builds the image, pushes it, and restarts the VM service. The first push will succeed even though no image exists yet — the VM's systemd unit has `ExecStartPre=-docker pull` (the `-` makes pull non-fatal), so it will fail-fast on first boot until the deploy workflow has pushed an image. Run the deploy workflow once and the VM picks up the image on next restart.
 
@@ -184,8 +198,8 @@ gcloud compute ssh sketch --tunnel-through-iap --zone=us-west1-a \
 | Sheets API returns `ACCESS_TOKEN_SCOPE_INSUFFICIENT`                              | VM created without the `spreadsheets` scope alongside `cloud-platform`                      | The Terraform sets both; if the VM pre-dates Terraform, recreate it (or `set-service-account` with both scopes)  |
 | `discord.errors.LoginFailure: Improper token has been passed`                     | Wrong secret content (e.g., Client Secret instead of Bot Token)                             | Add a new version of `sketch-discord-token` with the real bot token; restart                                     |
 | `403 Missing Access` on `tree.sync`                                               | `dev_guild_id` points at a guild the bot isn't installed in                                 | Fix `terraform.tfvars`, re-apply, reboot the VM                                                                  |
-| `403 The caller does not have permission` from Sheets API                         | VM's service account isn't shared on the spreadsheet                                        | Re-run step 5 with the email from `terraform output vm_service_account_email`                                    |
-| `gcloud compute ssh` times out after firewall lockdown                            | Missing `--tunnel-through-iap`, IAP API disabled, or user missing `iap.tunnelResourceAccessor`| Add the flag; run the project IAM binding from §7 / make sure your user has `roles/iap.tunnelResourceAccessor`   |
+| `403 The caller does not have permission` from Sheets API                         | VM's service account isn't shared on the spreadsheet                                        | Re-run step 6 with the email from `terraform output vm_service_account_email`                                    |
+| `gcloud compute ssh` times out after firewall lockdown                            | Missing `--tunnel-through-iap`, IAP API disabled, or user missing `iap.tunnelResourceAccessor`| Add the flag; run the project IAM binding from §8 / make sure your user has `roles/iap.tunnelResourceAccessor`   |
 | GitHub Actions auth fails: `Unable to acquire impersonation credentials`          | WIF principal binding mismatched (wrong repo or branch) or `iam.workloadIdentityUser` not granted | Verify `attribute_condition` in `main.tf` matches the repo; confirm the `deployer_wif` binding exists            |
 
 ## Why these choices
