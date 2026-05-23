@@ -16,6 +16,15 @@ Pokémon names support **prefix-group matching** against the DEX sheet:
 `Charizard` matches base + both megas; `Charizard-Mega-Y` matches only Mega-Y.
 Typos return a "did you mean" suggestion.
 
+### Admin commands (Manage Server)
+
+Server admins can self-configure the bot without any operator intervention. All four are gated with Discord's **Manage Server** permission and are hidden in DMs.
+
+- `/register-sheet spreadsheet_id:<id>` — register or replace the Google Sheet this server writes to. Required after the first install. The bot probes the sheet for access *before* persisting, so a typo or missing share doesn't break the guild.
+- `/set-broadcast-channel channel:<#channel>` — announce every successful `/add-team` in `<#channel>`. Requires a registered sheet.
+- `/clear-broadcast-channel` — stop broadcasting `/add-team` announcements.
+- `/show-config` — display the server's current spreadsheet + broadcast channel.
+
 ## Setup
 
 ### 1. Discord application
@@ -51,7 +60,9 @@ Fill in `.env`:
 
 Per-guild routing (`spreadsheet_id`, optional `broadcast_channel_id`) lives in a Firestore collection named `guild_configs`, one document per guild (doc ID = guild ID). The bot refuses commands from any guild that doesn't have a doc, and each listed spreadsheet must be shared with the bot's service account as Editor.
 
-Add or update a guild with the seed script:
+The **canonical path** to configure a guild is the admin slash commands above (`/register-sheet`, `/set-broadcast-channel`, `/clear-broadcast-channel`) — they write through to Firestore *and* update the bot's in-memory cache in the same call, so changes take effect immediately without a restart.
+
+The seed script (`bin/seed_guilds.py`) is kept as an operator backstop for the rare cases the slash commands can't cover — for example, bootstrapping a new install before anyone has Manage Server access, or recovering a guild whose admins lost the permission:
 
 ```bash
 python bin/seed_guilds.py 123456789012345678 \
@@ -59,11 +70,11 @@ python bin/seed_guilds.py 123456789012345678 \
   --broadcast-channel-id 112233445566778899
 ```
 
-The bot serves multiple guilds from one process — install the same bot in a personal debug server and a shared production server, mapped to different sheets, and one container handles both. Spreadsheet IDs are restricted to `[A-Za-z0-9_-]`; validation runs at write time in the seed script.
+The bot serves multiple guilds from one process — install the same bot in a personal debug server and a shared production server, mapped to different sheets, and one container handles both. Spreadsheet IDs are restricted to `[A-Za-z0-9_-]`; the same validation runs in both write paths.
 
-`broadcast_channel_id` is **optional**. When set, every successful `/add-team` posts a public embed to that channel announcing the new team (regardless of which channel the command was invoked from). Omit it (or pass `--clear-broadcast` to remove an existing value) to disable broadcasts for a guild. The bot needs **Send Messages** and **Embed Links** in the broadcast channel; if it doesn't, the write still succeeds and a warning is logged. The channel ID is a Discord snowflake string (right-click the channel → Copy Channel ID with Developer Mode enabled).
+`broadcast_channel_id` is **optional**. When set, every successful `/add-team` posts a public embed to that channel announcing the new team (regardless of which channel the command was invoked from). The bot needs **Send Messages** and **Embed Links** in the broadcast channel; if it doesn't, the write still succeeds and a warning is logged.
 
-Guild config changes take effect on the next bot restart — the in-memory cache is loaded once at startup.
+Seed-script writes still require a restart for the bot to pick them up (the in-memory cache is loaded once at startup); slash-command writes do not.
 
 Set up Google auth via **Application Default Credentials**. Pick one:
 
@@ -100,7 +111,7 @@ The bot ships as a container running under systemd on a GCE `e2-micro`. Infrastr
 
 - **First-time setup**: see [infra/terraform/README.md](infra/terraform/README.md) — a `terraform apply` provisions the VM, secret, Firestore database, Artifact Registry, and Workload Identity Federation.
 - **Updating the bot**: merge to `main`. The `Deploy` workflow builds the image, pushes to Artifact Registry, and restarts the VM service via IAP SSH.
-- **Adding or updating a guild**: run `python bin/seed_guilds.py <guild_id> --spreadsheet-id <id> [--broadcast-channel-id <id>]` under ADC; restart the bot (`gcloud compute ssh sketch --tunnel-through-iap --zone=… --command="sudo systemctl restart sketch"`).
+- **Adding or updating a guild**: have a server admin run `/register-sheet`, `/set-broadcast-channel`, etc. — no operator intervention or restart needed. The `bin/seed_guilds.py` script is kept around for backstop cases (see "Per-guild configuration" above); it writes to the same collection but requires a `sudo systemctl restart sketch` to take effect.
 - **Rolling back**: trigger the `Deploy` workflow via *Run workflow* in the Actions tab and provide a previous `:sha-<sha>` tag as `image_tag`.
 
 ## Adding a new format / sheet tab

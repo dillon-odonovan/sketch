@@ -114,6 +114,45 @@ class SheetsClient:
         # block discord.py's event loop while a request is in flight.
         return await asyncio.to_thread(fn, *args, **kwargs)
 
+    async def list_tab_names(self) -> list[str]:
+        """Return every sheet tab title in the spreadsheet.
+
+        Used as the access probe for `/register-sheet`: this method only
+        returns the names; the command handler (`commands.register_sheet`)
+        is responsible for cross-checking them against
+        `config.FORMAT_SHEETS.values()` and refusing the registration if
+        any required format tab is missing.
+
+        Any exception (HttpError 403 if the bot's service account isn't
+        shared on the sheet, 404 if the ID doesn't exist, transient socket
+        failure, etc.) propagates to the caller so the command handler can
+        translate to an actionable refusal — wrapping or swallowing here
+        would collapse access-denied and not-found into one generic.
+        """
+        meta = await self._run(
+            self._service.spreadsheets()
+            .get(
+                spreadsheetId=self._spreadsheet_id,
+                # `sheets(properties(title))` is Sheets API field-mask
+                # syntax: return only the `title` member of each sheet's
+                # `properties` block, skipping `sheetId`, `index`,
+                # `sheetType`, gridProperties, etc. that we don't need.
+                # https://developers.google.com/sheets/api/guides/field-masks
+                fields="sheets(properties(title))",
+            )
+            .execute,
+            num_retries=_API_RETRIES,
+        )
+        # `sheets` is a list of SheetProperties wrappers; each has a nested
+        # `properties` object containing the actual `title`. The defensive
+        # presence checks guard against a malformed response (e.g. a future
+        # API shape with optional sub-objects) — they shouldn't fire today.
+        return [
+            s["properties"]["title"]
+            for s in meta.get("sheets", [])
+            if "properties" in s and "title" in s["properties"]
+        ]
+
     async def _get_sheet_id(self, sheet_name: str) -> int:
         if sheet_name in self._sheet_id_cache:
             return self._sheet_id_cache[sheet_name]
@@ -474,3 +513,25 @@ class SheetsClientRegistry:
             client = SheetsClient(self._service, cfg.spreadsheet_id)
             self._clients[guild_id] = client
         return client
+
+    def invalidate(self, guild_id: int) -> None:
+        """Evict the cached SheetsClient for `guild_id`.
+
+        Call this after the guild's `spreadsheet_id` changes — the cached
+        client is bound to the old ID (and its `_sheet_id_cache`, `_dex`,
+        and snapshot caches are keyed against it), so reusing it would
+        silently route writes to the wrong spreadsheet. The next
+        `get(guild_id)` lazily rebuilds the client against the fresh config.
+        """
+        self._clients.pop(guild_id, None)
+
+    def build_probe_client(self, spreadsheet_id: str) -> SheetsClient:
+        """Build a one-off SheetsClient pointed at `spreadsheet_id`, without
+        consulting the store.
+
+        Used by `/register-sheet` to verify the bot's service account has
+        access *before* the new ID is persisted, so a bad write doesn't
+        leave the guild in a broken state. The returned client is not
+        cached — callers should drop the reference once the probe completes.
+        """
+        return SheetsClient(self._service, spreadsheet_id)

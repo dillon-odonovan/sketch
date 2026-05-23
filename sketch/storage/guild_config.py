@@ -3,11 +3,10 @@ to, and where (if anywhere) should successful /add-team calls broadcast?
 
 Backed by a Firestore collection — one document per guild, doc_id = the
 Discord guild_id (as a string). Terraform provisions the empty database; the
-contents are populated by `bin/seed_guilds.py` today and by a future
-`/register-guild` slash command. Keeping guild data out of Terraform means
-server owners can self-register without anyone running `terraform apply`,
-and removes the "tfvars edit / apply / VM reset" trap that earlier env-var
-plumbing fell into.
+contents are populated by the `/register-sheet` and broadcast-channel slash
+commands (`commands.py`). `bin/seed_guilds.py` is kept around as an
+operator backstop for the rare case where the bot can't perform the write
+itself (e.g. first-install bootstrapping under unusual permissions).
 
 The `GuildConfigStore` Protocol is the contract command handlers depend on.
 The bot constructs `FirestoreGuildConfigStore` at startup; tests use
@@ -17,11 +16,10 @@ The bot constructs `FirestoreGuildConfigStore` at startup; tests use
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from dataclasses import dataclass, replace
+from typing import Protocol
 
-if TYPE_CHECKING:
-    from google.cloud import firestore
+from google.cloud import firestore
 
 logger = logging.getLogger(__name__)
 
@@ -41,24 +39,43 @@ class GuildConfig:
 
 
 class GuildConfigStore(Protocol):
-    """Lookup of `guild_id -> GuildConfig`. Returns None for unconfigured guilds.
+    """Lookup + mutation of `guild_id -> GuildConfig`.
 
-    Sync by design: callers run inside discord.py's event loop and the
-    in-memory dict lookup is microsecond-fast. The Firestore-backed impl
-    loads all docs at startup into an in-process dict to preserve that
-    property — per-lookup RPCs would push 5-50ms of network latency into
-    every slash command.
+    Reads return None for unconfigured guilds. Writes are synchronous from
+    the caller's perspective (the Firestore-backed impl performs a blocking
+    RPC); admin slash-command handlers wrap them in `asyncio.to_thread` so
+    the event loop isn't blocked while the network call is in flight.
+
+    The broadcast-channel mutators require the guild to already have a
+    spreadsheet_id — without one, the bot refuses every command and a
+    broadcast channel would be meaningless. Callers should check `get()`
+    first and refuse with a friendly message; the store raises `LookupError`
+    as defense in depth.
     """
 
     def get(self, guild_id: int) -> GuildConfig | None: ...
 
+    def set_spreadsheet_id(self, guild_id: int, spreadsheet_id: str) -> GuildConfig: ...
+
+    def set_broadcast_channel_id(
+        self, guild_id: int, channel_id: int
+    ) -> GuildConfig: ...
+
+    def clear_broadcast_channel_id(self, guild_id: int) -> GuildConfig: ...
+
 
 class StaticGuildConfigStore:
-    """In-memory store. Immutable after construction. Used by tests and as the
-    backing store for FirestoreGuildConfigStore's snapshot."""
+    """In-memory store. Mutable; used by tests that need to exercise the write
+    methods without standing up a Firestore client.
 
-    def __init__(self, mapping: dict[int, GuildConfig]) -> None:
-        self._mapping = dict(mapping)
+    Not used in production today — `FirestoreGuildConfigStore` is the
+    canonical implementation. Kept compatible with the full protocol so a
+    future test against `setup_commands` can drive admin commands end-to-end
+    with no Firestore dependency.
+    """
+
+    def __init__(self, mapping: dict[int, GuildConfig] | None = None) -> None:
+        self._mapping: dict[int, GuildConfig] = dict(mapping or {})
 
     def get(self, guild_id: int) -> GuildConfig | None:
         return self._mapping.get(guild_id)
@@ -67,21 +84,52 @@ class StaticGuildConfigStore:
         """For diagnostic logging at startup."""
         return list(self._mapping.keys())
 
+    def set_spreadsheet_id(self, guild_id: int, spreadsheet_id: str) -> GuildConfig:
+        existing = self._mapping.get(guild_id)
+        new_cfg = (
+            replace(existing, spreadsheet_id=spreadsheet_id)
+            if existing is not None
+            else GuildConfig(spreadsheet_id=spreadsheet_id)
+        )
+        self._mapping[guild_id] = new_cfg
+        return new_cfg
+
+    def set_broadcast_channel_id(self, guild_id: int, channel_id: int) -> GuildConfig:
+        existing = self._mapping.get(guild_id)
+        if existing is None:
+            raise LookupError(
+                f"Cannot set broadcast channel for unconfigured guild {guild_id}"
+            )
+        new_cfg = replace(existing, broadcast_channel_id=channel_id)
+        self._mapping[guild_id] = new_cfg
+        return new_cfg
+
+    def clear_broadcast_channel_id(self, guild_id: int) -> GuildConfig:
+        existing = self._mapping.get(guild_id)
+        if existing is None:
+            raise LookupError(
+                f"Cannot clear broadcast channel for unconfigured guild {guild_id}"
+            )
+        new_cfg = replace(existing, broadcast_channel_id=None)
+        self._mapping[guild_id] = new_cfg
+        return new_cfg
+
 
 class FirestoreGuildConfigStore:
-    """Loads every guild_configs doc into an in-memory dict at construction.
+    """Loads every guild_configs doc into an in-memory dict at construction,
+    and write-through updates both Firestore and the in-memory dict in one
+    call so newly-registered guilds become routable immediately.
 
-    Trade-off: the bot never re-fetches during a session, so a guild added
-    via `bin/seed_guilds.py` requires a restart to take effect. That's
-    intentional for now — single-process bot, no cross-instance invalidation
-    problem, no background refresh complexity. When `/register-guild` lands
-    it will write through to both Firestore and `self._mapping` in the same
-    call (`register(guild_id, config)`), so newly-registered guilds become
-    routable immediately without a restart.
+    Trade-off vs. read-through-on-every-call: per-lookup RPCs would push
+    5–50ms of latency into every slash command, which is too much for a
+    hot-path like /search-teams. Write-through means we keep the in-memory
+    speed without a cross-instance invalidation problem (single process) and
+    without a TTL-based refresh that would defer config changes by an
+    unpredictable interval.
 
-    Malformed documents are logged and skipped rather than crashing the bot.
-    Strict crash-at-startup made sense for hand-edited env JSON; for a
-    datastore, refusing to boot the whole bot over one bad doc would block
+    Malformed documents are logged and skipped at load time rather than
+    crashing the bot. Strict crash-at-startup made sense for hand-edited env
+    JSON; for a datastore, refusing to boot over one bad doc would block
     every other guild for no good reason.
     """
 
@@ -117,12 +165,61 @@ class FirestoreGuildConfigStore:
     def configured_guild_ids(self) -> list[int]:
         return list(self._mapping.keys())
 
+    def set_spreadsheet_id(self, guild_id: int, spreadsheet_id: str) -> GuildConfig:
+        # merge=True so we don't wipe a pre-existing broadcast_channel_id on
+        # the same doc.
+        self._doc(guild_id).set({"spreadsheet_id": spreadsheet_id}, merge=True)
+        existing = self._mapping.get(guild_id)
+        new_cfg = (
+            replace(existing, spreadsheet_id=spreadsheet_id)
+            if existing is not None
+            else GuildConfig(spreadsheet_id=spreadsheet_id)
+        )
+        self._mapping[guild_id] = new_cfg
+        return new_cfg
+
+    def set_broadcast_channel_id(self, guild_id: int, channel_id: int) -> GuildConfig:
+        existing = self._mapping.get(guild_id)
+        if existing is None:
+            raise LookupError(
+                f"Cannot set broadcast channel for unconfigured guild {guild_id}"
+            )
+        # Stored as a string to match the shape bin/seed_guilds.py writes,
+        # so _parse_doc's snowflake-string parsing handles both paths
+        # identically on the next bot restart.
+        self._doc(guild_id).set({"broadcast_channel_id": str(channel_id)}, merge=True)
+        new_cfg = replace(existing, broadcast_channel_id=channel_id)
+        self._mapping[guild_id] = new_cfg
+        return new_cfg
+
+    def clear_broadcast_channel_id(self, guild_id: int) -> GuildConfig:
+        existing = self._mapping.get(guild_id)
+        if existing is None:
+            raise LookupError(
+                f"Cannot clear broadcast channel for unconfigured guild {guild_id}"
+            )
+        # firestore.DELETE_FIELD is a sentinel that, with merge=True, REMOVES
+        # the field from the doc rather than setting it to null. That keeps
+        # the on-disk shape consistent with "broadcast was never set" (field
+        # absent), so _parse_doc on the next bot boot takes the simple
+        # absent-key branch instead of the explicit-null branch.
+        self._doc(guild_id).set(
+            {"broadcast_channel_id": firestore.DELETE_FIELD}, merge=True
+        )
+        new_cfg = replace(existing, broadcast_channel_id=None)
+        self._mapping[guild_id] = new_cfg
+        return new_cfg
+
+    def _doc(self, guild_id: int):
+        return self._client.collection(GUILD_CONFIGS_COLLECTION).document(str(guild_id))
+
 
 def _parse_doc(doc_id: str, data: dict) -> GuildConfig | None:
     """Build a GuildConfig from a Firestore doc, or return None + log on
     malformed input. Validation is intentionally lenient — write-time
-    validation in bin/seed_guilds.py is the real gate; this is defense in
-    depth against direct console edits or schema drift.
+    validation in the slash-command handlers (and bin/seed_guilds.py) is
+    the real gate; this is defense in depth against direct console edits
+    or schema drift.
     """
     spreadsheet_id = data.get("spreadsheet_id")
     if not isinstance(spreadsheet_id, str) or not spreadsheet_id:

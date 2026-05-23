@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """Write or overwrite a guild config document in Firestore.
 
-This is the human-facing path for adding/editing guilds today. The future
-/register-guild slash command will write to the same collection at runtime;
-both paths share `sketch.storage.guild_config.GUILD_CONFIGS_COLLECTION` so
-they cannot drift.
+Operator backstop. The canonical path is now the `/register-sheet`,
+`/set-broadcast-channel`, and `/clear-broadcast-channel` slash commands,
+which write to the same collection at runtime AND update the bot's
+in-memory cache so changes take effect without a restart. Both paths share
+`sketch.storage.guild_config.GUILD_CONFIGS_COLLECTION` so they cannot
+drift.
+
+Reach for this script when the slash commands aren't available — typically
+during a fresh install before anyone has Manage Server, or when recovering
+from a misconfigured guild whose admins lost the permission. After running
+it, restart the bot so the in-memory snapshot picks up the change.
 
 Auth uses Application Default Credentials. Run under
 `gcloud auth application-default login` locally, or attach a service
@@ -13,7 +20,7 @@ ADC's quota project — pass --project to override.
 
 Validation runs at write time (the bot's read path is permissive on purpose,
 so a bad value never crashes the whole bot). The patterns here mirror what
-the env-var parser used to enforce.
+the slash-command handlers enforce.
 
 Usage:
     python bin/seed_guilds.py 1506464289777647747 \\
