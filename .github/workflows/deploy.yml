@@ -19,6 +19,7 @@ on:
 permissions:
   contents: read
   id-token: write # required by google-github-actions/auth for OIDC
+  statuses: write # post Deploy commit status so failures surface on the commit page
 
 concurrency:
   group: deploy-production
@@ -37,6 +38,17 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
     steps:
+      - name: Mark deploy as pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/$SHA" \
+            -f state=pending \
+            -f context="Deploy" \
+            -f description="Deploying to production…" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
       - uses: actions/checkout@v4
         with:
           # workflow_run defaults to checking out the default branch; pin to the
@@ -107,3 +119,21 @@ jobs:
             --quiet)
           echo "Service status: $STATUS"
           test "$STATUS" = "active"
+
+      - name: Report deploy result
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          case "$JOB_STATUS" in
+            success)   STATE=success; DESC="Deploy succeeded" ;;
+            cancelled) STATE=error;   DESC="Deploy cancelled" ;;
+            *)         STATE=failure; DESC="Deploy failed" ;;
+          esac
+          gh api "repos/${{ github.repository }}/statuses/$SHA" \
+            -f state="$STATE" \
+            -f context="Deploy" \
+            -f description="$DESC" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

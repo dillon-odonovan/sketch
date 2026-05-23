@@ -9,7 +9,10 @@ github_repo  = "sketch"
 # on every listed sheet as an Editor.
 guild_config = {
   "123456789012345678" = { spreadsheet_id = "your-google-spreadsheet-id" }
-  # "987654321098765432" = { spreadsheet_id = "another-spreadsheet-id" }
+  # Optional broadcast_channel_id: when set, every successful /add-team posts
+  # a public "new team added" embed to that channel. Quote the channel ID — it
+  # is a 64-bit Discord snowflake. Bot needs Send Messages + Embed Links there.
+  # "987654321098765432" = { spreadsheet_id = "another-spreadsheet-id", broadcast_channel_id = "112233445566778899" }
 }
 
 # Optional — uncomment to override defaults.
