@@ -97,6 +97,13 @@ class TestParseGuildConfigJson:
         result = parse_guild_config_json(raw)
         assert result[123].broadcast_channel_id is None
 
+    def test_broadcast_channel_id_null_treated_as_absent(self):
+        # Terraform's optional(string) encodes unset values as JSON null; the
+        # parser must treat that the same as omitting the key.
+        raw = _dump({"123": {"spreadsheet_id": "abc", "broadcast_channel_id": None}})
+        result = parse_guild_config_json(raw)
+        assert result[123].broadcast_channel_id is None
+
     def test_broadcast_channel_id_non_numeric_raises(self):
         raw = _dump(
             {

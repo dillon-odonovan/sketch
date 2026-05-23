@@ -57,6 +57,11 @@ async def _broadcast_team_added(
     they're available, or None if the broadcast couldn't be sent. Never raises
     into the caller — broadcast failures must not fail the user's command.
     """
+    logger.info(
+        "Broadcasting team to channel_id=%s for guild_id=%s",
+        channel_id,
+        interaction.guild_id,
+    )
     channel = interaction.client.get_channel(channel_id)
     if channel is None:
         logger.warning(
@@ -237,6 +242,12 @@ def setup_commands(
                 fmt_name=fmt_name,
                 url=url,
                 description=description,
+            )
+        else:
+            logger.info(
+                "Skipping broadcast for guild_id=%s: no broadcast_channel_id "
+                "configured",
+                interaction.guild_id,
             )
 
         species = await _await_species(sheets, sheet_name, row)

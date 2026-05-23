@@ -77,7 +77,10 @@ def parse_guild_config_json(raw: str) -> dict[int, GuildConfig]:
       optional `broadcast_channel_id` (numeric snowflake string). Unknown keys
       are rejected.
     - `spreadsheet_id` must match Google's URL-safe charset
-    - `broadcast_channel_id`, when present, must be a non-empty numeric string
+    - `broadcast_channel_id`, when present and non-null, must be a non-empty
+      numeric string. An explicit JSON `null` is treated the same as the key
+      being absent — Terraform's `optional(string)` encodes unset values as
+      `null`, so being lenient here keeps the env-var payload portable.
     - Empty `{}` is rejected — a bot with zero configured guilds is almost
       certainly a misconfiguration
     """
@@ -132,8 +135,8 @@ def parse_guild_config_json(raw: str) -> dict[int, GuildConfig]:
             )
 
         broadcast_channel_id: int | None = None
-        if "broadcast_channel_id" in value:
-            raw_channel = value["broadcast_channel_id"]
+        raw_channel = value.get("broadcast_channel_id")
+        if raw_channel is not None:
             if not isinstance(raw_channel, str) or not _SNOWFLAKE_RE.match(raw_channel):
                 raise ValueError(
                     f"GUILD_CONFIG_JSON guild {guild_id} has broadcast_channel_id "

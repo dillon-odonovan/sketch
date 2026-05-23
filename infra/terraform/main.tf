@@ -175,12 +175,20 @@ resource "google_compute_instance" "sketch" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup.sh.tftpl", {
-    region             = var.region
-    image_url          = local.image_url
-    project_id         = var.project_id
-    dev_guild_id       = var.dev_guild_id
-    guild_config_json  = jsonencode(var.guild_config)
-    sketch_service     = file("${path.module}/../../deploy/sketch.service")
+    region       = var.region
+    image_url    = local.image_url
+    project_id   = var.project_id
+    dev_guild_id = var.dev_guild_id
+    # Drop unset broadcast_channel_id entries before encoding so the JSON the
+    # Python validator parses doesn't carry an explicit null for guilds that
+    # don't broadcast — keeps the env-var payload clean either way.
+    guild_config_json = jsonencode({
+      for guild_id, cfg in var.guild_config : guild_id => merge(
+        { spreadsheet_id = cfg.spreadsheet_id },
+        cfg.broadcast_channel_id != null ? { broadcast_channel_id = cfg.broadcast_channel_id } : {}
+      )
+    })
+    sketch_service = file("${path.module}/../../deploy/sketch.service")
   })
 
   allow_stopping_for_update = true
