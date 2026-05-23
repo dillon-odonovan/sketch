@@ -299,24 +299,33 @@ resource "google_project_iam_member" "deployer_service_usage_consumer" {
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
-# Plan in CI also runs `terraform init` against the GCS state backend and
-# acquires the state lock, so the deployer needs read+write on state objects.
-# The bucket itself is bootstrap-created out-of-band (chicken-and-egg with the
-# backend); we only bind IAM here.
+# Plan in CI runs `terraform init` against the GCS state backend and
+# acquires the state lock — both are object-level operations covered by
+# `storage.objectUser`.
 resource "google_storage_bucket_iam_member" "deployer_tfstate_access" {
   bucket = "${var.project_id}-tfstate"
   role   = "roles/storage.objectUser"
   member = "serviceAccount:${google_service_account.deployer.email}"
 }
 
-# Refreshing state for the binding above requires `storage.buckets.getIamPolicy`
-# on the bucket — terraform's `iam_member` resource reads the current bucket
-# policy on every plan to decide whether the member needs adding. `objectUser`
-# is object-scoped and doesn't grant bucket-level IAM reads, so we layer on
-# `legacyBucketReader`, which is the narrowest role that includes it.
+# Plan also has to refresh the IAM binding above, which calls
+# `storage.buckets.getIamPolicy`. No stock GCP role grants only that
+# permission — `roles/storage.admin` and `roles/storage.legacyBucketOwner`
+# both include it but also grant bucket-delete and setIamPolicy, which the
+# deployer SA does not need. A custom role keeps the permission set
+# minimal: object IO via objectUser above, plus literally just this one
+# read permission, with no ability to mutate the bucket or its IAM policy.
+resource "google_project_iam_custom_role" "tfstate_iam_reader" {
+  project     = var.project_id
+  role_id     = "tfstateIamReader"
+  title       = "Terraform tfstate Bucket IAM Reader"
+  description = "Grants storage.buckets.getIamPolicy so terraform plan can refresh bucket-IAM binding state."
+  permissions = ["storage.buckets.getIamPolicy"]
+}
+
 resource "google_storage_bucket_iam_member" "deployer_tfstate_iam_reader" {
   bucket = "${var.project_id}-tfstate"
-  role   = "roles/storage.legacyBucketReader"
+  role   = google_project_iam_custom_role.tfstate_iam_reader.name
   member = "serviceAccount:${google_service_account.deployer.email}"
 }
 
