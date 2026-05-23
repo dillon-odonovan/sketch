@@ -17,7 +17,7 @@ composition stays a pure boolean operation. The matcher itself is covered by
 
 import pytest
 
-from sketch.commands import _filter_team_rows
+from sketch.commands import _SPREADSHEET_ID_RE, _filter_team_rows, _spreadsheet_link
 from sketch.search.text_search import DescriptionIndex
 from sketch.storage.sheets_client import TeamRow
 
@@ -336,3 +336,50 @@ class TestDescriptionPipeline:
             url_target=None,
         )
         assert [r.row_number for r in result] == [4]
+
+
+class TestSpreadsheetIdValidation:
+    """The /register-sheet gate. Same charset bin/seed_guilds.py enforces —
+    if these diverge, an admin could register via slash command an ID the
+    operator backstop would reject, surprising whoever runs the seed
+    script next."""
+
+    @pytest.mark.parametrize(
+        "good",
+        [
+            "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+            "abc_def-ghi",
+            "A",
+        ],
+    )
+    def test_accepts_well_formed_ids(self, good):
+        assert _SPREADSHEET_ID_RE.match(good) is not None
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            # Most common paste-the-whole-URL mistake.
+            "https://docs.google.com/spreadsheets/d/abc/edit",
+            # Whitespace anywhere.
+            " abc",
+            "abc ",
+            "ab c",
+            # Punctuation outside the URL-safe set.
+            "abc/def",
+            "abc.def",
+        ],
+    )
+    def test_rejects_malformed_ids(self, bad):
+        assert _SPREADSHEET_ID_RE.match(bad) is None
+
+
+class TestSpreadsheetLink:
+    def test_renders_canonical_docs_url(self):
+        # The link shape is what users click after /register-sheet and
+        # /show-config; keep this stable so we don't surprise admins with
+        # a different host (e.g. a future /edit#gid= variant).
+        assert (
+            _spreadsheet_link("abc123")
+            == "https://docs.google.com/spreadsheets/d/abc123"
+        )

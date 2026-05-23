@@ -9,10 +9,18 @@ monkeypatching `time.monotonic` so concurrent tests don't perturb each
 other.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from sketch.search.text_search import DescriptionIndex
-from sketch.storage.sheets_client import SearchSnapshot, SheetsClient, TeamRow
+from sketch.storage.guild_config import GuildConfig, StaticGuildConfigStore
+from sketch.storage.sheets_client import (
+    SearchSnapshot,
+    SheetsClient,
+    SheetsClientRegistry,
+    TeamRow,
+)
 
 
 class _FakeRequest:
@@ -275,3 +283,127 @@ class TestDefaults:
         service = _FakeService(_SAMPLE_RESPONSE)
         client = SheetsClient(service, "test-spreadsheet-id")
         assert client._search_cache_ttl == config.SEARCH_CACHE_TTL_SECONDS
+
+
+class TestListTabNames:
+    """`/register-sheet` probes a candidate spreadsheet with this before
+    persisting, so the shape of the response (list of titles, exception on
+    access denied / missing sheet) is part of the public API."""
+
+    async def test_returns_titles_from_response(self):
+        service = _FakeService(
+            {
+                "sheets": [
+                    {"properties": {"title": "Reg M-A", "sheetId": 0}},
+                    {"properties": {"title": "DEX", "sheetId": 1}},
+                ]
+            }
+        )
+        client = SheetsClient(service, "test-spreadsheet-id")
+        assert await client.list_tab_names() == ["Reg M-A", "DEX"]
+
+    async def test_skips_malformed_entries(self):
+        # Defensive: if Google ever returns a sheets[] entry without
+        # properties.title (or partials in a future API shape), don't
+        # KeyError the whole probe — just drop that entry.
+        service = _FakeService(
+            {
+                "sheets": [
+                    {"properties": {"title": "Reg M-A"}},
+                    {"properties": {}},
+                    {},
+                ]
+            }
+        )
+        client = SheetsClient(service, "test-spreadsheet-id")
+        assert await client.list_tab_names() == ["Reg M-A"]
+
+    async def test_propagates_exceptions(self):
+        # The probe lets HttpError / transport errors escape so commands.py
+        # can translate to an actionable refusal ("sheet not shared with
+        # the bot's service account"). Wrapping or swallowing here would
+        # collapse access-denied and not-found into the same generic.
+        service = _FakeService({})
+
+        # `*args, **kwargs` so the patched function tolerates being called
+        # both as a bound method (where Python prepends `self`) and as the
+        # `execute(num_retries=N)` shape `_run` invokes.
+        def _raise(*args, **kwargs):
+            raise RuntimeError("403 Forbidden")
+
+        with patch.object(_FakeRequest, "execute", _raise):
+            client = SheetsClient(service, "test-spreadsheet-id")
+            with pytest.raises(RuntimeError, match="403"):
+                await client.list_tab_names()
+
+
+class TestSheetsClientRegistry:
+    """Cache-keyed-by-guild behavior, plus the invalidate hook used by
+    `/register-sheet` to drop a client whose spreadsheet_id changed."""
+
+    def _make_registry(self, store):
+        # SheetsClientRegistry.__init__ wires up google.auth + the discovery
+        # service. We don't want to touch the network — patch both and let
+        # the registry hold a stub service. The stub's identity is what we
+        # assert SheetsClients are built against.
+        sentinel_service = object()
+        with (
+            patch("sketch.storage.sheets_client.google.auth.default") as auth_mock,
+            patch("sketch.storage.sheets_client.build") as build_mock,
+        ):
+            auth_mock.return_value = (object(), None)
+            build_mock.return_value = sentinel_service
+            registry = SheetsClientRegistry(store)
+        return registry, sentinel_service
+
+    def test_get_returns_none_for_unconfigured_guild(self):
+        store = StaticGuildConfigStore()
+        registry, _ = self._make_registry(store)
+        assert registry.get(99) is None
+
+    def test_get_caches_per_guild(self):
+        store = StaticGuildConfigStore({42: GuildConfig(spreadsheet_id="sheet-A")})
+        registry, _ = self._make_registry(store)
+        first = registry.get(42)
+        second = registry.get(42)
+        # Same instance both calls — building per-call would drop the
+        # tab-id / DEX / snapshot caches on every slash command.
+        assert first is second
+
+    def test_invalidate_drops_cached_client(self):
+        # Drives the /register-sheet path: store updates first, then the
+        # registry is invalidated, then the next get rebuilds against the
+        # fresh spreadsheet_id from the store.
+        store = StaticGuildConfigStore({42: GuildConfig(spreadsheet_id="old")})
+        registry, _ = self._make_registry(store)
+        old_client = registry.get(42)
+        assert old_client is not None
+        assert old_client._spreadsheet_id == "old"
+
+        store.set_spreadsheet_id(42, "new")
+        registry.invalidate(42)
+
+        new_client = registry.get(42)
+        assert new_client is not None
+        assert new_client is not old_client
+        assert new_client._spreadsheet_id == "new"
+
+    def test_invalidate_unconfigured_guild_is_noop(self):
+        store = StaticGuildConfigStore()
+        registry, _ = self._make_registry(store)
+        registry.invalidate(99)  # must not raise even with empty cache
+
+    def test_build_probe_client_does_not_pollute_cache(self):
+        # /register-sheet probes a candidate ID before persisting — that
+        # probe MUST NOT end up in `_clients`, or a failed probe would
+        # leave the registry pinned to a sheet the bot can't read.
+        store = StaticGuildConfigStore({42: GuildConfig(spreadsheet_id="real")})
+        registry, _ = self._make_registry(store)
+        probe = registry.build_probe_client("candidate-id")
+        assert probe._spreadsheet_id == "candidate-id"
+        # Real lookup still hits the cache and returns the configured
+        # client, not the probe.
+        real = registry.get(42)
+        assert real is not None
+        assert real._spreadsheet_id == "real"
+        assert real is not probe

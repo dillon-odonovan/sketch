@@ -114,6 +114,30 @@ class SheetsClient:
         # block discord.py's event loop while a request is in flight.
         return await asyncio.to_thread(fn, *args, **kwargs)
 
+    async def list_tab_names(self) -> list[str]:
+        """Return every sheet tab title in the spreadsheet.
+
+        Used by `/register-sheet` to verify the bot's service account has
+        access AND that the expected format tabs are present, before
+        persisting a new `spreadsheet_id`. Any exception (HttpError 403/404,
+        transient socket failure, malformed ID) propagates to the caller so
+        the command handler can translate to an actionable refusal.
+        """
+        meta = await self._run(
+            self._service.spreadsheets()
+            .get(
+                spreadsheetId=self._spreadsheet_id,
+                fields="sheets(properties(title))",
+            )
+            .execute,
+            num_retries=_API_RETRIES,
+        )
+        return [
+            s["properties"]["title"]
+            for s in meta.get("sheets", [])
+            if "properties" in s and "title" in s["properties"]
+        ]
+
     async def _get_sheet_id(self, sheet_name: str) -> int:
         if sheet_name in self._sheet_id_cache:
             return self._sheet_id_cache[sheet_name]
@@ -474,3 +498,25 @@ class SheetsClientRegistry:
             client = SheetsClient(self._service, cfg.spreadsheet_id)
             self._clients[guild_id] = client
         return client
+
+    def invalidate(self, guild_id: int) -> None:
+        """Evict the cached SheetsClient for `guild_id`.
+
+        Call this after the guild's `spreadsheet_id` changes — the cached
+        client is bound to the old ID (and its `_sheet_id_cache`, `_dex`,
+        and snapshot caches are keyed against it), so reusing it would
+        silently route writes to the wrong spreadsheet. The next
+        `get(guild_id)` lazily rebuilds the client against the fresh config.
+        """
+        self._clients.pop(guild_id, None)
+
+    def build_probe_client(self, spreadsheet_id: str) -> SheetsClient:
+        """Build a one-off SheetsClient pointed at `spreadsheet_id`, without
+        consulting the store.
+
+        Used by `/register-sheet` to verify the bot's service account has
+        access *before* the new ID is persisted, so a bad write doesn't
+        leave the guild in a broken state. The returned client is not
+        cached — callers should drop the reference once the probe completes.
+        """
+        return SheetsClient(self._service, spreadsheet_id)
