@@ -1,4 +1,4 @@
-from dex import DexIndex
+from sketch.search.dex import DexIndex
 
 DEX_FIXTURE = [
     "Charizard",

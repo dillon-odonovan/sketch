@@ -6,7 +6,7 @@ synchronously without fixtures (mirrors `tests/test_dex_index.py`).
 
 import pytest
 
-from text_search import (
+from sketch.search.text_search import (
     SUBSTRING_MIN_TOKEN_LENGTH,
     DescriptionIndex,
     tokenize,

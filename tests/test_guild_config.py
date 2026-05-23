@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from guild_config import (
+from sketch.storage.guild_config import (
     GUILD_CONFIGS_COLLECTION,
     FirestoreGuildConfigStore,
     GuildConfig,

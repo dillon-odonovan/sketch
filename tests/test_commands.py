@@ -17,9 +17,9 @@ composition stays a pure boolean operation. The matcher itself is covered by
 
 import pytest
 
-from commands import _filter_team_rows
-from sheets_client import TeamRow
-from text_search import DescriptionIndex
+from sketch.commands import _filter_team_rows
+from sketch.search.text_search import DescriptionIndex
+from sketch.storage.sheets_client import TeamRow
 
 
 def _row(

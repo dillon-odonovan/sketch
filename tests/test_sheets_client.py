@@ -11,8 +11,8 @@ other.
 
 import pytest
 
-from sheets_client import SearchSnapshot, SheetsClient, TeamRow
-from text_search import DescriptionIndex
+from sketch.search.text_search import DescriptionIndex
+from sketch.storage.sheets_client import SearchSnapshot, SheetsClient, TeamRow
 
 
 class _FakeRequest:
@@ -270,7 +270,7 @@ class TestDefaults:
         # When `search_cache_ttl` is omitted, the client should consult
         # `config.SEARCH_CACHE_TTL_SECONDS`. This guards against the default
         # silently regressing to e.g. 0 (no caching) on a refactor.
-        import config
+        from sketch import config
 
         service = _FakeService(_SAMPLE_RESPONSE)
         client = SheetsClient(service, "test-spreadsheet-id")
