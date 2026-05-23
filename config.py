@@ -50,3 +50,14 @@ POLL_INTERVAL_SECONDS = 1.0
 POLL_TIMEOUT_SECONDS = 10.0
 
 SEARCH_RESULT_LIMIT = 15
+
+# How long a `/search-teams` result snapshot (sheet rows + the tokenized
+# description index built over them) stays valid in process memory before the
+# next /search-teams call re-fetches from Sheets. Trades responsiveness to new
+# /add-team rows against avoiding redundant Sheets fetches when the same user
+# iterates queries in quick succession. We deliberately do NOT invalidate this
+# cache on /add-team — the new row's species columns are populated async by an
+# AppsScript and take ~10s to settle anyway, so a sub-30s window of staleness
+# is already baked into the UX. If users routinely report "just-added team
+# doesn't show up", tighten to 10s or wire invalidation in /add-team.
+SEARCH_CACHE_TTL_SECONDS = 30.0

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +14,7 @@ import config
 from dex import DexIndex
 from guild_config import GuildConfigStore
 from pokepaste_validator import ValidationError, canonicalize_pokepaste_url
+from text_search import DescriptionIndex
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,33 @@ class TeamRow:
     species: list[str]
 
 
+@dataclass
+class SearchSnapshot:
+    """One point-in-time fetch of a sheet plus the index built over it.
+
+    `desc_index`'s row indices are positions into `rows` (NOT
+    `TeamRow.row_number`). The snapshot is treated as immutable after
+    construction and is safe to share across concurrent /search-teams calls.
+
+    Lives here (rather than in `text_search`) because `rows: list[TeamRow]`
+    would otherwise force `text_search` to import sheets-specific types,
+    polluting an otherwise pure-text module.
+    """
+
+    rows: list[TeamRow]
+    desc_index: DescriptionIndex
+
+    def match_rows(self, query: str) -> list[TeamRow]:
+        """Return the TeamRows whose description matches the tokenized `query`.
+
+        Convenience wrapper around `desc_index.match`. Result order follows
+        the snapshot's `rows` order (i.e., sheet order) so the embed shown to
+        the user is stable across queries that return overlapping sets.
+        """
+        indices = self.desc_index.match(query)
+        return [self.rows[i] for i in sorted(indices)]
+
+
 class SheetsClient:
     """Sheets operations against a single spreadsheet.
 
@@ -43,7 +73,14 @@ class SheetsClient:
     because their keys collide across spreadsheets.
     """
 
-    def __init__(self, service: Any, spreadsheet_id: str) -> None:
+    def __init__(
+        self,
+        service: Any,
+        spreadsheet_id: str,
+        *,
+        search_cache_ttl: float | None = None,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._service = service
         self._spreadsheet_id = spreadsheet_id
         self._sheet_id_cache: dict[str, int] = {}
@@ -52,6 +89,25 @@ class SheetsClient:
         # guild don't both fetch. Cheap to acquire on the fast path (when
         # _dex is already set, we don't even take it).
         self._dex_lock = asyncio.Lock()
+        # `now` and `search_cache_ttl` are injectable so tests can drive the
+        # cache deterministically without sleeping or monkeypatching `time`.
+        # Production callers should leave both at their defaults.
+        self._now = now
+        self._search_cache_ttl = (
+            search_cache_ttl
+            if search_cache_ttl is not None
+            else config.SEARCH_CACHE_TTL_SECONDS
+        )
+        # Keyed by sheet_name. Value is (snapshot, expires_at_monotonic).
+        # Each SheetsClient is per-guild, so cross-key collisions across
+        # guilds are impossible. Today every guild has exactly one configured
+        # sheet, so this dict has at most one entry — but keying by name
+        # keeps the door open to per-format snapshots without restructuring.
+        self._snapshot_cache: dict[str, tuple[SearchSnapshot, float]] = {}
+        # Single lock for snapshot cache mutation. Two concurrent first-uses
+        # for the same sheet must NOT both fetch; the second waiter sees the
+        # populated cache on recheck. Mirrors the `_dex_lock` pattern.
+        self._snapshot_lock = asyncio.Lock()
 
     async def _run(self, fn, *args, **kwargs):
         # google-api-python-client is synchronous. Offload calls so we don't
@@ -279,6 +335,49 @@ class SheetsClient:
                 species=[],
             )
         return None
+
+    async def get_search_snapshot(self, sheet_name: str) -> SearchSnapshot:
+        """Return rows + a tokenized description index, with a short TTL.
+
+        Builds on `search_rows` and adds a per-instance, per-sheet_name cache
+        with the TTL configured in `config.SEARCH_CACHE_TTL_SECONDS` (30s by
+        default). The TTL is intentionally short: a hard invalidation on
+        `/add-team` would race the species-poll AppsScript and complicate
+        the add path, while still-stale results past 30s are very rare in
+        practice. Failures are not cached, so a retry after fixing sheet
+        permissions still works.
+
+        Concurrency model:
+          - Fast path (cache hit, not expired): lockless dict read. Two
+            successive search calls in the same TTL window pay no Sheets
+            cost and reuse the same `SearchSnapshot` object.
+          - Slow path (miss or expired): acquire `_snapshot_lock`, recheck
+            under the lock, then fetch + build + store. Concurrent first-
+            uses for the same sheet collapse to a single fetch.
+        """
+        cached = self._snapshot_cache.get(sheet_name)
+        if cached is not None and cached[1] > self._now():
+            return cached[0]
+        async with self._snapshot_lock:
+            cached = self._snapshot_cache.get(sheet_name)
+            if cached is not None and cached[1] > self._now():
+                return cached[0]
+            rows = await self.search_rows(sheet_name)
+            desc_index = DescriptionIndex.from_descriptions(r.description for r in rows)
+            snapshot = SearchSnapshot(rows=rows, desc_index=desc_index)
+            self._snapshot_cache[sheet_name] = (
+                snapshot,
+                self._now() + self._search_cache_ttl,
+            )
+            logger.info(
+                "Built search snapshot for %s: %d rows, %d distinct "
+                "description tokens (ttl=%.1fs)",
+                sheet_name,
+                len(rows),
+                len(desc_index),
+                self._search_cache_ttl,
+            )
+            return snapshot
 
     async def search_rows(self, sheet_name: str) -> list[TeamRow]:
         resp = await self._run(
