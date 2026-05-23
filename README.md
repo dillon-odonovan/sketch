@@ -120,12 +120,12 @@ Edit `FORMAT_SHEETS` in [`sketch/config.py`](sketch/config.py):
 
 ```python
 FORMAT_SHEETS = {
-    "Reg M-A": "TeamBank Parser V1",
-    "Reg M-B": "TeamBank Parser V2",
+    "Reg M-A": "Regulation M-A",
+    "Reg F":   "Regulation F",
 }
 ```
 
-Restart the bot — the new format appears as a dropdown option on both commands.
+The key is the user-facing dropdown label in Discord; the value must match the tab name in the spreadsheet exactly. Restart the bot — the new format appears as a dropdown option on both commands.
 
 ## Security
 
