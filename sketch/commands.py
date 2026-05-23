@@ -562,12 +562,21 @@ def setup_commands(
     # --- Admin commands ---------------------------------------------------
     #
     # Self-service configuration so server admins don't need a bot operator to
-    # run `bin/seed_guilds.py`. All four are gated with
-    # `default_permissions(manage_guild=True)` (Discord's "Manage Server" gate
-    # — server owners can further restrict via Server Settings → Integrations)
-    # and marked guild-only so DMs don't surface them in the picker. The
-    # commands all defer ephemerally so error messages and config readouts
-    # stay private to the invoker.
+    # run `bin/seed_guilds.py`. All four are gated with two decorators:
+    #
+    #   @default_permissions(manage_guild=True)
+    #     Discord's "Manage Server" gate. Server owners can further restrict
+    #     via Server Settings → Integrations → <bot> → command permissions.
+    #
+    #   @guild_only()
+    #     Marks the command `dm_permission=False` in Discord's app-command
+    #     registry, so the Discord client hides it from the picker in DMs
+    #     and refuses delivery if a user types it there. Per-handler
+    #     `if guild_id is None: refuse` is defense in depth for the rare
+    #     case where a stale registration leaks past the client guard.
+    #
+    # The commands all defer ephemerally so error messages and config
+    # readouts stay private to the invoker.
 
     @tree.command(
         name="register-sheet",

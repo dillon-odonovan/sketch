@@ -17,10 +17,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
-if TYPE_CHECKING:
-    from google.cloud import firestore
+from google.cloud import firestore
 
 logger = logging.getLogger(__name__)
 
@@ -194,18 +193,18 @@ class FirestoreGuildConfigStore:
         return new_cfg
 
     def clear_broadcast_channel_id(self, guild_id: int) -> GuildConfig:
-        # Lazy import: the module-level TYPE_CHECKING guard keeps
-        # google.cloud.firestore out of import-time deps so tests using
-        # only StaticGuildConfigStore don't need the package installed.
-        from google.cloud import firestore as _firestore
-
         existing = self._mapping.get(guild_id)
         if existing is None:
             raise LookupError(
                 f"Cannot clear broadcast channel for unconfigured guild {guild_id}"
             )
+        # firestore.DELETE_FIELD is a sentinel that, with merge=True, REMOVES
+        # the field from the doc rather than setting it to null. That keeps
+        # the on-disk shape consistent with "broadcast was never set" (field
+        # absent), so _parse_doc on the next bot boot takes the simple
+        # absent-key branch instead of the explicit-null branch.
         self._doc(guild_id).set(
-            {"broadcast_channel_id": _firestore.DELETE_FIELD}, merge=True
+            {"broadcast_channel_id": firestore.DELETE_FIELD}, merge=True
         )
         new_cfg = replace(existing, broadcast_channel_id=None)
         self._mapping[guild_id] = new_cfg
