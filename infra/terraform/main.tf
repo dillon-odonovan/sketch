@@ -23,7 +23,7 @@ locals {
 
   # "(default)" is the sentinel name Firestore reserves for a project's
   # singleton database — not auto-generated. Naming it anything else would
-  # require every client (bot.py, bin/seed_guilds.py) to pass
+  # require every client (sketch.bot, bin/seed_guilds.py) to pass
   # `database="..."`, which `firestore.Client()` doesn't need today. Hoisted
   # to a local so the choice is visible from the top of the file.
   firestore_database_name = "(default)"

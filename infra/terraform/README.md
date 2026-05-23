@@ -188,7 +188,7 @@ gcloud compute ssh sketch --tunnel-through-iap --zone=us-west1-a \
   --command="sudo systemctl restart sketch"
 ```
 
-`entrypoint.py` always asks Secret Manager for `latest`, so no path needs updating.
+`sketch/__main__.py` always asks Secret Manager for `latest`, so no path needs updating.
 
 ### Inspecting the running container
 

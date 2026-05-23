@@ -17,4 +17,4 @@ COPY --chown=sketch:sketch . .
 
 USER sketch
 
-ENTRYPOINT ["python", "entrypoint.py"]
+ENTRYPOINT ["python", "-m", "sketch"]

@@ -43,7 +43,7 @@ def main() -> None:
         os.environ["DISCORD_TOKEN"] = _fetch_token_from_secret_manager()
 
     # Import after the token is in env so config.py's required-var check passes.
-    import bot
+    from sketch import bot
 
     bot.main()
 

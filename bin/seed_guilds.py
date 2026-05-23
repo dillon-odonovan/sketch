@@ -3,8 +3,8 @@
 
 This is the human-facing path for adding/editing guilds today. The future
 /register-guild slash command will write to the same collection at runtime;
-both paths share `guild_config.GUILD_CONFIGS_COLLECTION` so they cannot
-drift.
+both paths share `sketch.storage.guild_config.GUILD_CONFIGS_COLLECTION` so
+they cannot drift.
 
 Auth uses Application Default Credentials. Run under
 `gcloud auth application-default login` locally, or attach a service
@@ -37,7 +37,7 @@ from google.cloud import firestore
 # Importing the shared collection name keeps the seed script in sync with
 # the bot's read path. If we ever rename the collection, both update together.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
-from guild_config import GUILD_CONFIGS_COLLECTION  # noqa: E402
+from sketch.storage.guild_config import GUILD_CONFIGS_COLLECTION  # noqa: E402
 
 # Same validation the env-var parser used to enforce. Google Sheets IDs are
 # URL-safe-ish; Discord snowflakes are decimal integers serialized as strings
