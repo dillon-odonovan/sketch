@@ -50,3 +50,25 @@ POLL_INTERVAL_SECONDS = 1.0
 POLL_TIMEOUT_SECONDS = 10.0
 
 SEARCH_RESULT_LIMIT = 15
+
+# How long a `/search-teams` result snapshot (sheet rows + the tokenized
+# description index built over them) stays valid in process memory before
+# the next /search-teams call re-fetches from Sheets.
+#
+# Realistic hit profile: /add-team is infrequent (one can only add so many
+# distinct teams) and /search-teams sessions are typically minutes apart,
+# so MOST /search-teams calls will be cache misses. The cache exists to
+# amortize *bursts* — e.g., a user iterating queries within one session,
+# or a user running /add-team and then immediately /search-teams to
+# verify. Across separate sessions the TTL almost always expires first.
+#
+# Invalidation on /add-team (see SheetsClient.invalidate_snapshot) makes
+# the "add then search" pattern correct even when within a cached window.
+# The TTL itself serves two secondary roles: bound the staleness window
+# for direct-Sheet edits (Google UI bypassing the bot), and cap the
+# in-process memory held by long-idle guilds.
+#
+# 5 minutes captures session-length bursts comfortably while keeping
+# direct-Sheet-edit staleness bounded. Could go higher (15-30 min) if
+# we ever observe that within-session bursts routinely span longer.
+SEARCH_CACHE_TTL_SECONDS = 300.0
