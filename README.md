@@ -44,16 +44,26 @@ cp .env.example .env
 Fill in `.env`:
 
 - `DISCORD_TOKEN` — from step 1.
-- `DEV_GUILD_ID` — for instant slash-command sync in your dev server. Omit for global registration (~1 hour propagation). Note: this controls *where commands are registered for fast iteration*, not which guilds the bot serves — see `GUILD_CONFIG_JSON`.
-- `GUILD_CONFIG_JSON` — JSON map of `guild_id → {spreadsheet_id, broadcast_channel_id?}`. The bot refuses commands from any guild not listed here. Each spreadsheet must be shared with the bot's service account as Editor. Example:
+- `DEV_GUILD_ID` — for instant slash-command sync in your dev server. Omit for global registration (~1 hour propagation). Note: this controls *where commands are registered for fast iteration*, not which guilds the bot serves — see "Per-guild configuration" below.
+- `GCP_PROJECT` — your Google Cloud project ID. The bot reads guild config and the Discord token from this project. Locally, ADC's quota project is used as the fallback if you don't set this.
 
-  ```bash
-  GUILD_CONFIG_JSON='{"123456789012345678": {"spreadsheet_id": "1AbCd-Your_Sheet_Id", "broadcast_channel_id": "112233445566778899"}, "987654321098765432": {"spreadsheet_id": "1XyZw-Another_Sheet"}}'
-  ```
+#### Per-guild configuration (Firestore)
 
-  In shells that strip JSON escapes, single-quote the whole value as shown. Spreadsheet IDs are restricted to `[A-Za-z0-9_-]`. The bot serves multiple guilds from one process — install the same bot in both a personal debug server and a shared production server, mapped to different sheets, and one container handles both.
+Per-guild routing (`spreadsheet_id`, optional `broadcast_channel_id`) lives in a Firestore collection named `guild_configs`, one document per guild (doc ID = guild ID). The bot refuses commands from any guild that doesn't have a doc, and each listed spreadsheet must be shared with the bot's service account as Editor.
 
-  `broadcast_channel_id` is **optional**. When set, every successful `/add-team` posts a public embed to that channel announcing the new team (regardless of which channel the command was invoked from). Omit it to disable broadcasts for a guild — existing behavior. The bot needs **Send Messages** and **Embed Links** in the broadcast channel; if it doesn't, the write still succeeds and a warning is logged. The channel ID is a Discord snowflake string (right-click the channel → Copy Channel ID with Developer Mode enabled).
+Add or update a guild with the seed script:
+
+```bash
+python bin/seed_guilds.py 123456789012345678 \
+  --spreadsheet-id 1AbCd-Your_Sheet_Id \
+  --broadcast-channel-id 112233445566778899
+```
+
+The bot serves multiple guilds from one process — install the same bot in a personal debug server and a shared production server, mapped to different sheets, and one container handles both. Spreadsheet IDs are restricted to `[A-Za-z0-9_-]`; validation runs at write time in the seed script.
+
+`broadcast_channel_id` is **optional**. When set, every successful `/add-team` posts a public embed to that channel announcing the new team (regardless of which channel the command was invoked from). Omit it (or pass `--clear-broadcast` to remove an existing value) to disable broadcasts for a guild. The bot needs **Send Messages** and **Embed Links** in the broadcast channel; if it doesn't, the write still succeeds and a warning is logged. The channel ID is a Discord snowflake string (right-click the channel → Copy Channel ID with Developer Mode enabled).
+
+Guild config changes take effect on the next bot restart — the in-memory cache is loaded once at startup.
 
 Set up Google auth via **Application Default Credentials**. Pick one:
 
@@ -88,8 +98,9 @@ pytest
 
 The bot ships as a container running under systemd on a GCE `e2-micro`. Infrastructure is fully described in Terraform; deploys are driven by GitHub Actions.
 
-- **First-time setup**: see [infra/terraform/README.md](infra/terraform/README.md) — a `terraform apply` provisions the VM, secret, Artifact Registry, and Workload Identity Federation.
+- **First-time setup**: see [infra/terraform/README.md](infra/terraform/README.md) — a `terraform apply` provisions the VM, secret, Firestore database, Artifact Registry, and Workload Identity Federation.
 - **Updating the bot**: merge to `main`. The `Deploy` workflow builds the image, pushes to Artifact Registry, and restarts the VM service via IAP SSH.
+- **Adding or updating a guild**: run `python bin/seed_guilds.py <guild_id> --spreadsheet-id <id> [--broadcast-channel-id <id>]` under ADC; restart the bot (`gcloud compute ssh sketch --tunnel-through-iap --zone=… --command="sudo systemctl restart sketch"`).
 - **Rolling back**: trigger the `Deploy` workflow via *Run workflow* in the Actions tab and provide a previous `:sha-<sha>` tag as `image_tag`.
 
 ## Adding a new format / sheet tab

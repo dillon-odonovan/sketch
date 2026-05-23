@@ -26,14 +26,6 @@ variable "github_repo" {
   default     = "sketch"
 }
 
-variable "guild_config" {
-  description = "Per-guild routing. Keys are Discord guild IDs (as strings). Each value names the spreadsheet that guild writes to, plus an optional broadcast_channel_id (Discord channel snowflake) that receives a public 'new team added' embed on every successful /add-team. The VM service account must be shared on every listed sheet as an Editor (manual one-time step)."
-  type = map(object({
-    spreadsheet_id       = string
-    broadcast_channel_id = optional(string)
-  }))
-}
-
 variable "dev_guild_id" {
   description = "DEV ONLY: Discord guild ID for fast slash-command sync. Leave empty to register globally (~1 hour propagation). Independent of guild_config — this only controls where slash commands are registered, not which guilds the bot serves."
   type        = string

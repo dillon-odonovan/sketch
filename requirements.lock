@@ -31,6 +31,8 @@ frozenlist==1.8.0
 google-api-core==2.30.3
     # via
     #   google-api-python-client
+    #   google-cloud-core
+    #   google-cloud-firestore
     #   google-cloud-secret-manager
 google-api-python-client==2.196.0
     # via -r requirements.txt
@@ -40,9 +42,15 @@ google-auth==2.53.0
     #   google-api-core
     #   google-api-python-client
     #   google-auth-httplib2
+    #   google-cloud-core
+    #   google-cloud-firestore
     #   google-cloud-secret-manager
 google-auth-httplib2==0.4.0
     # via google-api-python-client
+google-cloud-core==2.6.0
+    # via google-cloud-firestore
+google-cloud-firestore==2.27.0
+    # via -r requirements.txt
 google-cloud-secret-manager==2.28.0
     # via -r requirements.txt
 googleapis-common-protos==1.75.0
@@ -55,6 +63,7 @@ grpc-google-iam-v1==0.14.4
 grpcio==1.80.0
     # via
     #   google-api-core
+    #   google-cloud-firestore
     #   google-cloud-secret-manager
     #   googleapis-common-protos
     #   grpc-google-iam-v1
@@ -80,10 +89,12 @@ propcache==0.5.2
 proto-plus==1.28.0
     # via
     #   google-api-core
+    #   google-cloud-firestore
     #   google-cloud-secret-manager
 protobuf==6.33.6
     # via
     #   google-api-core
+    #   google-cloud-firestore
     #   google-cloud-secret-manager
     #   googleapis-common-protos
     #   grpc-google-iam-v1

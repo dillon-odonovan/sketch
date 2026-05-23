@@ -1,6 +1,6 @@
 # Sketch — Infrastructure (Terraform)
 
-All GCP resources for Sketch live here. A single `terraform apply` provisions the GCE VM, the runtime and deployer service accounts, the Discord-token secret slot, the Artifact Registry repository with its cleanup policy, the IAP-only SSH firewall rule, and the Workload Identity Federation pool that GitHub Actions uses to authenticate.
+All GCP resources for Sketch live here. A single `terraform apply` provisions the GCE VM, the runtime and deployer service accounts, the Discord-token secret slot, the Firestore database that holds per-guild config, the Artifact Registry repository with its cleanup policy, the IAP-only SSH firewall rule, and the Workload Identity Federation pool that GitHub Actions uses to authenticate.
 
 State is stored in a GCS bucket in the same project — there is no third-party SaaS dependency.
 
@@ -48,8 +48,10 @@ You may not have hit this if you previously created any service accounts via the
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
-$EDITOR terraform.tfvars   # fill in project_id, github_owner, guild_config, etc.
+$EDITOR terraform.tfvars   # fill in project_id, github_owner, optional overrides
 ```
+
+Per-guild routing (spreadsheet IDs, broadcast channel IDs) is not a Terraform variable — it lives in Firestore. You'll seed it in step 6 below, after `terraform apply` creates the database.
 
 ### 4. Initialise and apply
 
@@ -69,15 +71,27 @@ The secret slot is Terraform-managed; its **value** is supplied out-of-band so t
 echo -n 'YOUR_BOT_TOKEN' | gcloud secrets versions add sketch-discord-token --data-file=-
 ```
 
-### 6. Share the spreadsheet with the VM's service account
+### 6. Seed Firestore with the first guild(s)
+
+Terraform creates the empty `(default)` Firestore database; guild documents are written by `bin/seed_guilds.py`. Run it once per guild the bot should serve. The script uses ADC, so it works under `gcloud auth application-default login`.
+
+```bash
+python ../../bin/seed_guilds.py 123456789012345678 \
+  --spreadsheet-id 1AbCd-Your_Sheet_Id \
+  --broadcast-channel-id 112233445566778899
+```
+
+Omit `--broadcast-channel-id` for guilds that shouldn't broadcast new teams. To remove an existing broadcast channel later, pass `--clear-broadcast`. The script overwrites the named fields and leaves anything else on the doc untouched (`set(..., merge=True)`).
+
+### 7. Share each spreadsheet with the VM's service account
 
 ```bash
 terraform output vm_service_account_email
 ```
 
-Copy that email, open the target Google Sheet → **Share** → paste → **Editor** → uncheck "Notify people" → **Share**.
+Copy that email, open every Sheet listed in your seeded guild config → **Share** → paste → **Editor** → uncheck "Notify people" → **Share**.
 
-### 7. Configure GitHub repository variables
+### 8. Configure GitHub repository variables
 
 In the repo's Settings → Secrets and variables → Actions → **Variables**:
 
@@ -89,12 +103,11 @@ In the repo's Settings → Secrets and variables → Actions → **Variables**:
 | `GCP_WIF_PROVIDER`    | `terraform output workload_identity_provider`    | deploy, plan |
 | `GCP_DEPLOYER_SA`     | `terraform output deployer_service_account_email`| deploy, plan |
 | `GCP_ARTIFACT_REPO`   | `terraform output artifact_registry_url`         | deploy     |
-| `TF_GUILD_CONFIG`     | JSON-encoded copy of your `guild_config` map, e.g. `{"123456789012345678":{"spreadsheet_id":"1AbCd..."}}` | plan |
 | `TF_DEV_GUILD_ID`     | Same value as `dev_guild_id` in your tfvars (often empty). | plan |
 
-None of these are secrets — they're all public identifiers. `TF_GUILD_CONFIG` and `TF_DEV_GUILD_ID` only exist because `terraform.tfvars` is gitignored and the plan workflow needs the same variable values that your local `apply` uses. If you'd rather commit them, add a `guild_config.auto.tfvars` next to `main.tf` (Terraform auto-loads `*.auto.tfvars`) and skip these two repo variables.
+None of these are secrets — they're all public identifiers. `TF_DEV_GUILD_ID` only exists because `terraform.tfvars` is gitignored and the plan workflow needs the same variable values that your local `apply` uses. Per-guild config is no longer a Terraform variable — it lives in Firestore (see step 6).
 
-### 8. Remove GCP's auto-created public SSH/RDP rules (one-time)
+### 9. Remove GCP's auto-created public SSH/RDP rules (one-time)
 
 Default GCE firewall rules expose port 22 to the public internet. Terraform doesn't import them cleanly, so delete them by hand:
 
@@ -104,7 +117,7 @@ gcloud compute firewall-rules delete default-allow-ssh default-allow-rdp --quiet
 
 After this, SSH only flows through IAP (via `gcloud compute ssh --tunnel-through-iap`).
 
-### 9. Push to `main` to deploy the first image
+### 10. Push to `main` to deploy the first image
 
 Once GitHub Actions has its WIF credentials, `git push origin main` triggers the deploy workflow, which builds the image, pushes it, and restarts the VM service. The first push will succeed even though no image exists yet — the VM's systemd unit has `ExecStartPre=-docker pull` (the `-` makes pull non-fatal), so it will fail-fast on first boot until the deploy workflow has pushed an image. Run the deploy workflow once and the VM picks up the image on next restart.
 
@@ -117,6 +130,23 @@ Just merge to `main`. The deploy workflow:
 3. The unit's `ExecStartPre=docker pull` picks up the new `:current`.
 4. Smoke-checks the service status.
 
+## Adding or updating a guild
+
+Guild routing lives in Firestore, not Terraform. Run the seed script under ADC:
+
+```bash
+python bin/seed_guilds.py <guild_id> --spreadsheet-id <id> [--broadcast-channel-id <id>]
+```
+
+Then restart the bot so it re-reads the collection:
+
+```bash
+gcloud compute ssh sketch --tunnel-through-iap --zone=us-west1-a \
+  --command="sudo systemctl restart sketch"
+```
+
+The in-memory cache is populated once at boot, so new/edited guild docs need a restart to be picked up. (When `/register-guild` ships it will write through both Firestore and the cache, so server owners won't need a restart.) Don't forget to share each spreadsheet with `terraform output vm_service_account_email` as Editor — the Sheets API won't fail until first write, but it *will* fail.
+
 ## Updating infrastructure
 
 Infra changes (anything under `infra/terraform/**`) go through a PR:
@@ -125,8 +155,6 @@ Infra changes (anything under `infra/terraform/**`) go through a PR:
 2. Review the plan — particularly any `# … will be destroyed` lines.
 3. Merge.
 4. Pull `main` locally and run `terraform apply`. There is no auto-apply: a bad merge could otherwise destroy the VM, and the blast radius of CD'ing apply isn't worth the small ergonomic win at one-VM scale.
-
-If the plan workflow fails on a fresh repo, double-check that the `TF_GUILD_CONFIG` repo variable is set (or that you've committed a `guild_config.auto.tfvars`) — that's the most common cause of "variable has no default value" errors in CI.
 
 ## Rolling back
 
@@ -198,7 +226,7 @@ gcloud compute ssh sketch --tunnel-through-iap --zone=us-west1-a \
 | Sheets API returns `ACCESS_TOKEN_SCOPE_INSUFFICIENT`                              | VM created without the `spreadsheets` scope alongside `cloud-platform`                      | The Terraform sets both; if the VM pre-dates Terraform, recreate it (or `set-service-account` with both scopes)  |
 | `discord.errors.LoginFailure: Improper token has been passed`                     | Wrong secret content (e.g., Client Secret instead of Bot Token)                             | Add a new version of `sketch-discord-token` with the real bot token; restart                                     |
 | `403 Missing Access` on `tree.sync`                                               | `dev_guild_id` points at a guild the bot isn't installed in                                 | Fix `terraform.tfvars`, re-apply, reboot the VM                                                                  |
-| `403 The caller does not have permission` from Sheets API                         | VM's service account isn't shared on the spreadsheet                                        | Re-run step 6 with the email from `terraform output vm_service_account_email`                                    |
+| `403 The caller does not have permission` from Sheets API                         | VM's service account isn't shared on the spreadsheet                                        | Re-run step 7 with the email from `terraform output vm_service_account_email`                                    |
 | `gcloud compute ssh` times out after firewall lockdown                            | Missing `--tunnel-through-iap`, IAP API disabled, or user missing `iap.tunnelResourceAccessor`| Add the flag; run the project IAM binding from §8 / make sure your user has `roles/iap.tunnelResourceAccessor`   |
 | GitHub Actions auth fails: `Unable to acquire impersonation credentials`          | WIF principal binding mismatched (wrong repo or branch) or `iam.workloadIdentityUser` not granted | Verify `attribute_condition` in `main.tf` matches the repo; confirm the `deployer_wif` binding exists            |
 

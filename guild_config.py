@@ -1,28 +1,35 @@
-"""Per-guild configuration: which Google Sheet does each Discord guild write to.
+"""Per-guild configuration: which Google Sheet does each Discord guild write
+to, and where (if anywhere) should successful /add-team calls broadcast?
 
-Today's store is a static, in-memory `dict[int, GuildConfig]` built from a JSON
-env var at startup. The `GuildConfigStore` Protocol exists so a future runtime
-store (e.g., SQLite-backed, populated by a `/set-spreadsheet` slash command)
-can drop in without touching command handlers.
+Backed by a Firestore collection — one document per guild, doc_id = the
+Discord guild_id (as a string). Terraform provisions the empty database; the
+contents are populated by `bin/seed_guilds.py` today and by a future
+`/register-guild` slash command. Keeping guild data out of Terraform means
+server owners can self-register without anyone running `terraform apply`,
+and removes the "tfvars edit / apply / VM reset" trap that earlier env-var
+plumbing fell into.
+
+The `GuildConfigStore` Protocol is the contract command handlers depend on.
+The bot constructs `FirestoreGuildConfigStore` at startup; tests use
+`StaticGuildConfigStore` so they don't need a Firestore client.
 """
 
 from __future__ import annotations
 
-import json
-import re
+import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-# Google Sheets IDs are URL-safe base64-ish: letters, digits, underscore, hyphen.
-# Reject anything else early so we fail at startup rather than on first write.
-_SPREADSHEET_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+if TYPE_CHECKING:
+    from google.cloud import firestore
 
-_ALLOWED_GUILD_KEYS = frozenset({"spreadsheet_id", "broadcast_channel_id"})
+logger = logging.getLogger(__name__)
 
-# Discord snowflake IDs (channels, guilds) are 64-bit unsigned integers, but
-# we accept them as numeric strings in JSON to stay consistent with how guild
-# IDs are encoded as keys in GUILD_CONFIG_JSON.
-_SNOWFLAKE_RE = re.compile(r"^[0-9]+$")
+# Firestore collection name. Single shared collection because the (default)
+# database is project-singleton — if a second feature ever wants Firestore in
+# this project it shares the DB, so namespacing happens at the collection
+# level. Doc IDs are guild_id-as-string.
+GUILD_CONFIGS_COLLECTION = "guild_configs"
 
 
 @dataclass(frozen=True)
@@ -36,16 +43,19 @@ class GuildConfig:
 class GuildConfigStore(Protocol):
     """Lookup of `guild_id -> GuildConfig`. Returns None for unconfigured guilds.
 
-    Sync by design: the in-memory impl is a dict lookup, and a future SQLite
-    impl is also microsecond-fast. Making this async would force `await` noise
-    into every command handler for no benefit.
+    Sync by design: callers run inside discord.py's event loop and the
+    in-memory dict lookup is microsecond-fast. The Firestore-backed impl
+    loads all docs at startup into an in-process dict to preserve that
+    property — per-lookup RPCs would push 5-50ms of network latency into
+    every slash command.
     """
 
     def get(self, guild_id: int) -> GuildConfig | None: ...
 
 
 class StaticGuildConfigStore:
-    """In-memory store built from the parsed env JSON. Immutable after construction."""
+    """In-memory store. Immutable after construction. Used by tests and as the
+    backing store for FirestoreGuildConfigStore's snapshot."""
 
     def __init__(self, mapping: dict[int, GuildConfig]) -> None:
         self._mapping = dict(mapping)
@@ -58,96 +68,86 @@ class StaticGuildConfigStore:
         return list(self._mapping.keys())
 
 
-def parse_guild_config_json(raw: str) -> dict[int, GuildConfig]:
-    """Parse the GUILD_CONFIG_JSON env var. Raises ValueError on any malformed input.
+class FirestoreGuildConfigStore:
+    """Loads every guild_configs doc into an in-memory dict at construction.
 
-    Expected shape:
-        {
-          "<guild_id>": {
-            "spreadsheet_id": "<id>",
-            "broadcast_channel_id": "<channel_id>"  # optional
-          },
-          ...
-        }
+    Trade-off: the bot never re-fetches during a session, so a guild added
+    via `bin/seed_guilds.py` requires a restart to take effect. That's
+    intentional for now — single-process bot, no cross-instance invalidation
+    problem, no background refresh complexity. When `/register-guild` lands
+    it will write through to both Firestore and `self._mapping` in the same
+    call (`register(guild_id, config)`), so newly-registered guilds become
+    routable immediately without a restart.
 
-    Validations:
-    - JSON object at the top level
-    - Guild keys must be numeric strings (Discord snowflake IDs)
-    - Each value must be a JSON object with `spreadsheet_id` (string), and an
-      optional `broadcast_channel_id` (numeric snowflake string). Unknown keys
-      are rejected.
-    - `spreadsheet_id` must match Google's URL-safe charset
-    - `broadcast_channel_id`, when present and non-null, must be a non-empty
-      numeric string. An explicit JSON `null` is treated the same as the key
-      being absent — Terraform's `optional(string)` encodes unset values as
-      `null`, so being lenient here keeps the env-var payload portable.
-    - Empty `{}` is rejected — a bot with zero configured guilds is almost
-      certainly a misconfiguration
+    Malformed documents are logged and skipped rather than crashing the bot.
+    Strict crash-at-startup made sense for hand-edited env JSON; for a
+    datastore, refusing to boot the whole bot over one bad doc would block
+    every other guild for no good reason.
     """
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"GUILD_CONFIG_JSON is not valid JSON: {e}") from e
 
-    if not isinstance(data, dict):
-        raise ValueError(
-            f"GUILD_CONFIG_JSON must be a JSON object, got {type(data).__name__}"
+    def __init__(self, client: firestore.Client) -> None:
+        self._client = client
+        self._mapping = self._load()
+        logger.info(
+            "Loaded guild config from Firestore for %d guild(s): %s",
+            len(self._mapping),
+            self.configured_guild_ids(),
         )
 
-    if not data:
-        raise ValueError(
-            "GUILD_CONFIG_JSON is empty — configure at least one guild "
-            'like {"<guild_id>": {"spreadsheet_id": "<id>"}}'
-        )
-
-    result: dict[int, GuildConfig] = {}
-    for raw_key, value in data.items():
-        if not isinstance(raw_key, str) or not raw_key.isdigit():
-            raise ValueError(
-                f"GUILD_CONFIG_JSON guild key must be a numeric string, got {raw_key!r}"
-            )
-        guild_id = int(raw_key)
-
-        if not isinstance(value, dict):
-            raise ValueError(
-                f"GUILD_CONFIG_JSON value for guild {guild_id} must be an object, "
-                f"got {type(value).__name__}"
-            )
-
-        unknown = set(value.keys()) - _ALLOWED_GUILD_KEYS
-        if unknown:
-            raise ValueError(
-                f"GUILD_CONFIG_JSON guild {guild_id} has unknown key(s): "
-                f"{sorted(unknown)} (allowed: {sorted(_ALLOWED_GUILD_KEYS)})"
-            )
-
-        spreadsheet_id = value.get("spreadsheet_id")
-        if not isinstance(spreadsheet_id, str) or not spreadsheet_id:
-            raise ValueError(
-                f"GUILD_CONFIG_JSON guild {guild_id} is missing a non-empty "
-                "string `spreadsheet_id`"
-            )
-        if not _SPREADSHEET_ID_RE.match(spreadsheet_id):
-            raise ValueError(
-                f"GUILD_CONFIG_JSON guild {guild_id} has spreadsheet_id "
-                f"{spreadsheet_id!r} with disallowed characters "
-                "(allowed: letters, digits, underscore, hyphen)"
-            )
-
-        broadcast_channel_id: int | None = None
-        raw_channel = value.get("broadcast_channel_id")
-        if raw_channel is not None:
-            if not isinstance(raw_channel, str) or not _SNOWFLAKE_RE.match(raw_channel):
-                raise ValueError(
-                    f"GUILD_CONFIG_JSON guild {guild_id} has broadcast_channel_id "
-                    f"{raw_channel!r}; expected a non-empty numeric string "
-                    "(Discord channel snowflake ID)"
+    def _load(self) -> dict[int, GuildConfig]:
+        out: dict[int, GuildConfig] = {}
+        for doc in self._client.collection(GUILD_CONFIGS_COLLECTION).stream():
+            cfg = _parse_doc(doc.id, doc.to_dict() or {})
+            if cfg is None:
+                continue
+            try:
+                guild_id = int(doc.id)
+            except ValueError:
+                logger.warning(
+                    "Skipping guild_configs/%s: doc id is not a numeric guild_id",
+                    doc.id,
                 )
+                continue
+            out[guild_id] = cfg
+        return out
+
+    def get(self, guild_id: int) -> GuildConfig | None:
+        return self._mapping.get(guild_id)
+
+    def configured_guild_ids(self) -> list[int]:
+        return list(self._mapping.keys())
+
+
+def _parse_doc(doc_id: str, data: dict) -> GuildConfig | None:
+    """Build a GuildConfig from a Firestore doc, or return None + log on
+    malformed input. Validation is intentionally lenient — write-time
+    validation in bin/seed_guilds.py is the real gate; this is defense in
+    depth against direct console edits or schema drift.
+    """
+    spreadsheet_id = data.get("spreadsheet_id")
+    if not isinstance(spreadsheet_id, str) or not spreadsheet_id:
+        logger.warning(
+            "Skipping guild_configs/%s: missing or non-string spreadsheet_id",
+            doc_id,
+        )
+        return None
+
+    raw_channel = data.get("broadcast_channel_id")
+    broadcast_channel_id: int | None = None
+    if raw_channel is not None:
+        if not isinstance(raw_channel, str) or not raw_channel.isdigit():
+            logger.warning(
+                "Skipping broadcast_channel_id for guild_configs/%s: expected "
+                "numeric string, got %r",
+                doc_id,
+                raw_channel,
+            )
+            # Keep the spreadsheet routing — the guild can still use the bot,
+            # broadcasts just stay off until the bad value is fixed.
+        else:
             broadcast_channel_id = int(raw_channel)
 
-        result[guild_id] = GuildConfig(
-            spreadsheet_id=spreadsheet_id,
-            broadcast_channel_id=broadcast_channel_id,
-        )
-
-    return result
+    return GuildConfig(
+        spreadsheet_id=spreadsheet_id,
+        broadcast_channel_id=broadcast_channel_id,
+    )
