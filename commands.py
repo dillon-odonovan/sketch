@@ -296,7 +296,7 @@ def setup_commands(
 
     @tree.command(
         name="search-teams",
-        description="Find teams by Pokémon and/or description substring.",
+        description="Find teams by Pokémon, description, and/or Pokepaste URL.",
     )
     @app_commands.describe(
         format="Format/regulation",
@@ -310,6 +310,7 @@ def setup_commands(
             "Case-insensitive substring match against the team description "
             "(player, team name, concept, etc.)"
         ),
+        url="Pokepaste URL — check whether this paste is already in the bank.",
     )
     @app_commands.choices(format=_format_choices())
     async def search_teams(
@@ -322,6 +323,7 @@ def setup_commands(
         mon5: str | None = None,
         mon6: str | None = None,
         description: str | None = None,
+        url: str | None = None,
     ) -> None:
         trace_id_var.set(str(interaction.id))
         await interaction.response.defer(thinking=True)
@@ -334,19 +336,28 @@ def setup_commands(
         sheet_name = config.FORMAT_SHEETS[fmt_name]
         queries = [m for m in [mon1, mon2, mon3, mon4, mon5, mon6] if m]
         description_query = (description or "").strip() or None
+        url_raw = (url or "").strip() or None
+        url_target: str | None = None
+        if url_raw is not None:
+            try:
+                url_target = canonicalize_pokepaste_url(url_raw)
+            except ValidationError as e:
+                await interaction.followup.send(str(e))
+                return
         logger.info(
             "search-teams invoked by user_id=%s guild_id=%s: format=%s "
-            "queries=%s description=%r",
+            "queries=%s description=%r url=%r",
             interaction.user.id,
             interaction.guild_id,
             fmt_name,
             queries,
             description_query,
+            url_target,
         )
 
-        if not queries and not description_query:
+        if not queries and not description_query and url_target is None:
             await interaction.followup.send(
-                "Provide at least one of `mon1`..`mon6` or `description`."
+                "Provide at least one of `mon1`..`mon6`, `description`, or `url`."
             )
             return
 
@@ -392,12 +403,23 @@ def setup_commands(
                 description_lower is None
                 or description_lower in row.description.lower()
             )
-            if mons_ok and desc_ok:
+            if url_target is None:
+                url_ok = True
+            else:
+                try:
+                    url_ok = canonicalize_pokepaste_url(row.url) == url_target
+                except ValidationError:
+                    # Stored URL is malformed (e.g., =HYPERLINK display text).
+                    # Mirror find_row_by_url and treat as non-matching.
+                    url_ok = False
+            if mons_ok and desc_ok and url_ok:
                 matches.append(row)
 
         label_parts = list(queries)
         if description_query:
             label_parts.append(f'description:"{description_query}"')
+        if url_target is not None:
+            label_parts.append(f"url:{url_target}")
         query_label = " + ".join(label_parts)
         if not matches:
             await interaction.followup.send(
@@ -440,17 +462,20 @@ def setup_commands(
             "  Example: `/add-team url:https://pokepast.es/abcd1234 "
             "description:Calyrex-S balance`\n\n"
             "`/search-teams [mon1:<name>] ... [mon6:<name>] "
-            "[description:<text>] [format:Reg M-A]`\n"
+            "[description:<text>] [url:<paste>] [format:Reg M-A]`\n"
             "  Find teams. Filter by Pokémon (AND across mon params), "
             "by a case-insensitive\n"
-            "  description substring, or both. At least one filter is required.\n"
+            "  description substring, by Pokepaste URL, or any combination. "
+            "At least one filter is required.\n"
             "  Examples:\n"
             "    `/search-teams mon1:Calyrex-Shadow mon2:Urshifu`\n"
             "    `/search-teams mon1:Charizard`     (matches base or Mega-X/Y)\n"
             "    `/search-teams mon1:Charizard-Mega-Y`     (Mega-Y only)\n"
             "    `/search-teams description:jsmithvgc`     (by player / gamertag)\n"
             "    `/search-teams description:Shadow Rider`  (by team name)\n"
-            "    `/search-teams description:jsmithvgc mon1:Charizard`  (AND)\n\n"
+            "    `/search-teams description:jsmithvgc mon1:Charizard`  (AND)\n"
+            "    `/search-teams url:https://pokepast.es/abcd1234`  "
+            "(is this paste already banked?)\n\n"
             f"Available formats: {formats}"
         )
         await interaction.response.send_message(msg, ephemeral=True)
