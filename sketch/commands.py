@@ -4,17 +4,17 @@ import logging
 import discord
 from discord import app_commands
 
-import config
-from dex import DexIndex  # re-exported for backwards-compatible callers
-from guild_config import GuildConfigStore
-from logging_setup import trace_id_var
-from pokepaste_validator import (
+from sketch import config
+from sketch.logging_setup import trace_id_var
+from sketch.pokepaste_validator import (
     ValidationError,
     canonicalize_pokepaste_url,
     normalize_replica,
     validate_pokepaste_url,
 )
-from sheets_client import SheetsClient, SheetsClientRegistry, TeamRow
+from sketch.search.dex import DexIndex  # re-exported for backwards-compatible callers
+from sketch.storage.guild_config import GuildConfigStore
+from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry, TeamRow
 
 __all__ = ["DexIndex", "setup_commands"]
 

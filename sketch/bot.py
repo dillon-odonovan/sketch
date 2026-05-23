@@ -4,11 +4,10 @@ import discord
 from discord import app_commands
 from google.cloud import firestore
 
-import config
-import logging_setup
-from commands import setup_commands
-from guild_config import FirestoreGuildConfigStore
-from sheets_client import SheetsClientRegistry
+from sketch import config, logging_setup
+from sketch.commands import setup_commands
+from sketch.storage.guild_config import FirestoreGuildConfigStore
+from sketch.storage.sheets_client import SheetsClientRegistry
 
 logging_setup.configure()
 logger = logging.getLogger(__name__)

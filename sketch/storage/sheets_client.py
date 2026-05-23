@@ -10,11 +10,11 @@ from typing import Any
 import google.auth
 from googleapiclient.discovery import build
 
-import config
-from dex import DexIndex
-from guild_config import GuildConfigStore
-from pokepaste_validator import ValidationError, canonicalize_pokepaste_url
-from text_search import DescriptionIndex
+from sketch import config
+from sketch.pokepaste_validator import ValidationError, canonicalize_pokepaste_url
+from sketch.search.dex import DexIndex
+from sketch.search.text_search import DescriptionIndex
+from sketch.storage.guild_config import GuildConfigStore
 
 logger = logging.getLogger(__name__)
 

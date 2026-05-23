@@ -1,7 +1,7 @@
 import pytest
 from aioresponses import aioresponses
 
-from pokepaste_validator import (
+from sketch.pokepaste_validator import (
     ValidationError,
     canonicalize_pokepaste_url,
     normalize_replica,
