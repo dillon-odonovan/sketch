@@ -26,7 +26,7 @@ concurrency:
 
 env:
   VM_NAME: sketch
-  VM_ZONE: us-west1-a
+  VM_ZONE: ${{ vars.GCP_ZONE }}
 
 jobs:
   deploy:
@@ -49,6 +49,7 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SA }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - uses: google-github-actions/setup-gcloud@v2
 

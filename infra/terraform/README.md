@@ -67,15 +67,18 @@ Copy that email, open the target Google Sheet → **Share** → paste → **Edit
 
 In the repo's Settings → Secrets and variables → Actions → **Variables**:
 
-| Name                  | Value                                            |
-| --------------------- | ------------------------------------------------ |
-| `GCP_PROJECT_ID`      | your project ID                                  |
-| `GCP_REGION`          | `us-west1` (or whatever you set)                 |
-| `GCP_WIF_PROVIDER`    | `terraform output workload_identity_provider`    |
-| `GCP_DEPLOYER_SA`     | `terraform output deployer_service_account_email`|
-| `GCP_ARTIFACT_REPO`   | `terraform output artifact_registry_url`         |
+| Name                  | Value                                            | Used by    |
+| --------------------- | ------------------------------------------------ | ---------- |
+| `GCP_PROJECT_ID`      | your project ID                                  | deploy, plan |
+| `GCP_REGION`          | `us-west1` (or whatever you set)                 | deploy     |
+| `GCP_ZONE`            | Same value as `zone` in your tfvars, e.g. `us-west1-b`. Must match where the VM actually lives — the deploy workflow SSHes into it. | deploy |
+| `GCP_WIF_PROVIDER`    | `terraform output workload_identity_provider`    | deploy, plan |
+| `GCP_DEPLOYER_SA`     | `terraform output deployer_service_account_email`| deploy, plan |
+| `GCP_ARTIFACT_REPO`   | `terraform output artifact_registry_url`         | deploy     |
+| `TF_GUILD_CONFIG`     | JSON-encoded copy of your `guild_config` map, e.g. `{"123456789012345678":{"spreadsheet_id":"1AbCd..."}}` | plan |
+| `TF_DEV_GUILD_ID`     | Same value as `dev_guild_id` in your tfvars (often empty). | plan |
 
-None of these are secrets — they're all public identifiers.
+None of these are secrets — they're all public identifiers. `TF_GUILD_CONFIG` and `TF_DEV_GUILD_ID` only exist because `terraform.tfvars` is gitignored and the plan workflow needs the same variable values that your local `apply` uses. If you'd rather commit them, add a `guild_config.auto.tfvars` next to `main.tf` (Terraform auto-loads `*.auto.tfvars`) and skip these two repo variables.
 
 ### 7. Remove GCP's auto-created public SSH/RDP rules (one-time)
 
@@ -99,6 +102,17 @@ Just merge to `main`. The deploy workflow:
 2. SSHes via IAP to the VM and runs `sudo systemctl restart sketch`.
 3. The unit's `ExecStartPre=docker pull` picks up the new `:current`.
 4. Smoke-checks the service status.
+
+## Updating infrastructure
+
+Infra changes (anything under `infra/terraform/**`) go through a PR:
+
+1. Open a PR. The **Terraform Plan** workflow runs `fmt`, `validate`, and `plan`, then posts the plan as a PR comment.
+2. Review the plan — particularly any `# … will be destroyed` lines.
+3. Merge.
+4. Pull `main` locally and run `terraform apply`. There is no auto-apply: a bad merge could otherwise destroy the VM, and the blast radius of CD'ing apply isn't worth the small ergonomic win at one-VM scale.
+
+If the plan workflow fails on a fresh repo, double-check that the `TF_GUILD_CONFIG` repo variable is set (or that you've committed a `guild_config.auto.tfvars`) — that's the most common cause of "variable has no default value" errors in CI.
 
 ## Rolling back
 

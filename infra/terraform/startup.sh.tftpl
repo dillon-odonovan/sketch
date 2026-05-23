@@ -17,8 +17,14 @@ fi
 gcloud auth configure-docker ${region}-docker.pkg.dev --quiet
 
 # --- Write the systemd environment file -------------------------------------
+# Heredoc delimiter is single-quoted so bash does no parameter expansion on
+# the body. Terraform's templatefile has already substituted `$${image_url}`
+# etc. before bash ever sees this script, and we don't want bash taking a
+# second pass — under `set -u`, an unset reference like `$FOO` inside an
+# unquoted heredoc would abort the script *after* `cat >` had already
+# truncated the target file to zero bytes.
 mkdir -p /etc/sketch
-cat > /etc/sketch/env <<ENV_FILE
+cat > /etc/sketch/env <<'ENV_FILE'
 SKETCH_IMAGE=${image_url}
 GCP_PROJECT=${project_id}
 DEV_GUILD_ID=${dev_guild_id}
@@ -27,10 +33,13 @@ ENV_FILE
 chmod 644 /etc/sketch/env
 
 # --- Drop the systemd unit --------------------------------------------------
-# The unit is the source of truth in deploy/sketch.service; templatefile
-# inserts its contents here verbatim (variable values are not re-interpolated
-# by templatefile, so the unit's own $${...} references stay intact).
-cat > /etc/systemd/system/sketch.service <<UNIT_FILE
+# The unit is the source of truth in deploy/sketch.service. The single-quoted
+# heredoc is load-bearing here: the unit body contains `$${SKETCH_IMAGE}` which
+# systemd resolves at service-start time from EnvironmentFile. Without the
+# quotes, bash would try to expand it now, hit `set -u` on the unset variable,
+# and exit — leaving /etc/systemd/system/sketch.service truncated to zero
+# bytes (which systemd then treats as masked).
+cat > /etc/systemd/system/sketch.service <<'UNIT_FILE'
 ${sketch_service}
 UNIT_FILE
 
