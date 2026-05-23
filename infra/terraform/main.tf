@@ -309,6 +309,17 @@ resource "google_storage_bucket_iam_member" "deployer_tfstate_access" {
   member = "serviceAccount:${google_service_account.deployer.email}"
 }
 
+# Refreshing state for the binding above requires `storage.buckets.getIamPolicy`
+# on the bucket — terraform's `iam_member` resource reads the current bucket
+# policy on every plan to decide whether the member needs adding. `objectUser`
+# is object-scoped and doesn't grant bucket-level IAM reads, so we layer on
+# `legacyBucketReader`, which is the narrowest role that includes it.
+resource "google_storage_bucket_iam_member" "deployer_tfstate_iam_reader" {
+  bucket = "${var.project_id}-tfstate"
+  role   = "roles/storage.legacyBucketReader"
+  member = "serviceAccount:${google_service_account.deployer.email}"
+}
+
 # ----------------------------------------------------------------------------
 # Workload Identity Federation — GitHub Actions auth without long-lived keys
 # ----------------------------------------------------------------------------
