@@ -417,7 +417,7 @@ def setup_commands(
         if sheets is None:
             return
 
-        fmt_name = format.value if format else _default_format()
+        fmt_name = format.value if format else _DEFAULT_FORMAT
         sheet_name = config.FORMAT_SHEETS[fmt_name]
 
         try:
