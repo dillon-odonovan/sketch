@@ -856,6 +856,35 @@ def setup_commands(
             ephemeral=True,
         )
 
+    @tree.command(
+        name="spreadsheet-link",
+        description="Get a link to this server's team spreadsheet.",
+    )
+    @app_commands.guild_only()
+    async def spreadsheet_link(interaction: discord.Interaction) -> None:
+        trace_id_var.set(str(interaction.id))
+        guild_id = interaction.guild_id
+        if guild_id is None:
+            await interaction.response.send_message(_GUILD_ONLY_ERROR, ephemeral=True)
+            return
+
+        logger.info(
+            "spreadsheet-link invoked by user_id=%s guild_id=%s",
+            interaction.user.id,
+            guild_id,
+        )
+        cfg = store.get(guild_id)
+        if cfg is None:
+            await interaction.response.send_message(
+                _UNCONFIGURED_GUILD_ERROR, ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"Team spreadsheet: <{_spreadsheet_link(cfg.spreadsheet_id)}>",
+            ephemeral=True,
+        )
+
 
 async def _await_species(
     sheets: SheetsClient, sheet_name: str, row: int
