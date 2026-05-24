@@ -18,7 +18,7 @@ from sketch.replica.extractor import PokemonEntry, TeamData
 from sketch.replica.preview_view import ReplicaPreviewView, team_to_embed
 
 
-def _entry(species: str = "Floette") -> PokemonEntry:
+def _entry(species: str = "Floette-Eternal-Flower") -> PokemonEntry:
     return PokemonEntry(
         species=species,
         gender="F",
@@ -31,11 +31,11 @@ def _entry(species: str = "Floette") -> PokemonEntry:
 
 
 def _team() -> TeamData:
-    # Species mirror the Wyatt reference team so the field-name golden test
+    # Species mirror the reference team so the field-name golden test
     # matches the same data the renderer test uses.
     return TeamData(
         pokemon=[
-            _entry("Floette"),
+            _entry("Floette-Eternal-Flower"),
             _entry("Aerodactyl"),
             _entry("Incineroar"),
             _entry("Garchomp"),
@@ -97,7 +97,7 @@ class TestTeamToEmbed:
             fmt_name="Reg M-A",
         )
         # Matches the rendered Showdown shape: `Species (Gender) @ Item`.
-        assert embed.fields[0].name == "Floette (F) @ Floettite"
+        assert embed.fields[0].name == "Floette-Eternal-Flower (F) @ Floettite"
 
     def test_field_value_includes_ability_nature_moves(self):
         embed = team_to_embed(

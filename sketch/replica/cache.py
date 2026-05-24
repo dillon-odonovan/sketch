@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Protocol
 
 from google.api_core import exceptions as gax_exceptions
@@ -173,8 +173,16 @@ def _serialize(entry: ReplicaCacheEntry) -> dict:
 
 def _parse_doc(doc_id: str, data: dict) -> ReplicaCacheEntry | None:
     """Build an entry from a Firestore doc, or log and skip on malformed
-    input. Lenient on the audit fields (we'd rather serve a cached URL with
-    a missing audit trail than refuse to serve at all)."""
+    input.
+
+    Strict on every required field — a doc missing the URL, the timestamp,
+    or either audit snowflake is dropped with a WARNING naming what was
+    wrong. The earlier lenient version substituted epoch / 0 defaults,
+    which papered over real data corruption and produced cache entries
+    with nonsense audit columns. Dropping the bad doc isolates damage to
+    that one entry; the next cold OCR of the same code will repopulate it
+    with valid fields.
+    """
     url = data.get("pokepaste_url")
     if not isinstance(url, str) or not url:
         logger.warning(
@@ -189,22 +197,39 @@ def _parse_doc(doc_id: str, data: dict) -> ReplicaCacheEntry | None:
 
     created_at = data.get("created_at")
     if not isinstance(created_at, datetime):
-        # Old or hand-edited docs may lack a timestamp; substitute the unix
-        # epoch so the field is still typed, rather than dropping the entry.
-        created_at = datetime.fromtimestamp(0, tz=timezone.utc)
+        logger.warning(
+            "Skipping %s/%s: missing or non-datetime created_at (got %r)",
+            config.REPLICA_CACHE_COLLECTION,
+            doc_id,
+            created_at,
+        )
+        return None
 
-    def _parse_snowflake(field: str) -> int:
+    def _parse_snowflake(field: str) -> int | None:
         raw = data.get(field)
         if isinstance(raw, str) and raw.isdigit():
             return int(raw)
         if isinstance(raw, int):
             return raw
-        return 0
+        return None
+
+    created_by_user_id = _parse_snowflake("created_by_user_id")
+    created_by_guild_id = _parse_snowflake("created_by_guild_id")
+    if created_by_user_id is None or created_by_guild_id is None:
+        logger.warning(
+            "Skipping %s/%s: missing or malformed audit snowflake "
+            "(user_id=%r guild_id=%r)",
+            config.REPLICA_CACHE_COLLECTION,
+            doc_id,
+            data.get("created_by_user_id"),
+            data.get("created_by_guild_id"),
+        )
+        return None
 
     return ReplicaCacheEntry(
         pokepaste_url=url,
         species=species,
         created_at=created_at,
-        created_by_user_id=_parse_snowflake("created_by_user_id"),
-        created_by_guild_id=_parse_snowflake("created_by_guild_id"),
+        created_by_user_id=created_by_user_id,
+        created_by_guild_id=created_by_guild_id,
     )

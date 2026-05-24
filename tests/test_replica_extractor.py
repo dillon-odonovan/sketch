@@ -83,7 +83,7 @@ class _FakeAnthropic:
 def _full_team_input(team_id: str | None = "QBXXWXL05U") -> dict:
     """A well-formed `submit_team` tool input with all six Pokemon.
 
-    Values mirror the reference Wyatt team — small EV pool (~66 total),
+    Values mirror the reference team — small EV pool (~66 total),
     arrow-based nature, gender icons present. Anything the model would
     realistically extract from the sample-replica-code.png share screen.
     """
@@ -91,7 +91,7 @@ def _full_team_input(team_id: str | None = "QBXXWXL05U") -> dict:
         "team_id": team_id,
         "pokemon": [
             {
-                "species": "Floette",
+                "species": "Floette-Eternal-Flower",
                 "gender": "F",
                 "item": "Floettite",
                 "ability": "Flower Veil",
@@ -255,17 +255,17 @@ class TestResolveNature:
         assert _resolve_nature("Speed", "Sp. Atk") == "Timid"
 
     def test_neutral_when_arrows_absent(self):
-        assert _resolve_nature(None, None) == "Hardy"
+        assert _resolve_nature(None, None) == "Serious"
 
     def test_neutral_when_same_stat_for_both(self):
         # A nature can't boost AND reduce the same stat. Defensive: treat
         # as neutral rather than emitting a fake name.
-        assert _resolve_nature("Attack", "Attack") == "Hardy"
+        assert _resolve_nature("Attack", "Attack") == "Serious"
 
     def test_unknown_combo_falls_back_to_hardy(self):
         # Off-table inputs (HP, garbage strings) shouldn't crash — they
         # degrade to the neutral default.
-        assert _resolve_nature("HP", "Attack") == "Hardy"
+        assert _resolve_nature("HP", "Attack") == "Serious"
 
 
 class TestExtractTeamFromScreenshots:
@@ -275,7 +275,7 @@ class TestExtractTeamFromScreenshots:
         assert isinstance(team, TeamData)
         assert len(team.pokemon) == 6
         floette = team.pokemon[0]
-        assert floette.species == "Floette"
+        assert floette.species == "Floette-Eternal-Flower"
         assert floette.gender == "F"
         assert floette.item == "Floettite"
         # Nature resolved from arrows in code, not by the model.
@@ -411,7 +411,7 @@ class TestExtractTeamFromScreenshots:
 
     async def test_neutral_nature_when_arrows_absent(self):
         # Defensive: a Pokemon with no arrows on Page 2 (genuinely neutral
-        # nature) should resolve to "Hardy" rather than the lookup table's
+        # nature) should resolve to "Serious" rather than the lookup table's
         # default failing into something nonsensical.
         payload = _full_team_input()
         payload["pokemon"][0]["nature"] = {
@@ -420,4 +420,4 @@ class TestExtractTeamFromScreenshots:
         }
         client = _FakeAnthropic(_team_message(payload))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
-        assert team.pokemon[0].nature == "Hardy"
+        assert team.pokemon[0].nature == "Serious"

@@ -34,7 +34,7 @@ from sketch.replica.extractor import STAT_KEYS, PokemonEntry, TeamData
 logger = logging.getLogger(__name__)
 
 
-class RenderError(Exception):
+class PokepasteUploadError(Exception):
     """Raised when the upload to pokepast.es fails. Message is user-facing."""
 
 
@@ -66,6 +66,13 @@ def _render_mon(p: PokemonEntry) -> str:
     load-bearing because the in-sheet AppsScript `TEAMDATAFROMPASTE`
     pattern-matches against this shape — reorders here would silently
     break parsing for every replica-added team.
+
+    TODO(champions-tera): when Pokemon Champions enables terastallization
+    in-game, restore `tera_type` on `PokemonEntry` and emit a `Tera Type:`
+    line between `Ability:` and `EVs:` (the canonical Showdown position).
+    Level and IVs are intentionally omitted: Champions fixes level to 50
+    and all IVs to 31, neither of which the share screen surfaces, so
+    emitting them would synthesize data we didn't extract.
     """
     lines: list[str] = []
 
@@ -110,7 +117,7 @@ async def post_to_pokepaste(paste_text: str, title: str) -> str:
     dedup, and so a malformed server response is caught here rather than
     at row-write time.
 
-    Raises `RenderError` on any non-2xx response or transport failure.
+    Raises `PokepasteUploadError` on any non-2xx response or transport failure.
     The message is user-facing.
     """
     try:
@@ -129,14 +136,14 @@ async def post_to_pokepaste(paste_text: str, title: str) -> str:
                     resp.status,
                     body_excerpt,
                 )
-                raise RenderError(
+                raise PokepasteUploadError(
                     "Couldn't upload the team to pokepast.es right now — "
                     "please try again in a moment."
                 )
             body = await resp.text()
     except aiohttp.ClientError as exc:
         logger.warning("Pokepaste upload transport error: %s", exc)
-        raise RenderError(
+        raise PokepasteUploadError(
             "Couldn't upload the team to pokepast.es right now — "
             "please try again in a moment."
         ) from exc
@@ -145,7 +152,7 @@ async def post_to_pokepaste(paste_text: str, title: str) -> str:
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
         logger.warning("Pokepaste /create.json returned non-JSON body: %s", body[:200])
-        raise RenderError(
+        raise PokepasteUploadError(
             "Couldn't upload the team to pokepast.es right now — "
             "please try again in a moment."
         ) from exc
@@ -153,7 +160,7 @@ async def post_to_pokepaste(paste_text: str, title: str) -> str:
     url = payload.get("url") if isinstance(payload, dict) else None
     if not isinstance(url, str) or not url:
         logger.warning("Pokepaste /create.json response missing url field: %s", payload)
-        raise RenderError(
+        raise PokepasteUploadError(
             "Couldn't upload the team to pokepast.es right now — "
             "please try again in a moment."
         )

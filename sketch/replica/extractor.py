@@ -22,7 +22,12 @@ happens inside the model — we ask for one fully-merged team as the tool
 input, then resolve nature from arrows in Python.
 
 Static parts of the request (system prompt + tool schema) are tagged with
-`cache_control: ephemeral` so successive calls bill the prefix at 10% rate.
+`cache_control: ephemeral` so successive calls bill the prefix at 10% rate
+(5-minute TTL — savings are meaningful for burst usage, negligible when
+calls are spaced further apart than that).
+
+Prompt caching docs:
+  https://docs.claude.com/en/docs/build-with-claude/prompt-caching
 """
 
 from __future__ import annotations
@@ -98,15 +103,20 @@ _NATURE_MAP: dict[tuple[str, str], str] = {
     ("Speed", "Sp. Def"): "Naive",
 }
 
-_NEUTRAL_NATURE = "Hardy"
+# "Serious" is the canonical Showdown / PokePaste neutral — by convention,
+# pastes that didn't specify a nature use Serious, while Hardy implies the
+# mon was actually drawn from in-game wild encounters with a Hardy nature.
+# Our extractor sees "no arrows" on the share screen, which carries no
+# information either way, so the canonical-neutral output is the honest one.
+_NEUTRAL_NATURE = "Serious"
 
 
 def _resolve_nature(boosted: str | None, reduced: str | None) -> str:
     """Translate share-screen arrow indicators into the canonical nature name.
 
-    A neutral nature (no arrows visible, or both arrows on the same stat) is
-    rendered as "Hardy" — the convention the user's reference script uses
-    and the one Showdown accepts as the canonical neutral.
+    A neutral nature (no arrows visible, or both arrows on the same stat)
+    resolves to "Serious" — the Showdown / PokePaste convention for the
+    no-explicit-nature output.
     """
     if boosted is None or reduced is None or boosted == reduced:
         return _NEUTRAL_NATURE
@@ -283,7 +293,9 @@ the EV invested in each, and on exactly two of the stats: a red up-arrow on \
 the nature-boosted stat and a blue down-arrow on the nature-reduced stat.
 
 If the user provides a single image, both pages are typically stitched \
-vertically — top half is Page 1, bottom half is Page 2. Cross-join by slot \
+together — either vertically (top = Page 1, bottom = Page 2) or \
+horizontally (left = Page 1, right = Page 2). Identify the layout from the \
+visible tab markers ("Moves & More" vs "Stats") and cross-join by slot \
 order regardless: slot 1 on page 1 is the same Pokemon as slot 1 on page 2.
 
 Conventions for the output:
@@ -306,6 +318,24 @@ output keys are Showdown short forms (hp, atk, def, spa, spd, spe).
   - Moves: exactly 4 per Pokemon, in the order shown on Page 1.
   - team_id: the alphanumeric code shown next to "Team ID:" at the top of \
 both pages, e.g. "QBXXWXL05U". Null if cropped out.
+
+Champions roster notes (use these to pick the right Showdown form name):
+  - Floette: Champions has only the mega-capable form. When you see Floette, \
+output "Floette-Eternal-Flower" — there is no plain Floette on the roster.
+  - Calyrex formes share the "As One" ability — infer from moves: \
+"Astral Barrage" → "Calyrex-Shadow"; "Glacial Lance" → "Calyrex-Ice". The \
+base "Calyrex" form is not used in competitive play and should not be output.
+  - Urshifu formes share the "Unseen Fist" ability — infer from the \
+signature move: "Surging Strikes" → "Urshifu-Rapid-Strike"; "Wicked Blow" → \
+"Urshifu" (Single-Strike, which is the unsuffixed Showdown name).
+  - Held-item-locked primal / origin formes (item name may vary across game \
+generations — accept either historical or Gen-9 spelling):
+      Red Orb on Groudon → "Groudon-Primal"
+      Blue Orb on Kyogre → "Kyogre-Primal"
+      Adamant Orb / Adamant Crystal on Dialga → "Dialga-Origin"
+      Lustrous Orb / Lustrous Globe on Palkia → "Palkia-Origin"
+      Griseous Orb / Griseous Core on Giratina → "Giratina-Origin"
+  - All other species use their plain Showdown name.
 
 If a field is genuinely unreadable, prefer null over a guess for nullable \
 fields, and zero for EVs that don't show an investment number. The output \

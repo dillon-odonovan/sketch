@@ -197,6 +197,46 @@ class TestFirestoreReplicaCacheStore:
             assert store.get("AAAA111122") is None
         assert any("pokepaste_url" in r.message for r in caplog.records)
 
+    def test_get_skips_doc_missing_created_at(self, caplog):
+        # The earlier lenient parser substituted epoch for missing timestamps,
+        # which papered over real data corruption. The strict parser now drops
+        # such docs with a WARNING.
+        client = _FakeFirestoreClient(
+            {
+                "AAAA111122": {
+                    "pokepaste_url": "https://pokepast.es/abc",
+                    "species": ["Pikachu"] * 6,
+                    "created_by_user_id": "1",
+                    "created_by_guild_id": "2",
+                    # No created_at field
+                }
+            }
+        )
+        store = FirestoreReplicaCacheStore(client)
+        with caplog.at_level("WARNING"):
+            assert store.get("AAAA111122") is None
+        assert any("created_at" in r.message for r in caplog.records)
+
+    def test_get_skips_doc_missing_audit_snowflake(self, caplog):
+        # Same contract: missing or malformed audit snowflake drops the entry
+        # rather than emitting `0` as the user_id / guild_id (which would
+        # surface bogus values to whoever inspects the cache).
+        client = _FakeFirestoreClient(
+            {
+                "AAAA111122": {
+                    "pokepaste_url": "https://pokepast.es/abc",
+                    "species": ["Pikachu"] * 6,
+                    "created_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
+                    "created_by_user_id": "1",
+                    # No created_by_guild_id field
+                }
+            }
+        )
+        store = FirestoreReplicaCacheStore(client)
+        with caplog.at_level("WARNING"):
+            assert store.get("AAAA111122") is None
+        assert any("audit snowflake" in r.message for r in caplog.records)
+
     def test_create_serializes_snowflakes_as_strings(self):
         client = _FakeFirestoreClient()
         store = FirestoreReplicaCacheStore(client)
@@ -225,6 +265,8 @@ class TestFirestoreReplicaCacheStore:
                     "pokepaste_url": "https://pokepast.es/v1",
                     "species": ["Pikachu"] * 6,
                     "created_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
+                    "created_by_user_id": "111",
+                    "created_by_guild_id": "222",
                 }
             }
         )

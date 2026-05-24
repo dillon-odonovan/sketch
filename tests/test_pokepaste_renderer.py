@@ -19,7 +19,7 @@ from aioresponses import aioresponses
 
 from sketch.replica.extractor import PokemonEntry, TeamData
 from sketch.replica.pokepaste_renderer import (
-    RenderError,
+    PokepasteUploadError,
     post_to_pokepaste,
     render_showdown,
 )
@@ -27,7 +27,7 @@ from sketch.replica.pokepaste_renderer import (
 
 def _entry(
     *,
-    species: str = "Floette",
+    species: str = "Floette-Eternal-Flower",
     gender: str | None = "F",
     item: str | None = "Floettite",
     ability: str = "Flower Veil",
@@ -53,7 +53,7 @@ class TestRenderShowdown:
         team = TeamData(pokemon=[_entry()])
         expected = "\n".join(
             [
-                "Floette (F) @ Floettite",
+                "Floette-Eternal-Flower (F) @ Floettite",
                 "Ability: Flower Veil",
                 "EVs: 32 HP / 32 SpA / 2 Spe",
                 "Modest Nature",
@@ -67,26 +67,27 @@ class TestRenderShowdown:
 
     def test_male_gender_renders_with_M_suffix(self):
         team = TeamData(pokemon=[_entry(gender="M")])
-        assert render_showdown(team).splitlines()[0] == "Floette (M) @ Floettite"
+        first_line = render_showdown(team).splitlines()[0]
+        assert first_line == "Floette-Eternal-Flower (M) @ Floettite"
 
     def test_genderless_omits_paren_suffix(self):
         # Genderless mons (Magnemite, Klefki, etc.) shouldn't get an empty
         # "()" — the suffix is omitted entirely.
         team = TeamData(pokemon=[_entry(gender=None)])
         first_line = render_showdown(team).splitlines()[0]
-        assert first_line == "Floette @ Floettite"
+        assert first_line == "Floette-Eternal-Flower @ Floettite"
         assert "()" not in first_line
 
     def test_no_item_omits_at_suffix(self):
         team = TeamData(pokemon=[_entry(item=None)])
         first_line = render_showdown(team).splitlines()[0]
-        assert first_line == "Floette (F)"
+        assert first_line == "Floette-Eternal-Flower (F)"
         assert " @ " not in first_line
 
     def test_no_item_and_no_gender(self):
         team = TeamData(pokemon=[_entry(gender=None, item=None)])
         first_line = render_showdown(team).splitlines()[0]
-        assert first_line == "Floette"
+        assert first_line == "Floette-Eternal-Flower"
 
     def test_zero_ev_stats_are_omitted_from_evs_line(self):
         team = TeamData(
@@ -196,7 +197,7 @@ class TestPostToPokepaste:
                 status=400,
                 body="Bad Request",
             )
-            with pytest.raises(RenderError, match="pokepast.es"):
+            with pytest.raises(PokepasteUploadError, match="pokepast.es"):
                 await post_to_pokepaste("paste text", "Replica CCCC333344")
 
     async def test_5xx_status_raises_render_error(self):
@@ -206,7 +207,7 @@ class TestPostToPokepaste:
                 status=500,
                 body="Internal Server Error",
             )
-            with pytest.raises(RenderError, match="pokepast.es"):
+            with pytest.raises(PokepasteUploadError, match="pokepast.es"):
                 await post_to_pokepaste("paste text", "Replica DDDD444455")
 
     async def test_non_json_body_raises_render_error(self):
@@ -219,7 +220,7 @@ class TestPostToPokepaste:
                 status=200,
                 body="<html>not json</html>",
             )
-            with pytest.raises(RenderError, match="pokepast.es"):
+            with pytest.raises(PokepasteUploadError, match="pokepast.es"):
                 await post_to_pokepaste("paste text", "Replica EEEE555566")
 
     async def test_missing_url_field_raises(self):
@@ -231,5 +232,5 @@ class TestPostToPokepaste:
                 status=200,
                 payload={"id": "abc123"},
             )
-            with pytest.raises(RenderError, match="pokepast.es"):
+            with pytest.raises(PokepasteUploadError, match="pokepast.es"):
                 await post_to_pokepaste("paste text", "Replica FFFF666677")

@@ -77,9 +77,9 @@ SEARCH_CACHE_TTL_SECONDS = 300.0
 # --- /replica feature -------------------------------------------------------
 
 # Top-level Firestore collection that maps a normalized Replica Code (10-char
-# uppercase hex) to the PokePaste URL we minted from its OCR'd team. Global
-# (cross-guild) — codes are deterministic across all players, so a guild's
-# OCR work benefits every other guild on the bot.
+# uppercase alphanumeric) to the PokePaste URL we minted from its OCR'd team.
+# Global (cross-guild) — codes are deterministic across all players, so a
+# guild's OCR work benefits every other guild on the bot.
 REPLICA_CACHE_COLLECTION = "replica_codes"
 
 # Vision model for the /replica OCR pipeline. Sonnet 4.6 handles the Champions

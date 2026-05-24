@@ -21,7 +21,7 @@ from sketch.replica.extractor import (
     extract_team_from_screenshots,
 )
 from sketch.replica.pokepaste_renderer import (
-    RenderError,
+    PokepasteUploadError,
     post_to_pokepaste,
     render_showdown,
 )
@@ -404,7 +404,7 @@ def setup_commands(
         interaction: discord.Interaction,
         code: str,
         description: str,
-        format: app_commands.Choice[str] | None = None,
+        format: app_commands.Choice[str],
         page1: discord.Attachment | None = None,
         page2: discord.Attachment | None = None,
     ) -> None:
@@ -417,7 +417,9 @@ def setup_commands(
         if sheets is None:
             return
 
-        fmt_name = format.value if format else _DEFAULT_FORMAT
+        # `format` is required (matches /add-team and /search-teams convention
+        # established in #20); the Discord SDK guarantees it's present here.
+        fmt_name = format.value
         sheet_name = config.FORMAT_SHEETS[fmt_name]
 
         try:
@@ -572,7 +574,7 @@ def setup_commands(
             url = await post_to_pokepaste(
                 paste_text, title=f"Replica {normalized_code}"
             )
-        except RenderError as exc:
+        except PokepasteUploadError as exc:
             await preview_message.edit(content=str(exc), embed=None, view=None)
             return
 
