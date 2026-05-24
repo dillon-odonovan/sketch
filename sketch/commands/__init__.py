@@ -68,6 +68,6 @@ def setup_commands(
         replica_cache=replica_cache,
         anthropic_client=anthropic_client,
     )
-    _register_search_teams(tree, store, registry)
+    _register_search_teams(tree, registry)
     _register_help(tree)
     _register_admin(tree, store, registry)

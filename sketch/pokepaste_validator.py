@@ -3,11 +3,10 @@ import re
 import aiohttp
 
 _POKEPASTE_URL_RE = re.compile(r"^https?://pokepast\.es/[A-Za-z0-9]+/?$")
-# Pokemon Champions "Replica" / Team IDs are 10 chars of uppercase letters and
-# digits (e.g. "QBXXWXL05U"). The earlier hex-only assumption was wrong —
-# real codes contain letters outside [A-F]. We accept any ASCII alphanumeric
-# of length 10 and uppercase it for a single canonical form (matches how the
-# in-game UI displays the code, and keeps cache keys / dedup case-insensitive).
+# Pokemon Champions "Replica" / Team IDs are 10 chars of uppercase letters
+# and digits (e.g. "QBXXWXL05U"). We accept any ASCII alphanumeric of
+# length 10 and uppercase it for a single canonical form — matches how the
+# in-game UI displays the code, and keeps cache keys / dedup case-insensitive.
 _REPLICA_RE = re.compile(r"^[A-Za-z0-9]{10}$")
 
 

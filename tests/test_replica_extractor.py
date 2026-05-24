@@ -91,7 +91,7 @@ def _full_team_input(team_id: str | None = "QBXXWXL05U") -> dict:
         "team_id": team_id,
         "pokemon": [
             {
-                "species": "Floette-Eternal-Flower",
+                "species": "Floette-Eternal",
                 "gender": "F",
                 "item": "Floettite",
                 "ability": "Flower Veil",
@@ -275,7 +275,7 @@ class TestExtractTeamFromScreenshots:
         assert isinstance(team, TeamData)
         assert len(team.pokemon) == 6
         floette = team.pokemon[0]
-        assert floette.species == "Floette-Eternal-Flower"
+        assert floette.species == "Floette-Eternal"
         assert floette.gender == "F"
         assert floette.item == "Floettite"
         # Nature resolved from arrows in code, not by the model.

@@ -292,11 +292,16 @@ shows the six base stats (HP, Attack, Defense, Sp. Atk, Sp. Def, Speed) with \
 the EV invested in each, and on exactly two of the stats: a red up-arrow on \
 the nature-boosted stat and a blue down-arrow on the nature-reduced stat.
 
-If the user provides a single image, both pages are typically stitched \
-together — either vertically (top = Page 1, bottom = Page 2) or \
-horizontally (left = Page 1, right = Page 2). Identify the layout from the \
-visible tab markers ("Moves & More" vs "Stats") and cross-join by slot \
-order regardless: slot 1 on page 1 is the same Pokemon as slot 1 on page 2.
+When the user provides one image, both pages may be stitched together in \
+any orientation (vertical, horizontal, or even reversed). Identify each \
+page by its content rather than by position:
+  - The page showing tab marker "Moves & More" — or four bulleted move \
+names per Pokemon, with an ability and item listed — is **Page 1**.
+  - The page showing tab marker "Stats" — or a six-row stat readout (HP, \
+Attack, Defense, Sp. Atk, Sp. Def, Speed) with red ↑ / blue ↓ arrows on \
+two of them — is **Page 2**.
+Cross-join by slot order: slot 1 on Page 1 is the same Pokemon as slot 1 \
+on Page 2, regardless of which side each page is on in the image.
 
 Conventions for the output:
   - Species, items, abilities, moves: use the canonical Showdown / PokePaste \
@@ -319,23 +324,32 @@ output keys are Showdown short forms (hp, atk, def, spa, spd, spe).
   - team_id: the alphanumeric code shown next to "Team ID:" at the top of \
 both pages, e.g. "QBXXWXL05U". Null if cropped out.
 
-Champions roster notes (use these to pick the right Showdown form name):
-  - Floette: Champions has only the mega-capable form. When you see Floette, \
-output "Floette-Eternal-Flower" — there is no plain Floette on the roster.
-  - Calyrex formes share the "As One" ability — infer from moves: \
-"Astral Barrage" → "Calyrex-Shadow"; "Glacial Lance" → "Calyrex-Ice". The \
-base "Calyrex" form is not used in competitive play and should not be output.
-  - Urshifu formes share the "Unseen Fist" ability — infer from the \
-signature move: "Surging Strikes" → "Urshifu-Rapid-Strike"; "Wicked Blow" → \
-"Urshifu" (Single-Strike, which is the unsuffixed Showdown name).
-  - Held-item-locked primal / origin formes (item name may vary across game \
-generations — accept either historical or Gen-9 spelling):
-      Red Orb on Groudon → "Groudon-Primal"
-      Blue Orb on Kyogre → "Kyogre-Primal"
-      Adamant Orb / Adamant Crystal on Dialga → "Dialga-Origin"
-      Lustrous Orb / Lustrous Globe on Palkia → "Palkia-Origin"
-      Griseous Orb / Griseous Core on Giratina → "Giratina-Origin"
-  - All other species use their plain Showdown name.
+Form resolution:
+
+  Use your general knowledge of Pokemon and the canonical Showdown / \
+PokePaste form names. The full visible context — ability, moves, held \
+item, Pokemon types if shown — usually disambiguates which form is on the \
+field. Some examples (not exhaustive — apply the same kind of reasoning to \
+any species with multiple competitive formes):
+
+  - Calyrex with "As One" + "Astral Barrage" or Psychic/Ghost typing → \
+"Calyrex-Shadow"; with "As One" + "Glacial Lance" or Psychic/Ice typing → \
+"Calyrex-Ice"; with "Unnerve" and neither signature move → plain "Calyrex".
+  - Urshifu with "Surging Strikes" or Water typing → "Urshifu-Rapid-Strike"; \
+with "Wicked Blow" or Dark typing → "Urshifu" (the unsuffixed Showdown name \
+for Single-Strike).
+  - Groudon holding "Red Orb" → "Groudon-Primal"; Kyogre holding "Blue Orb" \
+→ "Kyogre-Primal"; Giratina holding "Griseous Orb" or "Griseous Core" → \
+"Giratina-Origin".
+
+  These are illustrative, not a closed list — don't refuse to output a form \
+just because it isn't in the examples above, and don't force a form just \
+because the ability matches when other context (moves, types, item) \
+disagrees.
+
+Champions roster note: the only Floette in Champions is the mega-capable \
+form, output as "Floette-Eternal" (never plain "Floette"). All other \
+species use the form name implied by the share-screen context.
 
 If a field is genuinely unreadable, prefer null over a guess for nullable \
 fields, and zero for EVs that don't show an investment number. The output \

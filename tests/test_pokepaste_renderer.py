@@ -27,7 +27,7 @@ from sketch.replica.pokepaste_renderer import (
 
 def _entry(
     *,
-    species: str = "Floette-Eternal-Flower",
+    species: str = "Floette-Eternal",
     gender: str | None = "F",
     item: str | None = "Floettite",
     ability: str = "Flower Veil",
@@ -53,7 +53,7 @@ class TestRenderShowdown:
         team = TeamData(pokemon=[_entry()])
         expected = "\n".join(
             [
-                "Floette-Eternal-Flower (F) @ Floettite",
+                "Floette-Eternal (F) @ Floettite",
                 "Ability: Flower Veil",
                 "EVs: 32 HP / 32 SpA / 2 Spe",
                 "Modest Nature",
@@ -68,26 +68,26 @@ class TestRenderShowdown:
     def test_male_gender_renders_with_M_suffix(self):
         team = TeamData(pokemon=[_entry(gender="M")])
         first_line = render_showdown(team).splitlines()[0]
-        assert first_line == "Floette-Eternal-Flower (M) @ Floettite"
+        assert first_line == "Floette-Eternal (M) @ Floettite"
 
     def test_genderless_omits_paren_suffix(self):
         # Genderless mons (Magnemite, Klefki, etc.) shouldn't get an empty
         # "()" — the suffix is omitted entirely.
         team = TeamData(pokemon=[_entry(gender=None)])
         first_line = render_showdown(team).splitlines()[0]
-        assert first_line == "Floette-Eternal-Flower @ Floettite"
+        assert first_line == "Floette-Eternal @ Floettite"
         assert "()" not in first_line
 
     def test_no_item_omits_at_suffix(self):
         team = TeamData(pokemon=[_entry(item=None)])
         first_line = render_showdown(team).splitlines()[0]
-        assert first_line == "Floette-Eternal-Flower (F)"
+        assert first_line == "Floette-Eternal (F)"
         assert " @ " not in first_line
 
     def test_no_item_and_no_gender(self):
         team = TeamData(pokemon=[_entry(gender=None, item=None)])
         first_line = render_showdown(team).splitlines()[0]
-        assert first_line == "Floette-Eternal-Flower"
+        assert first_line == "Floette-Eternal"
 
     def test_zero_ev_stats_are_omitted_from_evs_line(self):
         team = TeamData(

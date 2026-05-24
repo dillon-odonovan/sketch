@@ -198,9 +198,9 @@ class TestFirestoreReplicaCacheStore:
         assert any("pokepaste_url" in r.message for r in caplog.records)
 
     def test_get_skips_doc_missing_created_at(self, caplog):
-        # The earlier lenient parser substituted epoch for missing timestamps,
-        # which papered over real data corruption. The strict parser now drops
-        # such docs with a WARNING.
+        # Docs missing the timestamp drop with a WARNING — defense against
+        # hand-edits / schema drift that would otherwise produce entries
+        # with no audit trail.
         client = _FakeFirestoreClient(
             {
                 "AAAA111122": {

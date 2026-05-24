@@ -175,13 +175,10 @@ def _parse_doc(doc_id: str, data: dict) -> ReplicaCacheEntry | None:
     """Build an entry from a Firestore doc, or log and skip on malformed
     input.
 
-    Strict on every required field — a doc missing the URL, the timestamp,
-    or either audit snowflake is dropped with a WARNING naming what was
-    wrong. The earlier lenient version substituted epoch / 0 defaults,
-    which papered over real data corruption and produced cache entries
-    with nonsense audit columns. Dropping the bad doc isolates damage to
-    that one entry; the next cold OCR of the same code will repopulate it
-    with valid fields.
+    Every required field is checked; a doc missing the URL, the timestamp,
+    or either audit snowflake is dropped with a WARNING naming the bad
+    field. Dropping the doc isolates the damage to that one entry — the
+    next cold OCR of the same code repopulates a valid one.
     """
     url = data.get("pokepaste_url")
     if not isinstance(url, str) or not url:

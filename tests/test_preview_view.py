@@ -18,7 +18,7 @@ from sketch.replica.extractor import PokemonEntry, TeamData
 from sketch.replica.preview_view import ReplicaPreviewView, team_to_embed
 
 
-def _entry(species: str = "Floette-Eternal-Flower") -> PokemonEntry:
+def _entry(species: str = "Floette-Eternal") -> PokemonEntry:
     return PokemonEntry(
         species=species,
         gender="F",
@@ -35,7 +35,7 @@ def _team() -> TeamData:
     # matches the same data the renderer test uses.
     return TeamData(
         pokemon=[
-            _entry("Floette-Eternal-Flower"),
+            _entry("Floette-Eternal"),
             _entry("Aerodactyl"),
             _entry("Incineroar"),
             _entry("Garchomp"),
@@ -93,7 +93,7 @@ class TestTeamToEmbed:
             fmt_name="Reg M-A",
         )
         # Header line of the first mon in Showdown format.
-        assert "Floette-Eternal-Flower (F) @ Floettite" in embed.description
+        assert "Floette-Eternal (F) @ Floettite" in embed.description
         # Ability + Nature + Moves all present.
         assert "Ability: Flower Veil" in embed.description
         assert "Modest Nature" in embed.description

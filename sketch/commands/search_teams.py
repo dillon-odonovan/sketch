@@ -22,9 +22,6 @@ from sketch.commands._shared import (
 )
 from sketch.logging_setup import trace_id_var
 from sketch.pokepaste_validator import ValidationError, canonicalize_pokepaste_url
-from sketch.storage.guild_config import (
-    GuildConfigStore,  # noqa: F401 — signature parity
-)
 from sketch.storage.sheets_client import SheetsClientRegistry
 
 logger = logging.getLogger(__name__)
@@ -32,11 +29,11 @@ logger = logging.getLogger(__name__)
 
 def register(
     tree: app_commands.CommandTree,
-    store: GuildConfigStore,  # noqa: ARG001 — kept for register() parity
     registry: SheetsClientRegistry,
 ) -> None:
-    """Register /search-teams. `store` is unused but accepted so all
-    `register` functions share a uniform signature for the orchestrator."""
+    """Register /search-teams. Doesn't need the guild-config store —
+    everything per-guild is reachable via the SheetsClient that the
+    registry resolves for the invoking guild."""
 
     @tree.command(
         name="search-teams",
