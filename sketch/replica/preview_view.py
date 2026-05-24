@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import discord
 
-from sketch.replica.extractor import STAT_KEYS, TeamData
+from sketch.replica.extractor import TeamData
+from sketch.replica.pokepaste_renderer import render_showdown
 
-# Stat order for the inline EV summary line. Matches the canonical order
-# used in the renderer and the share-screen UI itself.
-_EV_SUMMARY_KEYS = STAT_KEYS
+# Discord's embed description maxes out at 4096 chars. A 6-Pokemon paste
+# rendered to Showdown export comfortably fits (well under 1k chars), and
+# a markdown code block wrapper preserves whitespace + uses a monospace
+# font so columns line up the way the user expects from PokePaste.
+_DESCRIPTION_LIMIT = 4096
 
 
 def team_to_embed(
@@ -32,30 +35,27 @@ def team_to_embed(
 ) -> discord.Embed:
     """Build the preview embed shown to the invoker before commit.
 
-    Field-per-Pokemon layout (6 fields, well under the 25-field limit) keeps
-    each entry scannable. EVs render as a 6-slash summary (`HP/Atk/Def/SpA/
-    SpD/Spe`) which is the in-game share-screen ordering — quick to
-    eyeball-check against the screenshot the user just uploaded.
+    The body is the actual `render_showdown(team)` text wrapped in a fenced
+    code block — the same text we'll POST to pokepast.es on Confirm. The
+    user sees exactly what they're about to publish, in the lingua franca
+    of VGC team sharing (Showdown / PokePaste format), rather than a
+    bespoke Discord field layout that they'd then have to re-verify
+    against the rendered paste.
     """
+    paste = render_showdown(team)
+    # Truncate defensively. A 6-mon Showdown paste is normally ~500–800
+    # chars, well within Discord's 4096-char embed description limit, but
+    # an unusually long set of move names + items could in theory push
+    # past it. Truncating with an ellipsis keeps the preview functional
+    # — the actual paste posted to pokepast.es is the un-truncated text.
+    if len(paste) > _DESCRIPTION_LIMIT - 50:
+        paste = paste[: _DESCRIPTION_LIMIT - 50] + "\n… (truncated for preview)"
+
     embed = discord.Embed(
         title=f"Replica {code} — confirm to add",
-        description=f"**{description}** — *{fmt_name}*",
+        description=f"**{description}** — *{fmt_name}*\n```\n{paste}\n```",
         color=discord.Color.gold(),
     )
-    for p in team.pokemon:
-        ev_summary = "/".join(str(p.evs.get(k, 0)) for k in _EV_SUMMARY_KEYS)
-        gender_suffix = f" ({p.gender})" if p.gender else ""
-        item_suffix = f" @ {p.item}" if p.item else ""
-        value = (
-            f"**Ability:** {p.ability}  ·  **Nature:** {p.nature}\n"
-            f"**EVs (HP/Atk/Def/SpA/SpD/Spe):** {ev_summary}\n"
-            f"**Moves:** {', '.join(p.moves)}"
-        )
-        embed.add_field(
-            name=f"{p.species}{gender_suffix}{item_suffix}",
-            value=value,
-            inline=False,
-        )
     embed.set_footer(
         text=(
             "Click Confirm to upload to pokepast.es and add this team to the "

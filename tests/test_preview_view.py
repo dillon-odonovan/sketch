@@ -80,65 +80,63 @@ class _FakeInteraction:
 
 
 class TestTeamToEmbed:
-    def test_one_field_per_pokemon(self):
-        embed = team_to_embed(
-            _team(),
-            code="AAAA111122",
-            description="jsmith — sample team",
-            fmt_name="Reg M-A",
-        )
-        assert len(embed.fields) == 6
+    """The embed body now contains the full rendered Showdown / PokePaste
+    text wrapped in a code block — same text we'll POST to pokepast.es on
+    Confirm. Tests verify the description contains the canonical render
+    rather than reimplementing the field-by-field layout."""
 
-    def test_field_names_carry_gender_and_item_suffix(self):
+    def test_description_contains_rendered_paste(self):
         embed = team_to_embed(
             _team(),
             code="QBXXWXL05U",
-            description="...",
+            description="sample team",
             fmt_name="Reg M-A",
         )
-        # Matches the rendered Showdown shape: `Species (Gender) @ Item`.
-        assert embed.fields[0].name == "Floette-Eternal-Flower (F) @ Floettite"
+        # Header line of the first mon in Showdown format.
+        assert "Floette-Eternal-Flower (F) @ Floettite" in embed.description
+        # Ability + Nature + Moves all present.
+        assert "Ability: Flower Veil" in embed.description
+        assert "Modest Nature" in embed.description
+        assert "- Dazzling Gleam" in embed.description
+        # All 6 Pokemon are in the paste.
+        assert "Aerodactyl" in embed.description
+        assert "Venusaur" in embed.description
 
-    def test_field_value_includes_ability_nature_moves(self):
+    def test_description_wraps_paste_in_code_block(self):
+        # The Showdown export is wrapped in a fenced ``` block so Discord
+        # renders it with monospace + preserves the line-by-line layout.
         embed = team_to_embed(
             _team(),
             code="QBXXWXL05U",
-            description="...",
+            description="x",
             fmt_name="Reg M-A",
         )
-        value = embed.fields[0].value
-        assert "Flower Veil" in value
-        assert "Modest" in value
-        # EV summary uses the share-screen ordering — test the exact slash
-        # form so a reorder regression is caught.
-        assert "32/0/0/32/0/2" in value
-        assert "Dazzling Gleam, Moonblast, Light of Ruin, Protect" in value
+        assert "```\n" in embed.description
+        # Closing fence too.
+        assert embed.description.rstrip().endswith("```")
 
-    def test_field_value_does_not_mention_tera(self):
-        # Tera isn't surfaced in the Champions share screen and isn't part
-        # of the rendered output, so it shouldn't be in the preview either
-        # — its absence keeps the embed honest about what we captured.
-        embed = team_to_embed(
-            _team(),
-            code="QBXXWXL05U",
-            description="...",
-            fmt_name="Reg M-A",
-        )
-        for embed_field in embed.fields:
-            assert "Tera" not in embed_field.value
-
-    def test_title_includes_code_and_description(self):
+    def test_description_includes_user_description_and_format(self):
         embed = team_to_embed(
             _team(),
             code="QBXXWXL05U",
             description="my team",
             fmt_name="Reg M-A",
         )
-        assert "QBXXWXL05U" in embed.title
         assert "my team" in embed.description
         assert "Reg M-A" in embed.description
 
-    def test_genderless_no_item_renders_clean_name(self):
+    def test_title_includes_code(self):
+        embed = team_to_embed(
+            _team(),
+            code="QBXXWXL05U",
+            description="x",
+            fmt_name="Reg M-A",
+        )
+        assert "QBXXWXL05U" in embed.title
+
+    def test_genderless_no_item_renders_clean_name_in_paste(self):
+        # Edge case: genderless mon with no item should appear as just
+        # "Klefki" in the rendered paste — no empty "()" or " @ ".
         team = TeamData(
             pokemon=[
                 PokemonEntry(
@@ -160,9 +158,9 @@ class TestTeamToEmbed:
             ]
         )
         embed = team_to_embed(team, code="X" * 10, description="d", fmt_name="Reg M-A")
-        assert embed.fields[0].name == "Klefki"
-        assert " @ " not in embed.fields[0].name
-        assert "()" not in embed.fields[0].name
+        # The species line in the rendered paste should be just "Klefki".
+        # Asserts on the description body containing that exact line.
+        assert "\nKlefki\n" in embed.description or "```\nKlefki\n" in embed.description
 
 
 class TestReplicaPreviewView:

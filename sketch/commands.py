@@ -40,6 +40,12 @@ _GENERIC_SHEET_READ_ERROR = (
 _GENERIC_SHEET_WRITE_ERROR = (
     "Couldn't add the team right now — please try again in a moment."
 )
+_GENERIC_CACHE_READ_ERROR = (
+    "Couldn't check the replica-code cache right now — please try again in a moment."
+)
+_GENERIC_CACHE_WRITE_ERROR = (
+    "Couldn't save to the replica-code cache right now — please try again in a moment."
+)
 _UNCONFIGURED_GUILD_ERROR = (
     "This server isn't configured to use Sketch. A server admin can run "
     "`/register-sheet` to set the Google Sheet this server writes to."
@@ -235,14 +241,32 @@ def setup_commands(
 
     @tree.command(
         name="add-team",
-        description="Add a Pokepaste team to the database.",
+        description=(
+            "Add a team to the bank — by Pokepaste URL, Champions Team ID, or both."
+        ),
     )
     @app_commands.describe(
-        url="Pokepaste URL (e.g., https://pokepast.es/abc123)",
+        url=(
+            "Pokepaste URL (e.g., https://pokepast.es/abc123). Required unless "
+            "you provide a Team ID instead."
+        ),
+        replica=(
+            "10-character Champions Team ID (e.g. 'QBXXWXL05U'). Required unless "
+            "you provide a URL instead."
+        ),
         description="Short description of the team (e.g., 'Calyrex-S balance')",
         format="Format/regulation",
-        replica="Optional 10-character alphanumeric Champions Team ID",
         paste_type="Whether this paste is exact, recreated, or unspecified",
+        page1=(
+            "Page 1 of the Champions Replica share screen. Only needed if you "
+            "submitted a Team ID we haven't seen before (no URL). A single "
+            "stitched image of both pages works — just attach it here and leave "
+            "page2 empty."
+        ),
+        page2=(
+            "Page 2 of the Champions Replica share screen. Optional even on "
+            "first sighting — omit if page1 is already stitched with both pages."
+        ),
     )
     @app_commands.choices(
         format=_format_choices(),
@@ -250,17 +274,19 @@ def setup_commands(
     )
     async def add_team(
         interaction: discord.Interaction,
-        url: str,
         description: str,
         format: app_commands.Choice[str],
+        url: str | None = None,
         replica: str | None = None,
         paste_type: app_commands.Choice[str] | None = None,
+        page1: discord.Attachment | None = None,
+        page2: discord.Attachment | None = None,
     ) -> None:
         trace_id_var.set(str(interaction.id))
         # Discord requires interactions to be acknowledged within 3 seconds;
         # deferring buys us up to 15 minutes for the actual work (URL fetch,
-        # Sheets writes, species poll). ephemeral=True keeps the reply
-        # visible only to the invoker.
+        # Sheets writes, OCR call, species poll). ephemeral=True keeps the
+        # reply visible only to the invoker.
         # https://discord.com/developers/docs/interactions/receiving-and-responding
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -271,33 +297,244 @@ def setup_commands(
         fmt_name = format.value
         sheet_name = config.FORMAT_SHEETS[fmt_name]
         paste_type_value = paste_type.value if paste_type else config.PASTE_TYPE_DEFAULT
+
+        # At least one of `url` or `replica` must be provided — the command
+        # is the unified entry point for both Pokepaste-URL teams and
+        # Champions-Team-ID teams.
+        if url is None and replica is None:
+            await interaction.followup.send(
+                "Provide a **Pokepaste URL** or a **Champions Team ID** (or "
+                "both). At least one is required.",
+                ephemeral=True,
+            )
+            return
+
+        normalized_replica: str | None = None
+        if replica is not None:
+            try:
+                normalized_replica = normalize_replica(replica)
+            except ValidationError as e:
+                await interaction.followup.send(str(e), ephemeral=True)
+                return
+
         logger.info(
-            "add-team invoked by user_id=%s guild_id=%s: url=%s description=%r "
-            "format=%s replica=%s paste_type=%s",
+            "add-team invoked by user_id=%s guild_id=%s: url=%s replica=%s "
+            "description=%r format=%s paste_type=%s has_page1=%s has_page2=%s",
             interaction.user.id,
             interaction.guild_id,
             url,
+            normalized_replica,
             description,
             fmt_name,
-            replica,
             paste_type_value,
+            page1 is not None,
+            page2 is not None,
         )
 
-        # Cheap shape check first so we can dedup against the sheet before
-        # paying for the live HTTP fetch in validate_pokepaste_url. The
-        # canonical form is comparison-only — the row we eventually write
-        # stores the user-provided string.
-        try:
-            canonical_url = canonicalize_pokepaste_url(url)
-        except ValidationError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
-            return
+        # ----- Determine the canonical Pokepaste URL ---------------------
+        #
+        # Three resolution paths. All converge on `canonical_url` (what we
+        # write to the sheet) and `canonical_url_for_dedup` (what we compare
+        # against existing rows). The latter is always the canonicalized
+        # form; the former preserves the user's original spelling when they
+        # supplied a URL directly so the sheet shows what they typed.
+
+        preview_shown = False  # tracks whether we used edit_original_response
+        # for the preview embed (changes nothing about
+        # how we send subsequent updates — both paths
+        # edit the original — but useful for logs).
+
+        if url is not None:
+            # URL path: user supplied a Pokepaste URL. Same as the historical
+            # /add-team flow. If they ALSO supplied a replica code, we'll
+            # seed the cache after a successful write below.
+            try:
+                canonical_url_for_dedup = canonicalize_pokepaste_url(url)
+            except ValidationError as e:
+                await interaction.followup.send(str(e), ephemeral=True)
+                return
+            canonical_url = url
+        else:
+            # Replica-only path. `normalized_replica` is non-None by the
+            # earlier "at least one of url/replica" check.
+            assert normalized_replica is not None
+            try:
+                cached = await asyncio.to_thread(replica_cache.get, normalized_replica)
+            except Exception:
+                logger.exception(
+                    "Replica cache read failed for code=%s", normalized_replica
+                )
+                await interaction.followup.send(
+                    _GENERIC_CACHE_READ_ERROR, ephemeral=True
+                )
+                return
+
+            if cached is not None:
+                # Cache hit. Reuse the URL minted by a prior confirmed OCR
+                # (possibly from a different guild — codes are global).
+                logger.info(
+                    "add-team cache HIT for code=%s -> %s",
+                    normalized_replica,
+                    cached.pokepaste_url,
+                )
+                canonical_url = cached.pokepaste_url
+                canonical_url_for_dedup = canonical_url
+            else:
+                # Cold OCR path: at least page1 must be present. page2 is
+                # optional — the extractor's prompt handles single-image
+                # stitched submissions.
+                if page1 is None:
+                    await interaction.followup.send(
+                        f"Code `{normalized_replica}` isn't in the cache yet. "
+                        "Either provide a Pokepaste URL too, or attach "
+                        "**page1** (and optionally page2) screenshots of the "
+                        "Replica share screen so I can OCR the team. A "
+                        "single stitched image of both pages works — just "
+                        "attach as page1.",
+                        ephemeral=True,
+                    )
+                    return
+
+                try:
+                    page1_bytes = await page1.read()
+                    page2_bytes = await page2.read() if page2 is not None else None
+                except (discord.HTTPException, discord.NotFound):
+                    logger.warning(
+                        "Failed to download replica screenshots for code=%s",
+                        normalized_replica,
+                        exc_info=True,
+                    )
+                    await interaction.followup.send(
+                        "Couldn't download those attachments — please try "
+                        "uploading the screenshots again.",
+                        ephemeral=True,
+                    )
+                    return
+
+                try:
+                    team = await extract_team_from_screenshots(
+                        anthropic_client, page1_bytes, page2_bytes
+                    )
+                except ExtractionError as exc:
+                    await interaction.followup.send(str(exc), ephemeral=True)
+                    return
+
+                # Team ID mismatch check — the share screen prints the code
+                # at the top of both pages, so the model usually reads it
+                # back. A mismatch is almost always a wrong-attachment user
+                # error; refusing keeps the cache from being seeded with the
+                # wrong (code -> URL) pair that would mislead future lookups.
+                if team.team_id is not None and team.team_id != normalized_replica:
+                    logger.warning(
+                        "Team ID mismatch: submitted=%s extracted=%s",
+                        normalized_replica,
+                        team.team_id,
+                    )
+                    await interaction.followup.send(
+                        f"The screenshots show Team ID `{team.team_id}`, but "
+                        f"you submitted code `{normalized_replica}`. "
+                        "Double-check the attachments and re-run with the "
+                        "correct screenshots.",
+                        ephemeral=True,
+                    )
+                    return
+
+                # Preview + Confirm/Cancel gate. The view is the v1 safety
+                # net for the global cache — only confirmed extractions are
+                # minted to pokepast.es and written to Firestore.
+                view = ReplicaPreviewView(
+                    interaction.user.id,
+                    timeout=config.REPLICA_PREVIEW_TIMEOUT_SECONDS,
+                )
+                preview_embed = team_to_embed(
+                    team,
+                    code=normalized_replica,
+                    description=description,
+                    fmt_name=fmt_name,
+                )
+                await interaction.edit_original_response(
+                    content=(
+                        "Extracted from your screenshots. **Confirm** to "
+                        "upload to pokepast.es and add to the bank; "
+                        "**Cancel** to discard."
+                    ),
+                    embed=preview_embed,
+                    view=view,
+                )
+                preview_shown = True
+
+                await view.wait()
+
+                if view.decision is not True:
+                    outcome = (
+                        "Cancelled." if view.decision is False else "Preview timed out."
+                    )
+                    await interaction.edit_original_response(
+                        content=outcome, embed=None, view=None
+                    )
+                    logger.info(
+                        "add-team preview declined for code=%s decision=%s",
+                        normalized_replica,
+                        view.decision,
+                    )
+                    return
+
+                await interaction.edit_original_response(
+                    content="Uploading to pokepast.es and adding to the bank…",
+                    embed=None,
+                    view=None,
+                )
+
+                # Mint the URL and seed the cache. `create` is transactional
+                # fail-if-exists; a concurrent OCR for the same code will
+                # land here too and one will catch AlreadyExists — the
+                # store re-reads and returns the winner's URL.
+                try:
+                    paste_text = render_showdown(team)
+                    minted_url = await post_to_pokepaste(
+                        paste_text, title=f"Replica {normalized_replica}"
+                    )
+                except PokepasteUploadError as exc:
+                    await interaction.edit_original_response(
+                        content=str(exc), embed=None, view=None
+                    )
+                    return
+
+                entry = ReplicaCacheEntry(
+                    pokepaste_url=minted_url,
+                    species=[p.species for p in team.pokemon],
+                    created_at=datetime.now(timezone.utc),
+                    created_by_user_id=interaction.user.id,
+                    created_by_guild_id=interaction.guild_id or 0,
+                )
+                try:
+                    canonical_entry = await asyncio.to_thread(
+                        replica_cache.create, normalized_replica, entry
+                    )
+                except Exception:
+                    logger.exception(
+                        "Replica cache write failed for code=%s",
+                        normalized_replica,
+                    )
+                    await interaction.edit_original_response(
+                        content=_GENERIC_CACHE_WRITE_ERROR,
+                        embed=None,
+                        view=None,
+                    )
+                    return
+
+                canonical_url = canonical_entry.pokepaste_url
+                canonical_url_for_dedup = canonical_url
+
+        # ----- Common write path -----------------------------------------
+        # From here, both paths share the dedup → validate → add_row →
+        # broadcast → species poll → invalidate flow.
 
         try:
-            existing = await sheets.find_row_by_url(sheet_name, canonical_url)
+            existing = await sheets.find_row_by_url(sheet_name, canonical_url_for_dedup)
         except Exception:
             logger.exception("Failed to check for existing team")
-            await interaction.followup.send(_GENERIC_SHEET_READ_ERROR, ephemeral=True)
+            await _send_status(interaction, preview_shown, _GENERIC_SHEET_READ_ERROR)
             return
 
         if existing is not None:
@@ -309,31 +546,35 @@ def setup_commands(
                 existing.row_number,
             )
             existing_desc = existing.description or "(no description)"
-            await interaction.followup.send(
+            await _send_status(
+                interaction,
+                preview_shown,
                 f"This Pokepaste is already in *{fmt_name}* on row "
                 f'{existing.row_number}: "{existing_desc}".',
-                ephemeral=True,
             )
             return
 
         try:
-            await validate_pokepaste_url(url)
-            normalized_replica = normalize_replica(replica) if replica else None
+            await validate_pokepaste_url(canonical_url)
         except ValidationError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
+            await _send_status(interaction, preview_shown, str(e))
             return
 
         try:
             row = await sheets.add_row(
-                sheet_name, url, description, normalized_replica, paste_type_value
+                sheet_name,
+                canonical_url,
+                description,
+                normalized_replica,
+                paste_type_value,
             )
         except Exception:
             logger.exception("Failed to add row")
-            await interaction.followup.send(_GENERIC_SHEET_WRITE_ERROR, ephemeral=True)
+            await _send_status(interaction, preview_shown, _GENERIC_SHEET_WRITE_ERROR)
             return
 
         msg = f"Added team to row {row} in *{fmt_name}*."
-        await interaction.followup.send(msg, ephemeral=True)
+        await _send_status(interaction, preview_shown, msg)
 
         broadcast_message: discord.Message | None = None
         guild_cfg = (
@@ -346,7 +587,7 @@ def setup_commands(
                 interaction,
                 guild_cfg.broadcast_channel_id,
                 fmt_name=fmt_name,
-                url=url,
+                url=canonical_url,
                 description=description,
             )
         else:
@@ -358,8 +599,10 @@ def setup_commands(
 
         species = await _await_species(sheets, sheet_name, row)
         if species:
-            await interaction.edit_original_response(
-                content=f"{msg}\nParsed: {', '.join(species)}"
+            await _send_status(
+                interaction,
+                preview_shown,
+                f"{msg}\nParsed: {', '.join(species)}",
             )
             if broadcast_message is not None:
                 await _enrich_broadcast_with_species(broadcast_message, species)
@@ -378,238 +621,6 @@ def setup_commands(
                 row,
                 sheet_name,
             )
-
-    @tree.command(
-        name="replica",
-        description=("Add a Pokemon Champions team to the bank from a Replica Code."),
-    )
-    @app_commands.describe(
-        code="10-character Team ID from the in-game Replica share screen.",
-        description="Short description of the team (e.g., 'Calyrex-S balance')",
-        format="Format/regulation",
-        page1=(
-            "Required on first sighting of this code: Page 1 of the Replica "
-            "share screen ('Moves & More' — species, ability, item, moves). "
-            "If you have both pages stitched into one image, attach it here "
-            "and leave page2 empty."
-        ),
-        page2=(
-            "Optional on first sighting: Page 2 of the Replica share screen "
-            "('Stats' — EVs + nature-arrow indicators). Omit if page1 already "
-            "contains both pages stitched."
-        ),
-    )
-    @app_commands.choices(format=_format_choices())
-    async def replica(
-        interaction: discord.Interaction,
-        code: str,
-        description: str,
-        format: app_commands.Choice[str],
-        page1: discord.Attachment | None = None,
-        page2: discord.Attachment | None = None,
-    ) -> None:
-        trace_id_var.set(str(interaction.id))
-        # Same defer pattern as /add-team — OCR + pokepast.es upload can take
-        # 5-20 seconds even on the hot path; we need the 15-min ack budget.
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        sheets = await _resolve_guild_sheets(interaction, registry)
-        if sheets is None:
-            return
-
-        # `format` is required (matches /add-team and /search-teams convention
-        # established in #20); the Discord SDK guarantees it's present here.
-        fmt_name = format.value
-        sheet_name = config.FORMAT_SHEETS[fmt_name]
-
-        try:
-            normalized_code = normalize_replica(code)
-        except ValidationError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
-            return
-
-        logger.info(
-            "replica invoked by user_id=%s guild_id=%s: code=%s format=%s "
-            "has_page1=%s has_page2=%s",
-            interaction.user.id,
-            interaction.guild_id,
-            normalized_code,
-            fmt_name,
-            page1 is not None,
-            page2 is not None,
-        )
-
-        # Cache read is fast (in-process dict after first hit) but the
-        # cold-miss path RPCs to Firestore, so offload to a thread either
-        # way to keep the event loop snappy.
-        try:
-            cached = await asyncio.to_thread(replica_cache.get, normalized_code)
-        except Exception:
-            logger.exception("Replica cache read failed for code=%s", normalized_code)
-            await interaction.followup.send(_GENERIC_SHEET_READ_ERROR, ephemeral=True)
-            return
-
-        if cached is not None:
-            logger.info(
-                "replica cache HIT for code=%s -> %s",
-                normalized_code,
-                cached.pokepaste_url,
-            )
-            await _commit_replica_row(
-                interaction,
-                sheets,
-                store=store,
-                sheet_name=sheet_name,
-                fmt_name=fmt_name,
-                url=cached.pokepaste_url,
-                code=normalized_code,
-                description=description,
-            )
-            return
-
-        # Cache miss. At minimum page1 is required. page2 is optional — if
-        # the user stitched both pages into one image they can attach just
-        # page1 and the extractor's prompt handles the single-image case.
-        if page1 is None:
-            await interaction.followup.send(
-                f"Code `{normalized_code}` isn't in the cache yet. "
-                "Re-run with **page1** (and optionally **page2**) screenshots "
-                "of the Replica share screen so I can OCR the team. A single "
-                "stitched image of both pages works too — just attach it as "
-                "page1.",
-                ephemeral=True,
-            )
-            return
-
-        try:
-            page1_bytes = await page1.read()
-            page2_bytes = await page2.read() if page2 is not None else None
-        except (discord.HTTPException, discord.NotFound):
-            logger.warning(
-                "Failed to download replica screenshots for code=%s",
-                normalized_code,
-                exc_info=True,
-            )
-            await interaction.followup.send(
-                "Couldn't download those attachments — please try uploading "
-                "the screenshots again.",
-                ephemeral=True,
-            )
-            return
-
-        try:
-            team = await extract_team_from_screenshots(
-                anthropic_client, page1_bytes, page2_bytes
-            )
-        except ExtractionError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-
-        # Sanity-check the user's claimed code against what the screenshots
-        # actually show. Champions prints the Team ID across the top of both
-        # pages, so the model usually reads it. A mismatch here is almost
-        # always a wrong-attachment user error — refusing keeps the global
-        # cache from being seeded with the wrong (code -> URL) pair, which
-        # would then mislead every future guild looking up that code.
-        if team.team_id is not None and team.team_id != normalized_code:
-            logger.warning(
-                "Team ID mismatch for /replica: submitted=%s extracted=%s",
-                normalized_code,
-                team.team_id,
-            )
-            await interaction.followup.send(
-                f"The screenshots show Team ID `{team.team_id}`, but you "
-                f"submitted code `{normalized_code}`. Double-check the "
-                "attachments and re-run with the correct screenshots.",
-                ephemeral=True,
-            )
-            return
-
-        # Preview + Confirm/Cancel gate. The view is the v1 safety net for
-        # the global cache — only confirmed extractions are minted to
-        # pokepast.es and written to Firestore. See preview_view.py.
-        view = ReplicaPreviewView(
-            interaction.user.id,
-            timeout=config.REPLICA_PREVIEW_TIMEOUT_SECONDS,
-        )
-        embed = team_to_embed(
-            team,
-            code=normalized_code,
-            description=description,
-            fmt_name=fmt_name,
-        )
-        # wait=True so we get a WebhookMessage handle we can edit after
-        # the user clicks Confirm (or after timeout).
-        preview_message = await interaction.followup.send(
-            content=(
-                "Extracted from your screenshots. **Confirm** to upload to "
-                "pokepast.es and add to the bank; **Cancel** to discard."
-            ),
-            embed=embed,
-            view=view,
-            ephemeral=True,
-            wait=True,
-        )
-
-        await view.wait()
-
-        if view.decision is not True:
-            outcome = "Cancelled." if view.decision is False else "Preview timed out."
-            await preview_message.edit(content=outcome, embed=None, view=None)
-            logger.info(
-                "replica preview declined for code=%s decision=%s",
-                normalized_code,
-                view.decision,
-            )
-            return
-
-        await preview_message.edit(
-            content="Uploading to pokepast.es and adding to the bank…",
-            embed=None,
-            view=None,
-        )
-
-        try:
-            paste_text = render_showdown(team)
-            url = await post_to_pokepaste(
-                paste_text, title=f"Replica {normalized_code}"
-            )
-        except PokepasteUploadError as exc:
-            await preview_message.edit(content=str(exc), embed=None, view=None)
-            return
-
-        # Race: another guild may have OCR'd the same code while ours was
-        # in flight. `create` returns the winner's entry (theirs or ours);
-        # we always proceed with whatever URL ends up canonical.
-        entry = ReplicaCacheEntry(
-            pokepaste_url=url,
-            species=[p.species for p in team.pokemon],
-            created_at=datetime.now(timezone.utc),
-            created_by_user_id=interaction.user.id,
-            created_by_guild_id=interaction.guild_id or 0,
-        )
-        try:
-            canonical = await asyncio.to_thread(
-                replica_cache.create, normalized_code, entry
-            )
-        except Exception:
-            logger.exception("Replica cache write failed for code=%s", normalized_code)
-            await preview_message.edit(
-                content=_GENERIC_SHEET_WRITE_ERROR, embed=None, view=None
-            )
-            return
-
-        await _commit_replica_row(
-            interaction,
-            sheets,
-            store=store,
-            sheet_name=sheet_name,
-            fmt_name=fmt_name,
-            url=canonical.pokepaste_url,
-            code=normalized_code,
-            description=description,
-            preview_message=preview_message,
-        )
 
     @tree.command(
         name="search-teams",
@@ -1132,116 +1143,24 @@ def setup_commands(
         )
 
 
-_REPLICA_PASTE_TYPE = "Recreated"
-
-
-async def _commit_replica_row(
+async def _send_status(
     interaction: discord.Interaction,
-    sheets: SheetsClient,
-    *,
-    store: GuildConfigStore,
-    sheet_name: str,
-    fmt_name: str,
-    url: str,
-    code: str,
-    description: str,
-    preview_message: discord.WebhookMessage | None = None,
-) -> None:
-    """Shared write path for both /replica branches.
-
-    Both the cache-hit path (no preview shown) and the cache-miss-confirm
-    path (preview already sent) end up here once we have a canonical
-    pokepast.es URL. Handles dedup, add_row, broadcast, species poll, and
-    snapshot invalidation — the same dance as /add-team, with the message
-    surface adapted to whether there's a preview to edit or a fresh
-    followup to send.
-    """
-    try:
-        existing = await sheets.find_row_by_url(sheet_name, url)
-    except Exception:
-        logger.exception("Failed to check for existing team")
-        await _replica_reply(interaction, preview_message, _GENERIC_SHEET_READ_ERROR)
-        return
-
-    if existing is not None:
-        existing_desc = existing.description or "(no description)"
-        await _replica_reply(
-            interaction,
-            preview_message,
-            f"This team is already in *{fmt_name}* on row "
-            f'{existing.row_number}: "{existing_desc}". '
-            f"(Code `{code}` -> <{url}>.)",
-        )
-        return
-
-    try:
-        await validate_pokepaste_url(url)
-    except ValidationError as exc:
-        await _replica_reply(interaction, preview_message, str(exc))
-        return
-
-    try:
-        row = await sheets.add_row(
-            sheet_name, url, description, code, _REPLICA_PASTE_TYPE
-        )
-    except Exception:
-        logger.exception("Failed to add row for /replica")
-        await _replica_reply(interaction, preview_message, _GENERIC_SHEET_WRITE_ERROR)
-        return
-
-    success_msg = f"Added team to row {row} in *{fmt_name}* (code `{code}`)."
-    await _replica_reply(interaction, preview_message, success_msg)
-
-    broadcast_message: discord.Message | None = None
-    guild_cfg = (
-        store.get(interaction.guild_id) if interaction.guild_id is not None else None
-    )
-    if guild_cfg and guild_cfg.broadcast_channel_id is not None:
-        broadcast_message = await _broadcast_team_added(
-            interaction,
-            guild_cfg.broadcast_channel_id,
-            fmt_name=fmt_name,
-            url=url,
-            description=description,
-        )
-
-    species = await _await_species(sheets, sheet_name, row)
-    if species:
-        await _replica_reply(
-            interaction,
-            preview_message,
-            f"{success_msg}\nParsed: {', '.join(species)}",
-        )
-        if broadcast_message is not None:
-            await _enrich_broadcast_with_species(broadcast_message, species)
-        sheets.invalidate_snapshot(sheet_name)
-    else:
-        logger.info(
-            "Species poll timed out for replica row %d in %s; skipping "
-            "snapshot invalidation (TTL backstop will catch it)",
-            row,
-            sheet_name,
-        )
-
-
-async def _replica_reply(
-    interaction: discord.Interaction,
-    preview_message: discord.WebhookMessage | None,
+    preview_shown: bool,  # noqa: ARG001 — kept for caller-side documentation
     content: str,
 ) -> None:
-    """Send or edit the /replica user-facing message.
+    """Send the user-facing /add-team status message.
 
-    Cache-hit path: no preview was ever sent, so we use a fresh followup
-    (matching /add-team's shape — the user sees one ephemeral message).
+    Edits the original (deferred) response so the whole flow shows up as a
+    single message in Discord, regardless of whether we went through the
+    OCR preview branch (which already used `edit_original_response` to
+    show the preview embed) or the URL branch (no preview, edit straight
+    to the success / error content).
 
-    Cache-miss path: the preview already exists as an ephemeral followup;
-    edit it in place so the user sees the flow continue on the same
-    message rather than getting a second one appended below.
+    `preview_shown` is intentionally unused — both paths edit the original
+    response — but the parameter is kept at call sites so the intent is
+    visible to a reader scanning the handler.
     """
-    if preview_message is None:
-        await interaction.followup.send(content, ephemeral=True)
-    else:
-        await preview_message.edit(content=content, embed=None, view=None)
+    await interaction.edit_original_response(content=content, embed=None, view=None)
 
 
 async def _await_species(
