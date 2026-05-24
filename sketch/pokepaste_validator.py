@@ -3,7 +3,7 @@ import re
 import aiohttp
 
 _POKEPASTE_URL_RE = re.compile(r"^https?://pokepast\.es/[A-Za-z0-9]+/?$")
-_REPLICA_RE = re.compile(r"^[0-9A-Fa-f]{10}$")
+_REPLICA_RE = re.compile(r"^[0-9A-Za-z]{10}$")
 
 
 class ValidationError(Exception):
@@ -34,7 +34,7 @@ async def validate_pokepaste_url(url: str) -> None:
 def normalize_replica(replica: str) -> str:
     if not _REPLICA_RE.match(replica):
         raise ValidationError(
-            f"`replica` must be a 10-character hex string. Got `{replica}`."
+            f"`replica` must be a 10-character alphanumeric code. Got `{replica}`."
         )
     return replica.upper()
 
