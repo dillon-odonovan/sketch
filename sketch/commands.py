@@ -52,10 +52,6 @@ def _paste_type_choices() -> list[app_commands.Choice[str]]:
     return [app_commands.Choice(name=v, value=v) for v in config.PASTE_TYPE_CHOICES]
 
 
-def _default_format() -> str:
-    return next(iter(config.FORMAT_SHEETS))
-
-
 def _filter_team_rows(
     rows: list[TeamRow],
     *,
@@ -238,7 +234,7 @@ def setup_commands(
         interaction: discord.Interaction,
         url: str,
         description: str,
-        format: app_commands.Choice[str] | None = None,
+        format: app_commands.Choice[str],
         replica: str | None = None,
         paste_type: app_commands.Choice[str] | None = None,
     ) -> None:
@@ -254,7 +250,7 @@ def setup_commands(
         if sheets is None:
             return
 
-        fmt_name = format.value if format else _default_format()
+        fmt_name = format.value
         sheet_name = config.FORMAT_SHEETS[fmt_name]
         paste_type_value = paste_type.value if paste_type else config.PASTE_TYPE_DEFAULT
         logger.info(
@@ -388,7 +384,7 @@ def setup_commands(
     @app_commands.choices(format=_format_choices())
     async def search_teams(
         interaction: discord.Interaction,
-        format: app_commands.Choice[str] | None = None,
+        format: app_commands.Choice[str],
         mon1: str | None = None,
         mon2: str | None = None,
         mon3: str | None = None,
@@ -405,7 +401,7 @@ def setup_commands(
         if sheets is None:
             return
 
-        fmt_name = format.value if format else _default_format()
+        fmt_name = format.value
         sheet_name = config.FORMAT_SHEETS[fmt_name]
         queries = [m for m in [mon1, mon2, mon3, mon4, mon5, mon6] if m]
         description_query = (description or "").strip() or None
@@ -520,13 +516,13 @@ def setup_commands(
         formats = ", ".join(config.FORMAT_SHEETS.keys())
         msg = (
             "**Sketch** — Pokepaste team bank\n\n"
-            "`/add-team url:<paste> description:<text> [format:Reg M-A] "
+            "`/add-team url:<paste> description:<text> format:Reg M-A "
             "[replica:<hex>] [paste_type:Exact|Recreated|Unspecified]`\n"
             "  Add a team to the database.\n"
             "  Example: `/add-team url:https://pokepast.es/abcd1234 "
             "description:Calyrex-S balance`\n\n"
-            "`/search-teams [mon1:<name>] ... [mon6:<name>] "
-            "[description:<text>] [url:<paste>] [format:Reg M-A]`\n"
+            "`/search-teams format:Reg M-A [mon1:<name>] ... [mon6:<name>] "
+            "[description:<text>] [url:<paste>]`\n"
             "  Find teams. Filter by Pokémon (AND across mon params), "
             "by tokenized\n"
             "  description (order-independent, per-token substring), by "
