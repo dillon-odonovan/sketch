@@ -223,7 +223,7 @@ def setup_commands(
         url="Pokepaste URL (e.g., https://pokepast.es/abc123)",
         description="Short description of the team (e.g., 'Calyrex-S balance')",
         format="Format/regulation",
-        replica="Optional 10-character hex replica code",
+        replica="Optional 10-character alphanumeric replica code",
         paste_type="Whether this paste is exact, recreated, or unspecified",
     )
     @app_commands.choices(
@@ -517,7 +517,7 @@ def setup_commands(
         msg = (
             "**Sketch** — Pokepaste team bank\n\n"
             "`/add-team url:<paste> description:<text> format:Reg M-A "
-            "[replica:<hex>] [paste_type:Exact|Recreated|Unspecified]`\n"
+            "[replica:<code>] [paste_type:Exact|Recreated|Unspecified]`\n"
             "  Add a team to the database.\n"
             "  Example: `/add-team url:https://pokepast.es/abcd1234 "
             "description:Calyrex-S balance`\n\n"

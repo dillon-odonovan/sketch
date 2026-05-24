@@ -19,12 +19,15 @@ class TestNormalizeReplica:
     def test_accepts_mixed_case(self):
         assert normalize_replica("aB1cD2eF3a") == "AB1CD2EF3A"
 
+    def test_accepts_non_hex_letters(self):
+        assert normalize_replica("X8XJ7PDMJ2") == "X8XJ7PDMJ2"
+        assert normalize_replica("x8xj7pdmj2") == "X8XJ7PDMJ2"
+
     @pytest.mark.parametrize(
         "value",
         [
             "",
             "abc",
-            "abcdefghij",  # non-hex letters
             "abcdef01234",  # 11 chars
             "abcdef012",  # 9 chars
             "abcdef 123",  # space
