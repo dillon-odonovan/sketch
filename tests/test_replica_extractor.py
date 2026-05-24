@@ -5,10 +5,13 @@ The Anthropic SDK is mocked end-to-end (no network) — we substitute a fake
 What we're actually verifying:
   - the per-Pokemon parser turns a well-formed tool input into a typed
     `TeamData` with all six entries populated;
+  - the nature-arrow lookup turns (boosted, reduced) labels into the
+    canonical Showdown nature name;
   - schema-violating outputs surface as `ExtractionError` rather than
     leaking dict-shape exceptions into the slash command;
   - the image-format sniffer accepts the formats Discord users actually
-    upload and rejects everything else.
+    upload and rejects everything else;
+  - single-image (stitched) and two-image submissions both work.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from sketch.replica.extractor import (
     ExtractionError,
     PokemonEntry,
     TeamData,
+    _resolve_nature,
     _sniff_media_type,
     extract_team_from_screenshots,
 )
@@ -76,119 +80,118 @@ class _FakeAnthropic:
 # --- Sample tool-use payloads ----------------------------------------------
 
 
-def _full_team_input() -> dict:
-    """One well-formed `submit_team` tool input with all six Pokemon."""
+def _full_team_input(team_id: str | None = "QBXXWXL05U") -> dict:
+    """A well-formed `submit_team` tool input with all six Pokemon.
+
+    Values mirror the reference Wyatt team — small EV pool (~66 total),
+    arrow-based nature, gender icons present. Anything the model would
+    realistically extract from the sample-replica-code.png share screen.
+    """
     return {
+        "team_id": team_id,
         "pokemon": [
             {
-                "species": "Iron Hands",
-                "item": "Assault Vest",
-                "ability": "Quark Drive",
-                "tera_type": "Water",
-                "nature": "Adamant",
+                "species": "Floette",
+                "gender": "F",
+                "item": "Floettite",
+                "ability": "Flower Veil",
+                "nature": {"boosted_stat": "Sp. Atk", "reduced_stat": "Attack"},
                 "evs": {
-                    "hp": 252,
-                    "atk": 252,
-                    "def": 0,
-                    "spa": 0,
-                    "spd": 4,
-                    "spe": 0,
-                },
-                "ivs": None,
-                "moves": ["Fake Out", "Drain Punch", "Wild Charge", "Heavy Slam"],
-                "level": 50,
-            },
-            {
-                "species": "Calyrex-Shadow",
-                "item": "Life Orb",
-                "ability": "As One (Spectrier)",
-                "tera_type": "Normal",
-                "nature": "Timid",
-                "evs": {
-                    "hp": 4,
+                    "hp": 32,
                     "atk": 0,
                     "def": 0,
-                    "spa": 252,
+                    "spa": 32,
                     "spd": 0,
-                    "spe": 252,
+                    "spe": 2,
                 },
-                "ivs": {"hp": 31, "atk": 0, "def": 31, "spa": 31, "spd": 31, "spe": 31},
-                "moves": ["Astral Barrage", "Nasty Plot", "Psyshock", "Protect"],
-                "level": 50,
+                "moves": ["Dazzling Gleam", "Moonblast", "Light of Ruin", "Protect"],
             },
             {
-                "species": "Urshifu-Rapid-Strike",
-                "item": "Mystic Water",
-                "ability": "Unseen Fist",
-                "tera_type": "Water",
-                "nature": "Jolly",
+                "species": "Aerodactyl",
+                "gender": "M",
+                "item": "Lum Berry",
+                "ability": "Unnerve",
+                "nature": {"boosted_stat": "Speed", "reduced_stat": "Sp. Atk"},
                 "evs": {
-                    "hp": 4,
-                    "atk": 252,
-                    "def": 0,
+                    "hp": 7,
+                    "atk": 32,
+                    "def": 5,
                     "spa": 0,
-                    "spd": 0,
-                    "spe": 252,
+                    "spd": 5,
+                    "spe": 17,
                 },
-                "ivs": None,
-                "moves": ["Surging Strikes", "Close Combat", "Aqua Jet", "Detect"],
-                "level": 50,
-            },
-            {
-                "species": "Amoonguss",
-                "item": "Sitrus Berry",
-                "ability": "Regenerator",
-                "tera_type": "Water",
-                "nature": "Calm",
-                "evs": {
-                    "hp": 244,
-                    "atk": 0,
-                    "def": 4,
-                    "spa": 0,
-                    "spd": 252,
-                    "spe": 4,
-                },
-                "ivs": {"hp": 31, "atk": 0, "def": 31, "spa": 31, "spd": 31, "spe": 31},
-                "moves": ["Spore", "Rage Powder", "Pollen Puff", "Protect"],
-                "level": 50,
-            },
-            {
-                "species": "Rillaboom",
-                "item": "Miracle Seed",
-                "ability": "Grassy Surge",
-                "tera_type": "Fire",
-                "nature": "Adamant",
-                "evs": {
-                    "hp": 252,
-                    "atk": 252,
-                    "def": 0,
-                    "spa": 0,
-                    "spd": 4,
-                    "spe": 0,
-                },
-                "ivs": None,
-                "moves": ["Wood Hammer", "Grassy Glide", "Fake Out", "U-turn"],
-                "level": 50,
+                "moves": ["Rock Slide", "Dual Wingbeat", "Tailwind", "Protect"],
             },
             {
                 "species": "Incineroar",
-                "item": "Safety Goggles",
+                "gender": "M",
+                "item": "Sitrus Berry",
                 "ability": "Intimidate",
-                "tera_type": "Ghost",
-                "nature": "Careful",
+                "nature": {"boosted_stat": "Attack", "reduced_stat": "Sp. Atk"},
                 "evs": {
-                    "hp": 244,
-                    "atk": 4,
-                    "def": 4,
+                    "hp": 32,
+                    "atk": 2,
+                    "def": 8,
                     "spa": 0,
-                    "spd": 252,
-                    "spe": 4,
+                    "spd": 8,
+                    "spe": 16,
                 },
-                "ivs": None,
-                "moves": ["Fake Out", "Flare Blitz", "Knock Off", "Parting Shot"],
-                "level": 50,
+                "moves": ["Flare Blitz", "Throat Chop", "Parting Shot", "Fake Out"],
             },
-        ]
+            {
+                "species": "Garchomp",
+                "gender": "F",
+                "item": "Choice Scarf",
+                "ability": "Rough Skin",
+                "nature": {"boosted_stat": "Attack", "reduced_stat": "Sp. Atk"},
+                "evs": {
+                    "hp": 24,
+                    "atk": 20,
+                    "def": 0,
+                    "spa": 0,
+                    "spd": 0,
+                    "spe": 22,
+                },
+                "moves": [
+                    "Dragon Claw",
+                    "Earthquake",
+                    "Stomping Tantrum",
+                    "Rock Slide",
+                ],
+            },
+            {
+                "species": "Charizard",
+                "gender": "M",
+                "item": "Charizardite Y",
+                "ability": "Solar Power",
+                "nature": {"boosted_stat": "Sp. Atk", "reduced_stat": "Attack"},
+                "evs": {
+                    "hp": 6,
+                    "atk": 0,
+                    "def": 16,
+                    "spa": 31,
+                    "spd": 0,
+                    "spe": 13,
+                },
+                "moves": ["Heat Wave", "Weather Ball", "Air Slash", "Protect"],
+            },
+            {
+                "species": "Venusaur",
+                "gender": "M",
+                "item": "Focus Sash",
+                "ability": "Chlorophyll",
+                "nature": {"boosted_stat": "Sp. Atk", "reduced_stat": "Attack"},
+                "evs": {
+                    "hp": 2,
+                    "atk": 0,
+                    "def": 0,
+                    "spa": 32,
+                    "spd": 0,
+                    "spe": 32,
+                },
+                "moves": ["Leaf Storm", "Sludge Bomb", "Earth Power", "Sleep Powder"],
+            },
+        ],
     }
 
 
@@ -237,38 +240,91 @@ class TestSniffMediaType:
             _sniff_media_type(b"abc")
 
 
+class TestResolveNature:
+    """The deterministic 20-entry table is the only safe way to translate
+    Page 2's red ↑ / blue ↓ arrows. These cases mirror the reference
+    `build_pokepaste.py` table and the neutral defaults."""
+
+    def test_adamant_atk_up_spa_down(self):
+        assert _resolve_nature("Attack", "Sp. Atk") == "Adamant"
+
+    def test_modest_spa_up_atk_down(self):
+        assert _resolve_nature("Sp. Atk", "Attack") == "Modest"
+
+    def test_timid_speed_up_spa_down(self):
+        assert _resolve_nature("Speed", "Sp. Atk") == "Timid"
+
+    def test_neutral_when_arrows_absent(self):
+        assert _resolve_nature(None, None) == "Hardy"
+
+    def test_neutral_when_same_stat_for_both(self):
+        # A nature can't boost AND reduce the same stat. Defensive: treat
+        # as neutral rather than emitting a fake name.
+        assert _resolve_nature("Attack", "Attack") == "Hardy"
+
+    def test_unknown_combo_falls_back_to_hardy(self):
+        # Off-table inputs (HP, garbage strings) shouldn't crash — they
+        # degrade to the neutral default.
+        assert _resolve_nature("HP", "Attack") == "Hardy"
+
+
 class TestExtractTeamFromScreenshots:
     async def test_returns_team_data_on_well_formed_tool_use(self):
         client = _FakeAnthropic(_team_message(_full_team_input()))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert isinstance(team, TeamData)
         assert len(team.pokemon) == 6
-        assert team.pokemon[0].species == "Iron Hands"
-        assert team.pokemon[0].item == "Assault Vest"
-        assert team.pokemon[0].ivs is None
-        # Cross-page join: this entry should carry both page-1 build data
-        # (ability, item, moves, tera) and page-2 training data (nature,
-        # EVs, IVs). All present here proves the parser doesn't lose either.
-        assert team.pokemon[1].ivs == {
-            "hp": 31,
+        floette = team.pokemon[0]
+        assert floette.species == "Floette"
+        assert floette.gender == "F"
+        assert floette.item == "Floettite"
+        # Nature resolved from arrows in code, not by the model.
+        assert floette.nature == "Modest"
+        assert floette.evs == {
+            "hp": 32,
             "atk": 0,
-            "def": 31,
-            "spa": 31,
-            "spd": 31,
-            "spe": 31,
+            "def": 0,
+            "spa": 32,
+            "spd": 0,
+            "spe": 2,
         }
-        assert team.pokemon[1].evs["spa"] == 252
 
-    async def test_sends_both_images_in_single_call(self):
+    async def test_captures_team_id(self):
+        client = _FakeAnthropic(_team_message(_full_team_input("QBXXWXL05U")))
+        team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
+        assert team.team_id == "QBXXWXL05U"
+
+    async def test_team_id_uppercased(self):
+        # Model might return lowercase; we canonicalize so the equality
+        # check against the user's submitted code is case-insensitive.
+        client = _FakeAnthropic(_team_message(_full_team_input("qbxxwxl05u")))
+        team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
+        assert team.team_id == "QBXXWXL05U"
+
+    async def test_team_id_none_when_model_returns_null(self):
+        client = _FakeAnthropic(_team_message(_full_team_input(team_id=None)))
+        team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
+        assert team.team_id is None
+
+    async def test_two_images_sent_when_page2_provided(self):
         client = _FakeAnthropic(_team_message(_full_team_input()))
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert len(client.messages.calls) == 1
-        call = client.messages.calls[0]
-        user_content = call["messages"][0]["content"]
+        user_content = client.messages.calls[0]["messages"][0]["content"]
         image_blocks = [b for b in user_content if b.get("type") == "image"]
         assert len(image_blocks) == 2
-        # Sniffed media types match the bytes we passed in.
-        assert all(b["source"]["media_type"] == "image/png" for b in image_blocks)
+
+    async def test_single_image_sent_when_page2_omitted(self):
+        # Stitched-image submissions: user uploads one image containing
+        # both pages. Extractor should send just that one to the model
+        # and the prompt's instruction text adjusts to match.
+        client = _FakeAnthropic(_team_message(_full_team_input()))
+        await extract_team_from_screenshots(client, _TINY_PNG, None)
+        user_content = client.messages.calls[0]["messages"][0]["content"]
+        image_blocks = [b for b in user_content if b.get("type") == "image"]
+        assert len(image_blocks) == 1
+        text_block = next(b for b in user_content if b.get("type") == "text")
+        assert "stitched" in text_block["text"]
 
     async def test_uses_configured_model_by_default(self):
         client = _FakeAnthropic(_team_message(_full_team_input()))
@@ -289,15 +345,12 @@ class TestExtractTeamFromScreenshots:
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         call = client.messages.calls[0]
         assert call["tool_choice"] == {"type": "tool", "name": "submit_team"}
-        # Tools list contains exactly the submit_team definition.
         assert [t["name"] for t in call["tools"]] == ["submit_team"]
 
     async def test_system_prompt_is_cacheable(self):
         client = _FakeAnthropic(_team_message(_full_team_input()))
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
-        call = client.messages.calls[0]
-        system = call["system"]
-        # System is a list with one block carrying cache_control.
+        system = client.messages.calls[0]["system"]
         assert isinstance(system, list) and len(system) == 1
         assert system[0]["cache_control"] == {"type": "ephemeral"}
 
@@ -315,9 +368,6 @@ class TestExtractTeamFromScreenshots:
             await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
 
     async def test_wrong_pokemon_count_raises_extraction_error(self):
-        # If for any reason the tool input slips through with the wrong
-        # length, surface a user-facing error rather than a downstream
-        # IndexError or len-mismatch deep in the renderer.
         bad = _full_team_input()
         bad["pokemon"] = bad["pokemon"][:5]
         client = _FakeAnthropic(_team_message(bad))
@@ -325,8 +375,6 @@ class TestExtractTeamFromScreenshots:
             await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
 
     async def test_anthropic_api_error_raises_extraction_error(self):
-        # Network / 5xx failure. Caller sees a friendly retry message;
-        # the underlying SDK exception is logged but not surfaced.
         client = _FakeAnthropic(
             anthropic.APIError(
                 "boom",
@@ -343,15 +391,33 @@ class TestExtractTeamFromScreenshots:
             await extract_team_from_screenshots(client, b"plain text", _TINY_PNG)
 
     async def test_item_null_passes_through_as_none(self):
-        # The schema marks item as nullable; the parser should produce
-        # PokemonEntry.item == None rather than the literal string "None".
         payload = _full_team_input()
         payload["pokemon"][0]["item"] = None
         client = _FakeAnthropic(_team_message(payload))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert team.pokemon[0].item is None
 
+    async def test_gender_null_passes_through_as_none(self):
+        payload = _full_team_input()
+        payload["pokemon"][0]["gender"] = None
+        client = _FakeAnthropic(_team_message(payload))
+        team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
+        assert team.pokemon[0].gender is None
+
     async def test_isinstance_pokemon_entry(self):
         client = _FakeAnthropic(_team_message(_full_team_input()))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert all(isinstance(p, PokemonEntry) for p in team.pokemon)
+
+    async def test_neutral_nature_when_arrows_absent(self):
+        # Defensive: a Pokemon with no arrows on Page 2 (genuinely neutral
+        # nature) should resolve to "Hardy" rather than the lookup table's
+        # default failing into something nonsensical.
+        payload = _full_team_input()
+        payload["pokemon"][0]["nature"] = {
+            "boosted_stat": None,
+            "reduced_stat": None,
+        }
+        client = _FakeAnthropic(_team_message(payload))
+        team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
+        assert team.pokemon[0].nature == "Hardy"

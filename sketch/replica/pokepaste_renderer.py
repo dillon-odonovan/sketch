@@ -11,10 +11,19 @@ Two steps the caller composes:
 The two steps are separate so tests can golden-file the text without
 touching the network, and so the slash command can render once and then
 reuse the rendered string for both the upload and the user-facing preview.
+
+The rendered shape matches the sample output from the reference script
+(`build_pokepaste.py`) used to validate the OCR approach end-to-end: gender
+suffix on the species line, EVs line listing only non-zero stats, Nature
+line, four `- Move` lines. No Tera Type, Level, or IVs — the Champions
+Replica share screen doesn't surface those, and the reference paste
+that round-trips cleanly through pokepast.es and the in-sheet AppsScript
+omits them.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 
 import aiohttp
@@ -29,10 +38,9 @@ class RenderError(Exception):
     """Raised when the upload to pokepast.es fails. Message is user-facing."""
 
 
-# Display capitalization for the EV / IV lines. The Showdown / PokePaste
-# parsers accept lowercase too, but the canonical form uses these tags and
-# matching it keeps the resulting paste readable when an operator opens it
-# manually.
+# Display capitalization for the EV line. The Showdown / PokePaste parsers
+# accept lowercase too, but the canonical form uses these tags and matching
+# it keeps the resulting paste readable when an operator opens it manually.
 _STAT_DISPLAY = {
     "hp": "HP",
     "atk": "Atk",
@@ -42,44 +50,36 @@ _STAT_DISPLAY = {
     "spe": "Spe",
 }
 
-_POKEPASTE_CREATE_URL = "https://pokepast.es/create"
-_POKEPASTE_HOST = "https://pokepast.es"
+# pokepast.es exposes a JSON variant of the create endpoint that returns
+# {"id": "...", "url": "...", "author": "...", "title": "..."} as the body
+# of a 200 response — no redirect to follow. Using this avoids the
+# follow-the-Location dance of the HTML endpoint, which is fiddly to do
+# in aiohttp without accidentally chasing onto the rendered paste page.
+_POKEPASTE_CREATE_URL = "https://pokepast.es/create.json"
 
 
 def _render_mon(p: PokemonEntry) -> str:
     """Render one Pokemon as a Showdown-export block.
 
-    Field order matches the de facto convention (species/item, Ability,
-    Level, Tera Type, EVs, IVs, Nature, moves) so the result is visually
-    indistinguishable from a hand-edited Showdown export.
+    Field order follows the reference paste's convention exactly (species
+    [+gender] [+item], Ability, EVs, Nature, four moves). Order is
+    load-bearing because the in-sheet AppsScript `TEAMDATAFROMPASTE`
+    pattern-matches against this shape — reorders here would silently
+    break parsing for every replica-added team.
     """
     lines: list[str] = []
 
+    gender_suffix = f" ({p.gender})" if p.gender else ""
     item_suffix = f" @ {p.item}" if p.item else ""
-    lines.append(f"{p.species}{item_suffix}")
+    lines.append(f"{p.species}{gender_suffix}{item_suffix}")
+
     lines.append(f"Ability: {p.ability}")
-
-    # Always emit Level. Both Showdown and PokePaste default to 100 when
-    # the line is absent — VGC mons are level 50, so an absent line would
-    # silently misrepresent the team.
-    lines.append(f"Level: {p.level}")
-
-    lines.append(f"Tera Type: {p.tera_type}")
 
     ev_parts = [
         f"{p.evs[k]} {_STAT_DISPLAY[k]}" for k in STAT_KEYS if p.evs.get(k, 0) > 0
     ]
     if ev_parts:
         lines.append(f"EVs: {' / '.join(ev_parts)}")
-
-    if p.ivs is not None:
-        iv_parts = [
-            f"{p.ivs[k]} {_STAT_DISPLAY[k]}"
-            for k in STAT_KEYS
-            if p.ivs.get(k, 31) != 31
-        ]
-        if iv_parts:
-            lines.append(f"IVs: {' / '.join(iv_parts)}")
 
     lines.append(f"{p.nature} Nature")
 
@@ -102,13 +102,15 @@ def render_showdown(team: TeamData) -> str:
 async def post_to_pokepaste(paste_text: str, title: str) -> str:
     """Upload `paste_text` to pokepast.es and return the canonical URL.
 
-    pokepast.es responds to a successful create with a 302/303 redirect
-    whose Location header is the new paste's path (typically relative,
-    e.g. "/abc123def"). We follow that redirect ourselves so we can capture
-    the URL — letting aiohttp follow it would land us on the rendered HTML
-    page with no easy way to read back the URL we ended up at.
+    Uses the `/create.json` endpoint which returns a JSON body containing
+    the new paste's URL directly — cleaner than the HTML variant that
+    redirects via Location header. Round-trips the URL through
+    `canonicalize_pokepaste_url` so the value handed to
+    `SheetsClient.add_row` matches the form `find_row_by_url` uses for
+    dedup, and so a malformed server response is caught here rather than
+    at row-write time.
 
-    Raises `RenderError` on any non-redirect response or transport failure.
+    Raises `RenderError` on any non-2xx response or transport failure.
     The message is user-facing.
     """
     try:
@@ -117,14 +119,13 @@ async def post_to_pokepaste(paste_text: str, title: str) -> str:
             session.post(
                 _POKEPASTE_CREATE_URL,
                 data={"title": title, "paste": paste_text},
-                allow_redirects=False,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp,
         ):
-            if resp.status not in (301, 302, 303, 307, 308):
+            if resp.status >= 400:
                 body_excerpt = (await resp.text())[:200]
                 logger.warning(
-                    "Pokepaste create returned non-redirect status %s: %s",
+                    "Pokepaste create returned error status %s: %s",
                     resp.status,
                     body_excerpt,
                 )
@@ -132,12 +133,7 @@ async def post_to_pokepaste(paste_text: str, title: str) -> str:
                     "Couldn't upload the team to pokepast.es right now — "
                     "please try again in a moment."
                 )
-            location = resp.headers.get("Location", "").strip()
-            if not location:
-                raise RenderError(
-                    "Couldn't upload the team to pokepast.es right now — "
-                    "please try again in a moment."
-                )
+            body = await resp.text()
     except aiohttp.ClientError as exc:
         logger.warning("Pokepaste upload transport error: %s", exc)
         raise RenderError(
@@ -145,11 +141,20 @@ async def post_to_pokepaste(paste_text: str, title: str) -> str:
             "please try again in a moment."
         ) from exc
 
-    absolute = (
-        location if location.startswith("http") else f"{_POKEPASTE_HOST}{location}"
-    )
-    # Round-trip through the canonicalizer so the URL handed to
-    # SheetsClient.add_row matches the form `find_row_by_url` will compare
-    # against on dedup, and so a malformed Location is caught here rather
-    # than at row-write time.
-    return canonicalize_pokepaste_url(absolute)
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        logger.warning("Pokepaste /create.json returned non-JSON body: %s", body[:200])
+        raise RenderError(
+            "Couldn't upload the team to pokepast.es right now — "
+            "please try again in a moment."
+        ) from exc
+
+    url = payload.get("url") if isinstance(payload, dict) else None
+    if not isinstance(url, str) or not url:
+        logger.warning("Pokepaste /create.json response missing url field: %s", payload)
+        raise RenderError(
+            "Couldn't upload the team to pokepast.es right now — "
+            "please try again in a moment."
+        )
+    return canonicalize_pokepaste_url(url)

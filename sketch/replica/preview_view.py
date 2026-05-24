@@ -44,14 +44,18 @@ def team_to_embed(
     )
     for p in team.pokemon:
         ev_summary = "/".join(str(p.evs.get(k, 0)) for k in _EV_SUMMARY_KEYS)
+        gender_suffix = f" ({p.gender})" if p.gender else ""
         item_suffix = f" @ {p.item}" if p.item else ""
         value = (
-            f"**Ability:** {p.ability}  ·  **Tera:** {p.tera_type}\n"
-            f"**Nature:** {p.nature}  ·  **EVs (HP/Atk/Def/SpA/SpD/Spe):** "
-            f"{ev_summary}\n"
+            f"**Ability:** {p.ability}  ·  **Nature:** {p.nature}\n"
+            f"**EVs (HP/Atk/Def/SpA/SpD/Spe):** {ev_summary}\n"
             f"**Moves:** {', '.join(p.moves)}"
         )
-        embed.add_field(name=f"{p.species}{item_suffix}", value=value, inline=False)
+        embed.add_field(
+            name=f"{p.species}{gender_suffix}{item_suffix}",
+            value=value,
+            inline=False,
+        )
     embed.set_footer(
         text=(
             "Click Confirm to upload to pokepast.es and add this team to the "

@@ -18,29 +18,29 @@ from sketch.replica.extractor import PokemonEntry, TeamData
 from sketch.replica.preview_view import ReplicaPreviewView, team_to_embed
 
 
-def _entry(species: str = "Iron Hands") -> PokemonEntry:
+def _entry(species: str = "Floette") -> PokemonEntry:
     return PokemonEntry(
         species=species,
-        item="Assault Vest",
-        ability="Quark Drive",
-        tera_type="Water",
-        nature="Adamant",
-        evs={"hp": 252, "atk": 252, "def": 0, "spa": 0, "spd": 4, "spe": 0},
-        ivs=None,
-        moves=["Fake Out", "Drain Punch", "Wild Charge", "Heavy Slam"],
-        level=50,
+        gender="F",
+        item="Floettite",
+        ability="Flower Veil",
+        nature="Modest",
+        evs={"hp": 32, "atk": 0, "def": 0, "spa": 32, "spd": 0, "spe": 2},
+        moves=["Dazzling Gleam", "Moonblast", "Light of Ruin", "Protect"],
     )
 
 
 def _team() -> TeamData:
+    # Species mirror the Wyatt reference team so the field-name golden test
+    # matches the same data the renderer test uses.
     return TeamData(
         pokemon=[
-            _entry("Iron Hands"),
-            _entry("Calyrex-Shadow"),
-            _entry("Urshifu-Rapid-Strike"),
-            _entry("Amoonguss"),
-            _entry("Rillaboom"),
+            _entry("Floette"),
+            _entry("Aerodactyl"),
             _entry("Incineroar"),
+            _entry("Garchomp"),
+            _entry("Charizard"),
+            _entry("Venusaur"),
         ]
     )
 
@@ -89,58 +89,80 @@ class TestTeamToEmbed:
         )
         assert len(embed.fields) == 6
 
-    def test_field_names_carry_item_suffix(self):
+    def test_field_names_carry_gender_and_item_suffix(self):
         embed = team_to_embed(
             _team(),
-            code="AAAA111122",
+            code="QBXXWXL05U",
             description="...",
             fmt_name="Reg M-A",
         )
-        assert embed.fields[0].name == "Iron Hands @ Assault Vest"
+        # Matches the rendered Showdown shape: `Species (Gender) @ Item`.
+        assert embed.fields[0].name == "Floette (F) @ Floettite"
 
-    def test_field_value_includes_ability_tera_nature_moves(self):
+    def test_field_value_includes_ability_nature_moves(self):
         embed = team_to_embed(
             _team(),
-            code="AAAA111122",
+            code="QBXXWXL05U",
             description="...",
             fmt_name="Reg M-A",
         )
         value = embed.fields[0].value
-        assert "Quark Drive" in value
-        assert "Water" in value
-        assert "Adamant" in value
-        # EV summary uses the share-screen ordering — the test asserts the
-        # exact slash-separated form so a reorder regression is caught.
-        assert "252/252/0/0/4/0" in value
-        assert "Fake Out, Drain Punch, Wild Charge, Heavy Slam" in value
+        assert "Flower Veil" in value
+        assert "Modest" in value
+        # EV summary uses the share-screen ordering — test the exact slash
+        # form so a reorder regression is caught.
+        assert "32/0/0/32/0/2" in value
+        assert "Dazzling Gleam, Moonblast, Light of Ruin, Protect" in value
+
+    def test_field_value_does_not_mention_tera(self):
+        # Tera isn't surfaced in the Champions share screen and isn't part
+        # of the rendered output, so it shouldn't be in the preview either
+        # — its absence keeps the embed honest about what we captured.
+        embed = team_to_embed(
+            _team(),
+            code="QBXXWXL05U",
+            description="...",
+            fmt_name="Reg M-A",
+        )
+        for embed_field in embed.fields:
+            assert "Tera" not in embed_field.value
 
     def test_title_includes_code_and_description(self):
         embed = team_to_embed(
             _team(),
-            code="AAAA111122",
+            code="QBXXWXL05U",
             description="my team",
             fmt_name="Reg M-A",
         )
-        assert "AAAA111122" in embed.title
+        assert "QBXXWXL05U" in embed.title
         assert "my team" in embed.description
         assert "Reg M-A" in embed.description
 
-    def test_no_item_renders_without_suffix(self):
-        team = TeamData(pokemon=[_entry()])
-        team.pokemon[0] = PokemonEntry(
-            species="Cresselia",
-            item=None,
-            ability="Levitate",
-            tera_type="Fairy",
-            nature="Bold",
-            evs={"hp": 252, "atk": 0, "def": 252, "spa": 0, "spd": 4, "spe": 0},
-            ivs=None,
-            moves=["Moonblast", "Lunar Blessing", "Trick Room", "Ally Switch"],
-            level=50,
+    def test_genderless_no_item_renders_clean_name(self):
+        team = TeamData(
+            pokemon=[
+                PokemonEntry(
+                    species="Klefki",
+                    gender=None,
+                    item=None,
+                    ability="Prankster",
+                    nature="Bold",
+                    evs={
+                        "hp": 32,
+                        "atk": 0,
+                        "def": 16,
+                        "spa": 0,
+                        "spd": 16,
+                        "spe": 0,
+                    },
+                    moves=["Reflect", "Light Screen", "Foul Play", "Spikes"],
+                )
+            ]
         )
         embed = team_to_embed(team, code="X" * 10, description="d", fmt_name="Reg M-A")
-        assert embed.fields[0].name == "Cresselia"
+        assert embed.fields[0].name == "Klefki"
         assert " @ " not in embed.fields[0].name
+        assert "()" not in embed.fields[0].name
 
 
 class TestReplicaPreviewView:

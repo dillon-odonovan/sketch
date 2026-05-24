@@ -10,7 +10,7 @@ from sketch.pokepaste_validator import (
 
 
 class TestNormalizeReplica:
-    def test_uppercases_valid_hex(self):
+    def test_uppercases_valid_alphanumeric(self):
         assert normalize_replica("abcdef0123") == "ABCDEF0123"
 
     def test_passes_through_already_uppercase(self):
@@ -23,6 +23,12 @@ class TestNormalizeReplica:
         assert normalize_replica("X8XJ7PDMJ2") == "X8XJ7PDMJ2"
         assert normalize_replica("x8xj7pdmj2") == "X8XJ7PDMJ2"
 
+    def test_accepts_real_champions_team_id(self):
+        # QBXXWXL05U is the in-game Team ID from the sample Replica share
+        # screen. It contains Q/X/W/L which were rejected under the earlier
+        # hex-only assumption — this guards against regressing to that.
+        assert normalize_replica("QBXXWXL05U") == "QBXXWXL05U"
+
     @pytest.mark.parametrize(
         "value",
         [
@@ -30,7 +36,8 @@ class TestNormalizeReplica:
             "abc",
             "abcdef01234",  # 11 chars
             "abcdef012",  # 9 chars
-            "abcdef 123",  # space
+            "abcdef 123",  # space inside
+            "abcdef-123",  # punctuation inside
         ],
     )
     def test_rejects_invalid(self, value):

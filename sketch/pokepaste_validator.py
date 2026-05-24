@@ -3,7 +3,12 @@ import re
 import aiohttp
 
 _POKEPASTE_URL_RE = re.compile(r"^https?://pokepast\.es/[A-Za-z0-9]+/?$")
-_REPLICA_RE = re.compile(r"^[0-9A-Za-z]{10}$")
+# Pokemon Champions "Replica" / Team IDs are 10 chars of uppercase letters and
+# digits (e.g. "QBXXWXL05U"). The earlier hex-only assumption was wrong —
+# real codes contain letters outside [A-F]. We accept any ASCII alphanumeric
+# of length 10 and uppercase it for a single canonical form (matches how the
+# in-game UI displays the code, and keeps cache keys / dedup case-insensitive).
+_REPLICA_RE = re.compile(r"^[A-Za-z0-9]{10}$")
 
 
 class ValidationError(Exception):
@@ -34,7 +39,8 @@ async def validate_pokepaste_url(url: str) -> None:
 def normalize_replica(replica: str) -> str:
     if not _REPLICA_RE.match(replica):
         raise ValidationError(
-            f"`replica` must be a 10-character alphanumeric code. Got `{replica}`."
+            f"`replica` must be a 10-character alphanumeric Champions team ID "
+            f"(e.g. `QBXXWXL05U`). Got `{replica}`."
         )
     return replica.upper()
 

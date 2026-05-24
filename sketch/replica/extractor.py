@@ -3,19 +3,26 @@ screenshots.
 
 The Replica share screen has two pages, both covering the same 6 Pokemon in
 the same slot order:
-  - Page 1: builds — species, held item, ability, 4 moves, tera type.
-  - Page 2: training — nature, IVs, and EV / stat-alignment distribution.
+  - Page 1 ("Moves & More"): species, gender icon, held item, ability, 4 moves.
+  - Page 2 ("Stats"): the six stats with the per-stat EV invested. Two stats
+    carry arrow indicators — a red ↑ on the nature-boosted stat and a blue ↓
+    on the nature-reduced stat. The nature itself is never spelled out; we
+    resolve it deterministically from those two arrow positions via
+    `_NATURE_MAP` below.
+
+Pokemon Champions uses a much smaller EV pool than mainline Pokemon — totals
+around 66 EVs across all six stats, max 32 per stat — so the schema caps at
+32 rather than the familiar 252. Tera type, IVs, and level don't appear on
+this share screen and aren't captured.
 
 This module sends both pages to Claude in a single multimodal call with
 tool-use forcing schema conformance, so the model can't return free-text
-JSON that needs regex fishing. The cross-page join (build + training per
-slot) happens inside the model — we ask for one fully-merged `TeamData` as
-the tool input.
+JSON that needs regex fishing. The cross-page join (build + stats per slot)
+happens inside the model — we ask for one fully-merged team as the tool
+input, then resolve nature from arrows in Python.
 
 Static parts of the request (system prompt + tool schema) are tagged with
 `cache_control: ephemeral` so successive calls bill the prefix at 10% rate.
-Per-call cost is dominated by the two image tokens and the structured JSON
-output; see the plan file for the per-call estimate.
 """
 
 from __future__ import annotations
@@ -43,51 +50,136 @@ class ExtractionError(Exception):
     """
 
 
-# Valid Showdown stat keys. The keys match the Showdown export format exactly
-# (lowercased, three-letter, no underscores), so the renderer can emit lines
-# like "EVs: 252 HP / 252 Atk / 4 SpD" without an additional translation table.
+# Showdown stat keys, in canonical export order. Used as the keys of the
+# `evs` dict on every PokemonEntry and as the source for renderer-side
+# display labels. Internal-only — the in-game labels the model returns
+# (e.g. "Sp. Atk") are mapped via `_SHOWDOWN_STAT_KEY` below.
 STAT_KEYS = ("hp", "atk", "def", "spa", "spd", "spe")
+
+# The in-game UI labels next to each stat (used in the nature-arrow lookup
+# below and in the prompt). Order parallels STAT_KEYS, minus HP — nature
+# can boost / reduce any non-HP stat.
+_INGAME_STAT_LABELS = ("Attack", "Defense", "Sp. Atk", "Sp. Def", "Speed")
+
+# Map from in-game stat label to Showdown evs-dict key.
+_SHOWDOWN_STAT_KEY = {
+    "HP": "hp",
+    "Attack": "atk",
+    "Defense": "def",
+    "Sp. Atk": "spa",
+    "Sp. Def": "spd",
+    "Speed": "spe",
+}
+
+# (boosted_stat, reduced_stat) -> canonical nature name. Mirrors the table
+# in the user's reference build_pokepaste.py exactly; the deterministic
+# 20-entry mapping is the only safe way to translate the share-screen
+# arrows since the screen never spells the nature out.
+_NATURE_MAP: dict[tuple[str, str], str] = {
+    ("Attack", "Defense"): "Lonely",
+    ("Attack", "Sp. Atk"): "Adamant",
+    ("Attack", "Sp. Def"): "Naughty",
+    ("Attack", "Speed"): "Brave",
+    ("Defense", "Attack"): "Bold",
+    ("Defense", "Sp. Atk"): "Impish",
+    ("Defense", "Sp. Def"): "Lax",
+    ("Defense", "Speed"): "Relaxed",
+    ("Sp. Atk", "Attack"): "Modest",
+    ("Sp. Atk", "Defense"): "Mild",
+    ("Sp. Atk", "Sp. Def"): "Rash",
+    ("Sp. Atk", "Speed"): "Quiet",
+    ("Sp. Def", "Attack"): "Calm",
+    ("Sp. Def", "Defense"): "Gentle",
+    ("Sp. Def", "Sp. Atk"): "Careful",
+    ("Sp. Def", "Speed"): "Sassy",
+    ("Speed", "Attack"): "Jolly",
+    ("Speed", "Defense"): "Hasty",
+    ("Speed", "Sp. Atk"): "Timid",
+    ("Speed", "Sp. Def"): "Naive",
+}
+
+_NEUTRAL_NATURE = "Hardy"
+
+
+def _resolve_nature(boosted: str | None, reduced: str | None) -> str:
+    """Translate share-screen arrow indicators into the canonical nature name.
+
+    A neutral nature (no arrows visible, or both arrows on the same stat) is
+    rendered as "Hardy" — the convention the user's reference script uses
+    and the one Showdown accepts as the canonical neutral.
+    """
+    if boosted is None or reduced is None or boosted == reduced:
+        return _NEUTRAL_NATURE
+    return _NATURE_MAP.get((boosted, reduced), _NEUTRAL_NATURE)
 
 
 @dataclass(frozen=True)
 class PokemonEntry:
     species: str
+    gender: str | None  # "M", "F", or None for genderless / not displayed
     item: str | None
     ability: str
-    tera_type: str
-    nature: str
-    evs: dict[str, int]
-    ivs: dict[str, int] | None
+    nature: str  # canonical Showdown name; resolved from arrows in _parse_pokemon
+    evs: dict[str, int]  # keys = STAT_KEYS, values 0-32
     moves: list[str]
-    level: int
 
 
 @dataclass(frozen=True)
 class TeamData:
     pokemon: list[PokemonEntry]
+    # `team_id` is the 10-char alphanumeric code shown at the top of both
+    # share-screen pages. Captured so the command handler can verify that
+    # the user-submitted code matches what the screenshots actually show —
+    # protects against cache poisoning by mismatched code/screenshot pairs.
+    # None when the model couldn't read it (e.g. cropped-out header).
+    team_id: str | None = None
 
 
-# JSON Schema for the `submit_team` tool. Anthropic's tool-use rejects model
-# outputs whose `input` doesn't conform, so each constraint here doubles as a
-# validation hop the model has to satisfy before we even see the response.
+# --- JSON schema for the submit_team tool ----------------------------------
 #
-# The `properties` order matters for readability in the API console but is
-# not load-bearing — the schema enforces by name, not position.
-_STAT_OBJECT_SCHEMA: dict[str, Any] = {
+# Anthropic's tool-use rejects model outputs whose `input` doesn't conform,
+# so each constraint here doubles as a validation hop the model has to
+# satisfy before we even see the response. Champions' EV pool tops out at
+# 32 per stat (66ish total across all six), so we cap there — looser limits
+# would let the model hallucinate mainline-Pokemon spreads.
+
+_EVS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": list(STAT_KEYS),
     "properties": {
-        k: {"type": "integer", "minimum": 0, "maximum": 252} for k in STAT_KEYS
+        k: {"type": "integer", "minimum": 0, "maximum": 32} for k in STAT_KEYS
     },
 }
 
-_IV_OBJECT_SCHEMA: dict[str, Any] = {
+_STAT_NAME_OR_NULL = {
+    "oneOf": [
+        {"type": "string", "enum": list(_INGAME_STAT_LABELS)},
+        {"type": "null"},
+    ]
+}
+
+_NATURE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": list(STAT_KEYS),
+    "required": ["boosted_stat", "reduced_stat"],
     "properties": {
-        k: {"type": "integer", "minimum": 0, "maximum": 31} for k in STAT_KEYS
+        "boosted_stat": {
+            **_STAT_NAME_OR_NULL,
+            "description": (
+                "In-game label of the stat marked with a red up arrow on "
+                "Page 2 (the nature-boosted stat). Use null if no arrow is "
+                "visible (neutral nature)."
+            ),
+        },
+        "reduced_stat": {
+            **_STAT_NAME_OR_NULL,
+            "description": (
+                "In-game label of the stat marked with a blue down arrow on "
+                "Page 2 (the nature-reduced stat). Use null if no arrow is "
+                "visible (neutral nature)."
+            ),
+        },
     },
 }
 
@@ -96,14 +188,12 @@ _POKEMON_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "required": [
         "species",
+        "gender",
         "item",
         "ability",
-        "tera_type",
         "nature",
         "evs",
-        "ivs",
         "moves",
-        "level",
     ],
     "properties": {
         "species": {
@@ -114,6 +204,17 @@ _POKEMON_SCHEMA: dict[str, Any] = {
                 "Showdown / PokePaste expect."
             ),
         },
+        "gender": {
+            "oneOf": [
+                {"type": "string", "enum": ["M", "F"]},
+                {"type": "null"},
+            ],
+            "description": (
+                "Gender icon next to the species name on Page 1: 'M' for the "
+                "male symbol, 'F' for the female symbol, null for genderless "
+                "species (Magnemite, Klefki, etc.) or when no icon is shown."
+            ),
+        },
         "item": {
             "type": ["string", "null"],
             "description": (
@@ -122,27 +223,14 @@ _POKEMON_SCHEMA: dict[str, Any] = {
             ),
         },
         "ability": {"type": "string", "description": "e.g. 'Quark Drive'"},
-        "tera_type": {
-            "type": "string",
-            "description": "e.g. 'Water', 'Stellar'. Capitalized type name.",
-        },
-        "nature": {
-            "type": "string",
-            "description": "e.g. 'Adamant', 'Modest'. The 25-nature list.",
-        },
+        "nature": _NATURE_SCHEMA,
         "evs": {
-            **_STAT_OBJECT_SCHEMA,
+            **_EVS_SCHEMA,
             "description": (
-                "Effort Values per stat. Total across all six should be <= 508. "
-                "Use 0 for stats not invested in."
-            ),
-        },
-        "ivs": {
-            "oneOf": [_IV_OBJECT_SCHEMA, {"type": "null"}],
-            "description": (
-                "Individual Values per stat. Use null when all six are 31 "
-                "(the standard case); only return a populated object when one "
-                "or more IVs are visibly lower in the share screen."
+                "Effort Values per stat as shown on Page 2. Pokemon Champions "
+                "caps EVs at 32 per stat and ~66 total across all six. Use 0 "
+                "for uninvested stats. Keys are Showdown short forms: "
+                "hp / atk / def / spa / spd / spe."
             ),
         },
         "moves": {
@@ -150,13 +238,7 @@ _POKEMON_SCHEMA: dict[str, Any] = {
             "minItems": 4,
             "maxItems": 4,
             "items": {"type": "string"},
-            "description": "Exactly 4 move names, e.g. 'Fake Out', 'Drain Punch'.",
-        },
-        "level": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100,
-            "description": "Pokemon's level. VGC defaults to 50.",
+            "description": "Exactly 4 move names from Page 1, in display order.",
         },
     },
 }
@@ -166,6 +248,14 @@ _TEAM_TOOL_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "required": ["pokemon"],
     "properties": {
+        "team_id": {
+            "type": ["string", "null"],
+            "description": (
+                "The 10-character Team ID shown at the top of both share-screen "
+                "pages (e.g. 'QBXXWXL05U'). Use null if the header is cropped "
+                "or unreadable."
+            ),
+        },
         "pokemon": {
             "type": "array",
             "minItems": 6,
@@ -173,46 +263,53 @@ _TEAM_TOOL_SCHEMA: dict[str, Any] = {
             "items": _POKEMON_SCHEMA,
             "description": (
                 "All 6 Pokemon on the team, in the order they appear on the "
-                "share screen (top-to-bottom, left-to-right)."
+                "share screen (top-to-bottom in each column, left column first)."
             ),
-        }
+        },
     },
 }
 
 _SYSTEM_PROMPT = """\
-You extract Pokemon teams from screenshots of the Pokemon Champions "Replica" \
-share screen. Every call gives you two images of the same team:
+You extract Pokemon teams from screenshots of the Pokemon Champions \
+"Replicate This Battle Team?" share screen. Each call gives you one or two \
+images covering the same team:
 
-  Page 1 (builds): for each of 6 Pokemon, shows species, held item, ability, \
-4 moves, and tera type.
-  Page 2 (training): for each of the SAME 6 Pokemon in the SAME slot order, \
-shows nature, IVs, and EV distribution (often visualized as a hexagonal stat \
-chart with numeric EV values).
+  Page 1 ("Moves & More" tab): a 2x3 grid of Pokemon cards. Each card shows \
+the species name with one or two icons next to it (gender, possibly other \
+status), the ability, the held item, and 4 moves.
+  Page 2 ("Stats" tab): the same 6 Pokemon in the same slot order. Each card \
+shows the six base stats (HP, Attack, Defense, Sp. Atk, Sp. Def, Speed) with \
+the EV invested in each, and on exactly two of the stats: a red up-arrow on \
+the nature-boosted stat and a blue down-arrow on the nature-reduced stat.
 
-Cross-join the two pages by slot order: slot 1 on page 1 = slot 1 on page 2. \
-Produce one merged entry per Pokemon with all fields combined.
+If the user provides a single image, both pages are typically stitched \
+vertically — top half is Page 1, bottom half is Page 2. Cross-join by slot \
+order regardless: slot 1 on page 1 is the same Pokemon as slot 1 on page 2.
 
 Conventions for the output:
-  - Use canonical Showdown / PokePaste names for species, items, abilities, \
-moves, natures, and tera types. Examples: "Great Tusk" (not "great-tusk" or \
-"GreatTusk"), "Calyrex-Shadow" (hyphenated form), "Urshifu-Rapid-Strike", \
-"Iron Valiant". For tera type use the capitalized type name, e.g. "Water", \
-"Fairy", "Stellar".
-  - Item: use null when the Pokemon is holding nothing, not the string "None".
-  - IVs: return null when all six IVs are 31 (the default). Only return a \
-populated object when the share screen makes it clear an IV is below 31 \
-(typically a 0 Atk IV on special attackers, signaled by the Atk stat being \
-visibly lower than the EV investment would otherwise produce, or by an \
-explicit numeric readout).
-  - EVs: read the numeric value shown for each stat. Total must be <= 508. \
-Use 0 for uninvested stats.
-  - Moves: exactly 4 names per Pokemon, in the order they're listed.
-  - Level: typically 50 for VGC. Read from the screen if shown.
+  - Species, items, abilities, moves: use the canonical Showdown / PokePaste \
+display form. Examples: "Great Tusk" (not "great-tusk"), "Calyrex-Shadow" \
+(hyphenated forms), "Urshifu-Rapid-Strike", "Floettite" for the mega stone.
+  - Gender: read the small icon next to the species name. "M" for the male \
+symbol (♂), "F" for the female symbol (♀), null for genderless species or \
+when no icon is shown.
+  - Item: null when the Pokemon is holding nothing — never the string "None".
+  - Nature: return the in-game stat label next to each arrow as \
+{boosted_stat, reduced_stat}. Use exactly the labels "Attack", "Defense", \
+"Sp. Atk", "Sp. Def", or "Speed". If no arrows are visible (neutral nature), \
+return null for both. The host code resolves these into the canonical nature \
+name — do not attempt to name the nature yourself.
+  - EVs: read the small numeric value shown next to each stat on Page 2. \
+Pokemon Champions caps EVs at 32 per stat with ~66 total — much smaller than \
+mainline Pokemon's 252/508 system. Use 0 for stats with no investment. The \
+output keys are Showdown short forms (hp, atk, def, spa, spd, spe).
+  - Moves: exactly 4 per Pokemon, in the order shown on Page 1.
+  - team_id: the alphanumeric code shown next to "Team ID:" at the top of \
+both pages, e.g. "QBXXWXL05U". Null if cropped out.
 
-If any field is ambiguous or unreadable, prefer the most common VGC \
-convention (e.g. 31/31/31/31/31/31 IVs, level 50) rather than guessing. The \
-output must conform to the `submit_team` tool's schema — fields that don't \
-fit the schema will be rejected.\
+If a field is genuinely unreadable, prefer null over a guess for nullable \
+fields, and zero for EVs that don't show an investment number. The output \
+must conform to the `submit_team` tool's schema.\
 """
 
 _TOOL_NAME = "submit_team"
@@ -267,23 +364,26 @@ def _image_block(data: bytes) -> dict[str, Any]:
 def _parse_pokemon(raw: dict) -> PokemonEntry:
     """Convert the tool-use input dict for one Pokemon into a PokemonEntry.
 
-    The tool schema already enforces shape; this is a thin marshaller so the
-    rest of the codebase deals in our dataclass rather than untyped dicts.
+    The tool schema enforces shape; this is a thin marshaller plus the
+    nature-arrow → canonical-name lookup, which is deterministic and lives
+    in Python rather than the model because the model can't see the
+    mapping table at inference time.
     """
+    nature_in = raw.get("nature") or {}
+    nature_name = _resolve_nature(
+        nature_in.get("boosted_stat"),
+        nature_in.get("reduced_stat"),
+    )
+    gender_in = raw.get("gender")
+    gender = gender_in if gender_in in ("M", "F") else None
     return PokemonEntry(
         species=str(raw["species"]),
+        gender=gender,
         item=str(raw["item"]) if raw.get("item") else None,
         ability=str(raw["ability"]),
-        tera_type=str(raw["tera_type"]),
-        nature=str(raw["nature"]),
+        nature=nature_name,
         evs={k: int(raw["evs"][k]) for k in STAT_KEYS},
-        ivs=(
-            {k: int(raw["ivs"][k]) for k in STAT_KEYS}
-            if raw.get("ivs") is not None
-            else None
-        ),
         moves=[str(m) for m in raw["moves"]],
-        level=int(raw["level"]),
     )
 
 
@@ -293,7 +393,9 @@ def _parse_tool_input(tool_input: dict) -> TeamData:
         raise ExtractionError(
             f"Expected 6 Pokemon in the extracted team, got {len(pokemon)}."
         )
-    return TeamData(pokemon=pokemon)
+    team_id_raw = tool_input.get("team_id")
+    team_id = str(team_id_raw).upper() if isinstance(team_id_raw, str) else None
+    return TeamData(pokemon=pokemon, team_id=team_id)
 
 
 def _extract_tool_use(message: anthropic.types.Message) -> dict | None:
@@ -321,11 +423,17 @@ def _extract_tool_use(message: anthropic.types.Message) -> dict | None:
 async def extract_team_from_screenshots(
     client: anthropic.AsyncAnthropic,
     page1: bytes,
-    page2: bytes,
+    page2: bytes | None = None,
     *,
     model: str | None = None,
 ) -> TeamData:
-    """OCR the two Replica share-screen pages into a structured TeamData.
+    """OCR the Replica share-screen page(s) into a structured TeamData.
+
+    Accepts either two separate page screenshots (Discord users typically
+    attach Page 1 and Page 2 individually) or a single stitched image
+    containing both pages (some users screenshot both in one frame). When
+    `page2` is None, only `page1` is sent and the prompt expects a
+    stitched image.
 
     Raises `ExtractionError` with a user-facing message on any failure path
     (bad image bytes, model refused tool, malformed tool input, transport
@@ -334,22 +442,22 @@ async def extract_team_from_screenshots(
     """
     effective_model = model or config.REPLICA_OCR_MODEL
 
-    # Both images live in a single user message so the model can correlate
-    # build (page 1) and training (page 2) per slot without us scaffolding
-    # a multi-turn dialog. The text block at the end is the imperative
-    # — the system prompt covers the conventions.
-    user_content: list[dict[str, Any]] = [
-        _image_block(page1),
-        _image_block(page2),
-        {
-            "type": "text",
-            "text": (
-                "Extract the team from these two pages of a Pokemon Champions "
-                "Replica share screen. Page 1 has builds, Page 2 has training. "
-                "Cross-join by slot order and call submit_team with the result."
-            ),
-        },
-    ]
+    user_content: list[dict[str, Any]] = [_image_block(page1)]
+    if page2 is not None:
+        user_content.append(_image_block(page2))
+
+    instruction = (
+        "Extract the team from this Pokemon Champions Replica share screen. "
+        + (
+            "Both pages are included as two images — Page 1 is builds, Page 2 is stats."
+            if page2 is not None
+            else "Both pages are stitched into this one image — top is Page 1 "
+            "(builds), bottom is Page 2 (stats)."
+        )
+        + " Cross-join by slot order, resolve the nature arrows into "
+        "boosted_stat / reduced_stat, and call submit_team with the result."
+    )
+    user_content.append({"type": "text", "text": instruction})
 
     try:
         message = await client.messages.create(

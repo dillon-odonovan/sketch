@@ -241,7 +241,7 @@ def setup_commands(
         url="Pokepaste URL (e.g., https://pokepast.es/abc123)",
         description="Short description of the team (e.g., 'Calyrex-S balance')",
         format="Format/regulation",
-        replica="Optional 10-character alphanumeric replica code",
+        replica="Optional 10-character alphanumeric Champions Team ID",
         paste_type="Whether this paste is exact, recreated, or unspecified",
     )
     @app_commands.choices(
@@ -384,16 +384,19 @@ def setup_commands(
         description=("Add a Pokemon Champions team to the bank from a Replica Code."),
     )
     @app_commands.describe(
-        code="10-character hex Replica Code from the in-game share screen.",
+        code="10-character Team ID from the in-game Replica share screen.",
         description="Short description of the team (e.g., 'Calyrex-S balance')",
         format="Format/regulation",
         page1=(
             "Required on first sighting of this code: Page 1 of the Replica "
-            "share screen (builds — abilities, items, moves, tera types)."
+            "share screen ('Moves & More' — species, ability, item, moves). "
+            "If you have both pages stitched into one image, attach it here "
+            "and leave page2 empty."
         ),
         page2=(
-            "Required on first sighting of this code: Page 2 of the Replica "
-            "share screen (training — nature, stat alignment, EVs)."
+            "Optional on first sighting: Page 2 of the Replica share screen "
+            "('Stats' — EVs + nature-arrow indicators). Omit if page1 already "
+            "contains both pages stitched."
         ),
     )
     @app_commands.choices(format=_format_choices())
@@ -462,21 +465,23 @@ def setup_commands(
             )
             return
 
-        # Cache miss. Require both screenshots — partial submission is a
-        # likely user error (forgot the second page), and a one-page extract
-        # would always be wrong (page 2 has the training data we need).
-        if page1 is None or page2 is None:
+        # Cache miss. At minimum page1 is required. page2 is optional — if
+        # the user stitched both pages into one image they can attach just
+        # page1 and the extractor's prompt handles the single-image case.
+        if page1 is None:
             await interaction.followup.send(
                 f"Code `{normalized_code}` isn't in the cache yet. "
-                "Re-run with **page1** and **page2** screenshots of the "
-                "Replica share screen so I can OCR the team.",
+                "Re-run with **page1** (and optionally **page2**) screenshots "
+                "of the Replica share screen so I can OCR the team. A single "
+                "stitched image of both pages works too — just attach it as "
+                "page1.",
                 ephemeral=True,
             )
             return
 
         try:
             page1_bytes = await page1.read()
-            page2_bytes = await page2.read()
+            page2_bytes = await page2.read() if page2 is not None else None
         except (discord.HTTPException, discord.NotFound):
             logger.warning(
                 "Failed to download replica screenshots for code=%s",
@@ -496,6 +501,26 @@ def setup_commands(
             )
         except ExtractionError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
+            return
+
+        # Sanity-check the user's claimed code against what the screenshots
+        # actually show. Champions prints the Team ID across the top of both
+        # pages, so the model usually reads it. A mismatch here is almost
+        # always a wrong-attachment user error — refusing keeps the global
+        # cache from being seeded with the wrong (code -> URL) pair, which
+        # would then mislead every future guild looking up that code.
+        if team.team_id is not None and team.team_id != normalized_code:
+            logger.warning(
+                "Team ID mismatch for /replica: submitted=%s extracted=%s",
+                normalized_code,
+                team.team_id,
+            )
+            await interaction.followup.send(
+                f"The screenshots show Team ID `{team.team_id}`, but you "
+                f"submitted code `{normalized_code}`. Double-check the "
+                "attachments and re-run with the correct screenshots.",
+                ephemeral=True,
+            )
             return
 
         # Preview + Confirm/Cancel gate. The view is the v1 safety net for
