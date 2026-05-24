@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 
+import anthropic
 import discord
 from discord import app_commands
 
@@ -13,6 +15,17 @@ from sketch.pokepaste_validator import (
     normalize_replica,
     validate_pokepaste_url,
 )
+from sketch.replica.cache import ReplicaCacheEntry, ReplicaCacheStore
+from sketch.replica.extractor import (
+    ExtractionError,
+    extract_team_from_screenshots,
+)
+from sketch.replica.pokepaste_renderer import (
+    RenderError,
+    post_to_pokepaste,
+    render_showdown,
+)
+from sketch.replica.preview_view import ReplicaPreviewView, team_to_embed
 from sketch.search.dex import DexIndex  # re-exported for backwards-compatible callers
 from sketch.storage.guild_config import GuildConfigStore
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry, TeamRow
@@ -202,6 +215,9 @@ def setup_commands(
     tree: app_commands.CommandTree,
     store: GuildConfigStore,
     registry: SheetsClientRegistry,
+    *,
+    replica_cache: ReplicaCacheStore,
+    anthropic_client: anthropic.AsyncAnthropic,
 ) -> None:
     """Register slash commands on `tree`.
 
@@ -212,7 +228,9 @@ def setup_commands(
 
     The registry handles spreadsheet routing; `store` is captured here so
     handlers can read other per-guild settings (e.g., broadcast_channel_id)
-    that don't belong to the SheetsClient.
+    that don't belong to the SheetsClient. `replica_cache` and
+    `anthropic_client` are kwarg-only to make their addition obvious at
+    call sites — bot.py constructs them once and passes them in.
     """
 
     @tree.command(
@@ -360,6 +378,211 @@ def setup_commands(
                 row,
                 sheet_name,
             )
+
+    @tree.command(
+        name="replica",
+        description=("Add a Pokemon Champions team to the bank from a Replica Code."),
+    )
+    @app_commands.describe(
+        code="10-character hex Replica Code from the in-game share screen.",
+        description="Short description of the team (e.g., 'Calyrex-S balance')",
+        format="Format/regulation",
+        page1=(
+            "Required on first sighting of this code: Page 1 of the Replica "
+            "share screen (builds — abilities, items, moves, tera types)."
+        ),
+        page2=(
+            "Required on first sighting of this code: Page 2 of the Replica "
+            "share screen (training — nature, stat alignment, EVs)."
+        ),
+    )
+    @app_commands.choices(format=_format_choices())
+    async def replica(
+        interaction: discord.Interaction,
+        code: str,
+        description: str,
+        format: app_commands.Choice[str] | None = None,
+        page1: discord.Attachment | None = None,
+        page2: discord.Attachment | None = None,
+    ) -> None:
+        trace_id_var.set(str(interaction.id))
+        # Same defer pattern as /add-team — OCR + pokepast.es upload can take
+        # 5-20 seconds even on the hot path; we need the 15-min ack budget.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        sheets = await _resolve_guild_sheets(interaction, registry)
+        if sheets is None:
+            return
+
+        fmt_name = format.value if format else _default_format()
+        sheet_name = config.FORMAT_SHEETS[fmt_name]
+
+        try:
+            normalized_code = normalize_replica(code)
+        except ValidationError as e:
+            await interaction.followup.send(str(e), ephemeral=True)
+            return
+
+        logger.info(
+            "replica invoked by user_id=%s guild_id=%s: code=%s format=%s "
+            "has_page1=%s has_page2=%s",
+            interaction.user.id,
+            interaction.guild_id,
+            normalized_code,
+            fmt_name,
+            page1 is not None,
+            page2 is not None,
+        )
+
+        # Cache read is fast (in-process dict after first hit) but the
+        # cold-miss path RPCs to Firestore, so offload to a thread either
+        # way to keep the event loop snappy.
+        try:
+            cached = await asyncio.to_thread(replica_cache.get, normalized_code)
+        except Exception:
+            logger.exception("Replica cache read failed for code=%s", normalized_code)
+            await interaction.followup.send(_GENERIC_SHEET_READ_ERROR, ephemeral=True)
+            return
+
+        if cached is not None:
+            logger.info(
+                "replica cache HIT for code=%s -> %s",
+                normalized_code,
+                cached.pokepaste_url,
+            )
+            await _commit_replica_row(
+                interaction,
+                sheets,
+                store=store,
+                sheet_name=sheet_name,
+                fmt_name=fmt_name,
+                url=cached.pokepaste_url,
+                code=normalized_code,
+                description=description,
+            )
+            return
+
+        # Cache miss. Require both screenshots — partial submission is a
+        # likely user error (forgot the second page), and a one-page extract
+        # would always be wrong (page 2 has the training data we need).
+        if page1 is None or page2 is None:
+            await interaction.followup.send(
+                f"Code `{normalized_code}` isn't in the cache yet. "
+                "Re-run with **page1** and **page2** screenshots of the "
+                "Replica share screen so I can OCR the team.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            page1_bytes = await page1.read()
+            page2_bytes = await page2.read()
+        except (discord.HTTPException, discord.NotFound):
+            logger.warning(
+                "Failed to download replica screenshots for code=%s",
+                normalized_code,
+                exc_info=True,
+            )
+            await interaction.followup.send(
+                "Couldn't download those attachments — please try uploading "
+                "the screenshots again.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            team = await extract_team_from_screenshots(
+                anthropic_client, page1_bytes, page2_bytes
+            )
+        except ExtractionError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+
+        # Preview + Confirm/Cancel gate. The view is the v1 safety net for
+        # the global cache — only confirmed extractions are minted to
+        # pokepast.es and written to Firestore. See preview_view.py.
+        view = ReplicaPreviewView(
+            interaction.user.id,
+            timeout=config.REPLICA_PREVIEW_TIMEOUT_SECONDS,
+        )
+        embed = team_to_embed(
+            team,
+            code=normalized_code,
+            description=description,
+            fmt_name=fmt_name,
+        )
+        # wait=True so we get a WebhookMessage handle we can edit after
+        # the user clicks Confirm (or after timeout).
+        preview_message = await interaction.followup.send(
+            content=(
+                "Extracted from your screenshots. **Confirm** to upload to "
+                "pokepast.es and add to the bank; **Cancel** to discard."
+            ),
+            embed=embed,
+            view=view,
+            ephemeral=True,
+            wait=True,
+        )
+
+        await view.wait()
+
+        if view.decision is not True:
+            outcome = "Cancelled." if view.decision is False else "Preview timed out."
+            await preview_message.edit(content=outcome, embed=None, view=None)
+            logger.info(
+                "replica preview declined for code=%s decision=%s",
+                normalized_code,
+                view.decision,
+            )
+            return
+
+        await preview_message.edit(
+            content="Uploading to pokepast.es and adding to the bank…",
+            embed=None,
+            view=None,
+        )
+
+        try:
+            paste_text = render_showdown(team)
+            url = await post_to_pokepaste(
+                paste_text, title=f"Replica {normalized_code}"
+            )
+        except RenderError as exc:
+            await preview_message.edit(content=str(exc), embed=None, view=None)
+            return
+
+        # Race: another guild may have OCR'd the same code while ours was
+        # in flight. `create` returns the winner's entry (theirs or ours);
+        # we always proceed with whatever URL ends up canonical.
+        entry = ReplicaCacheEntry(
+            pokepaste_url=url,
+            species=[p.species for p in team.pokemon],
+            created_at=datetime.now(timezone.utc),
+            created_by_user_id=interaction.user.id,
+            created_by_guild_id=interaction.guild_id or 0,
+        )
+        try:
+            canonical = await asyncio.to_thread(
+                replica_cache.create, normalized_code, entry
+            )
+        except Exception:
+            logger.exception("Replica cache write failed for code=%s", normalized_code)
+            await preview_message.edit(
+                content=_GENERIC_SHEET_WRITE_ERROR, embed=None, view=None
+            )
+            return
+
+        await _commit_replica_row(
+            interaction,
+            sheets,
+            store=store,
+            sheet_name=sheet_name,
+            fmt_name=fmt_name,
+            url=canonical.pokepaste_url,
+            code=normalized_code,
+            description=description,
+            preview_message=preview_message,
+        )
 
     @tree.command(
         name="search-teams",
@@ -880,6 +1103,118 @@ def setup_commands(
             f"Team spreadsheet: <{_spreadsheet_link(cfg.spreadsheet_id)}>",
             ephemeral=True,
         )
+
+
+_REPLICA_PASTE_TYPE = "Recreated"
+
+
+async def _commit_replica_row(
+    interaction: discord.Interaction,
+    sheets: SheetsClient,
+    *,
+    store: GuildConfigStore,
+    sheet_name: str,
+    fmt_name: str,
+    url: str,
+    code: str,
+    description: str,
+    preview_message: discord.WebhookMessage | None = None,
+) -> None:
+    """Shared write path for both /replica branches.
+
+    Both the cache-hit path (no preview shown) and the cache-miss-confirm
+    path (preview already sent) end up here once we have a canonical
+    pokepast.es URL. Handles dedup, add_row, broadcast, species poll, and
+    snapshot invalidation — the same dance as /add-team, with the message
+    surface adapted to whether there's a preview to edit or a fresh
+    followup to send.
+    """
+    try:
+        existing = await sheets.find_row_by_url(sheet_name, url)
+    except Exception:
+        logger.exception("Failed to check for existing team")
+        await _replica_reply(interaction, preview_message, _GENERIC_SHEET_READ_ERROR)
+        return
+
+    if existing is not None:
+        existing_desc = existing.description or "(no description)"
+        await _replica_reply(
+            interaction,
+            preview_message,
+            f"This team is already in *{fmt_name}* on row "
+            f'{existing.row_number}: "{existing_desc}". '
+            f"(Code `{code}` -> <{url}>.)",
+        )
+        return
+
+    try:
+        await validate_pokepaste_url(url)
+    except ValidationError as exc:
+        await _replica_reply(interaction, preview_message, str(exc))
+        return
+
+    try:
+        row = await sheets.add_row(
+            sheet_name, url, description, code, _REPLICA_PASTE_TYPE
+        )
+    except Exception:
+        logger.exception("Failed to add row for /replica")
+        await _replica_reply(interaction, preview_message, _GENERIC_SHEET_WRITE_ERROR)
+        return
+
+    success_msg = f"Added team to row {row} in *{fmt_name}* (code `{code}`)."
+    await _replica_reply(interaction, preview_message, success_msg)
+
+    broadcast_message: discord.Message | None = None
+    guild_cfg = (
+        store.get(interaction.guild_id) if interaction.guild_id is not None else None
+    )
+    if guild_cfg and guild_cfg.broadcast_channel_id is not None:
+        broadcast_message = await _broadcast_team_added(
+            interaction,
+            guild_cfg.broadcast_channel_id,
+            fmt_name=fmt_name,
+            url=url,
+            description=description,
+        )
+
+    species = await _await_species(sheets, sheet_name, row)
+    if species:
+        await _replica_reply(
+            interaction,
+            preview_message,
+            f"{success_msg}\nParsed: {', '.join(species)}",
+        )
+        if broadcast_message is not None:
+            await _enrich_broadcast_with_species(broadcast_message, species)
+        sheets.invalidate_snapshot(sheet_name)
+    else:
+        logger.info(
+            "Species poll timed out for replica row %d in %s; skipping "
+            "snapshot invalidation (TTL backstop will catch it)",
+            row,
+            sheet_name,
+        )
+
+
+async def _replica_reply(
+    interaction: discord.Interaction,
+    preview_message: discord.WebhookMessage | None,
+    content: str,
+) -> None:
+    """Send or edit the /replica user-facing message.
+
+    Cache-hit path: no preview was ever sent, so we use a fresh followup
+    (matching /add-team's shape — the user sees one ephemeral message).
+
+    Cache-miss path: the preview already exists as an ephemeral followup;
+    edit it in place so the user sees the flow continue on the same
+    message rather than getting a second one appended below.
+    """
+    if preview_message is None:
+        await interaction.followup.send(content, ephemeral=True)
+    else:
+        await preview_message.edit(content=content, embed=None, view=None)
 
 
 async def _await_species(

@@ -1,11 +1,13 @@
 import logging
 
+import anthropic
 import discord
 from discord import app_commands
 from google.cloud import firestore
 
 from sketch import config, logging_setup
 from sketch.commands import setup_commands
+from sketch.replica.cache import FirestoreReplicaCacheStore
 from sketch.storage.guild_config import FirestoreGuildConfigStore
 from sketch.storage.sheets_client import SheetsClientRegistry
 
@@ -26,8 +28,20 @@ class SketchBot(discord.Client):
         # server on GCE, or `gcloud auth application-default login` locally).
         # No explicit project arg — passing `None` keeps the same auto-detect
         # path the Sheets and Secret Manager clients already use.
-        self._store = FirestoreGuildConfigStore(firestore.Client())
+        firestore_client = firestore.Client()
+        self._store = FirestoreGuildConfigStore(firestore_client)
         self._registry = SheetsClientRegistry(self._store)
+        # Replica cache reuses the same Firestore client/project. /replica
+        # depends on this; /add-team and /search-teams don't, so failures
+        # constructing this are still fatal at boot (we'd rather fail loudly
+        # than register a /replica handler that errors on every invocation).
+        self._replica_cache = FirestoreReplicaCacheStore(firestore_client)
+        # One singleton AsyncAnthropic client across the bot lifetime.
+        # Anthropic SDK calls are async-native, so no asyncio.to_thread
+        # wrapping is needed (unlike the blocking Google clients).
+        self._anthropic_client = anthropic.AsyncAnthropic(
+            api_key=config.ANTHROPIC_API_KEY
+        )
 
         self._dev_guild = (
             discord.Object(id=int(config.DEV_GUILD_ID)) if config.DEV_GUILD_ID else None
@@ -50,7 +64,13 @@ class SketchBot(discord.Client):
         # and sync them. DEX is no longer preloaded here — each per-guild
         # SheetsClient lazy-loads its own DEX on first /search-teams.
         # https://discordpy.readthedocs.io/en/stable/api.html#discord.Client.setup_hook
-        setup_commands(self.tree, self._store, self._registry)
+        setup_commands(
+            self.tree,
+            self._store,
+            self._registry,
+            replica_cache=self._replica_cache,
+            anthropic_client=self._anthropic_client,
+        )
         if self._dev_guild:
             # copy_global_to mirrors the global command list into the dev
             # guild's slot on the tree (client-side, no network). The
