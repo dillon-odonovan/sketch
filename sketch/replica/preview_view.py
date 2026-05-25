@@ -6,23 +6,24 @@ preview is the safety gate: the invoking user sees the extracted team in
 an ephemeral embed and either confirms it, edits it, or cancels before
 any pokepast.es URL is minted or any cache row is written.
 
-Edit opens a Discord modal pre-populated with the rendered Showdown /
-PokePaste text. On Submit the bot parses the text back into a `TeamData`
-and — on parser success — **auto-commits** (treats the edit submission
-as if Confirm had been clicked). The user inspects the canonical text in
-the modal before submitting, so re-rendering the preview embed for a
-second confirm click would only add friction. If the user wants to bail
-mid-edit, the modal's native X button closes without firing on_submit.
+Modal Submit and Confirm are intentionally distinct actions, mirroring
+the mental model VGC users already have for "save then publish":
 
-On parse failure the modal-submit response edits the preview message
-content with the error and stashes the user's failed text on the View;
-the next Edit click pre-fills the modal with the stashed text so the
-user can fix their typo without losing work. (Discord's API forbids
-calling `send_modal` in response to a modal-submit interaction —
-[interaction response types 4 / 5 / 6 / 7 / 10 / 12 only], so the
-modal cannot "reopen itself" on failure. `edit_message` is permitted
-on modal-submit when the modal was launched from a component, and is
-the right vehicle here.)
+  - **Edit → modal Submit** applies the user's changes to the preview.
+    The preview embed re-renders with the edited team. Decision is
+    still pending; nothing has been uploaded.
+  - **Confirm** uploads the team currently shown in the preview
+    (whether that's the original OCR or an edited version).
+  - **Cancel** discards.
+
+On modal parse failure the View stashes the user's text and sends a
+small ephemeral notification — the preview embed itself stays
+unchanged (since the edit didn't apply), keeping the invariant that
+"the preview embed shows what Confirm will upload." The next Edit
+click pre-fills with the stashed text so the user can fix their typo
+without losing work. (Discord forbids calling `send_modal` in
+response to a modal-submit interaction — interaction response types
+{4, 5, 6, 7, 10, 12} only — so the modal cannot "reopen itself.")
 
 The View only ever fires for cold-OCR submissions. Cache hits skip the
 preview entirely — the URL is already canonical from a prior confirmed
@@ -160,17 +161,19 @@ class ReplicaPreviewView(discord.ui.View):
     users get an ephemeral refusal so the gate stays meaningful on busy
     channels.
 
-    After construction the handler awaits `wait()` and reads `.team` and
+    The View keeps `self.team` synced to whatever the preview currently
+    shows. On Edit + successful parse, `self.team` is replaced and the
+    preview embed is re-rendered; on Edit + parse failure, `self.team`
+    is untouched and the user gets an ephemeral error. Either way,
+    clicking Confirm uploads `self.team` — so the embed is always a
+    truthful view of what Confirm will commit.
+
+    After construction the handler awaits `wait()` and reads `.team` /
     `.decision`:
-      - decision=True  → user confirmed (or successfully edited, which
-                         auto-commits); commit `self.team`.
+      - decision=True  → user confirmed; commit `self.team`.
       - decision=False → user cancelled; discard the extraction.
       - decision=None  → timed out; same outcome as cancel, distinguishable
                          in logs.
-
-    Edit replaces `self.team` with the user-edited version before the
-    auto-commit, so the command handler always reads the team the user
-    last approved (whether that was the original OCR output or an edit).
     """
 
     def __init__(
@@ -178,21 +181,22 @@ class ReplicaPreviewView(discord.ui.View):
         invoker_id: int,
         *,
         team: TeamData,
-        preview_content: str,
-        preview_embed: discord.Embed,
+        code: str,
+        description: str,
+        fmt_name: str,
         timeout: float,
     ) -> None:
         super().__init__(timeout=timeout)
         self.invoker_id = invoker_id
         self.team = team
         self.decision: bool | None = None
-        # The View needs to remember the original preview content + embed
-        # so a parse-failure path that edits the message can later
-        # restore the unprefixed version on a subsequent successful
-        # edit. Without this the error notice would stick around even
-        # after the user fixes their typo.
-        self._original_content = preview_content
-        self._preview_embed = preview_embed
+        # Embed-build inputs kept on the View so a successful edit can
+        # re-render the preview embed with the updated team. The
+        # command handler also uses `render_embed()` for the initial
+        # render so there's only one place team_to_embed gets called.
+        self._code = code
+        self._description = description
+        self._fmt_name = fmt_name
         # User's most recent failed edit attempt, if any. When set, the
         # next Edit click pre-fills the modal with it instead of the
         # current team's render — preserving their in-progress work
@@ -200,6 +204,21 @@ class ReplicaPreviewView(discord.ui.View):
         # Discord forces (since the modal can't reopen itself from a
         # modal-submit response).
         self._pending_edit_text: str | None = None
+
+    def render_embed(self) -> discord.Embed:
+        """Build the preview embed for the current team.
+
+        Used by the command handler for the initial render and by the
+        View itself after a successful edit. Single source of truth for
+        the embed shape — the command handler doesn't construct embeds
+        from raw TeamData anywhere else.
+        """
+        return team_to_embed(
+            self.team,
+            code=self._code,
+            description=self._description,
+            fmt_name=self._fmt_name,
+        )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker_id:
@@ -215,21 +234,21 @@ class ReplicaPreviewView(discord.ui.View):
         new_team: TeamData,
         modal_interaction: discord.Interaction,
     ) -> None:
-        """Commit a successfully-parsed edited team.
+        """Apply a successfully-parsed edit by updating the preview.
 
-        Treats the edit submission as if Confirm had been clicked:
-        replaces `self.team`, marks the decision as True, and stops the
-        view so the command handler proceeds to mint + cache. The modal
-        interaction is deferred to acknowledge the click within Discord's
-        3-second window without leaving an extra ephemeral message
-        behind — the command handler will edit the original preview
-        message to "Uploading…" as the next user-visible state.
+        Replaces `self.team`, re-renders the embed, and updates the
+        message in place. The view stays open so the user can confirm
+        the updated team, edit again, or cancel — the modal Submit
+        applies the change, but Confirm is still required to upload
+        it. (This matches the mental model new users bring: Submit
+        means "save changes," Confirm means "publish.")
         """
         self.team = new_team
-        self.decision = True
         self._pending_edit_text = None
-        await modal_interaction.response.defer()
-        self.stop()
+        await modal_interaction.response.edit_message(
+            embed=self.render_embed(),
+            view=self,
+        )
 
     async def _surface_edit_failure(
         self,
@@ -237,62 +256,23 @@ class ReplicaPreviewView(discord.ui.View):
         error_message: str,
         modal_interaction: discord.Interaction,
     ) -> None:
-        """Report a parse failure prominently and disambiguate Confirm.
+        """Notify the user a failed edit via ephemeral message.
 
         Stashes the user's failed text so the next Edit click pre-fills
         with it (Discord won't let us reopen the modal directly from a
-        modal-submit interaction — only command / component / autocomplete
-        responses can `send_modal`).
-
-        Two UX moves that turn out to matter, both based on real-world
-        user testing:
-
-        1. The error needs to be IMPOSSIBLE to miss. Footer text is too
-           small; content prefixes scroll off-screen when the embed is
-           tall. The error goes into the embed *title* (largest text)
-           plus a *field* at the bottom of the description (right above
-           the buttons), and the embed color flips to red.
-        2. The Confirm button's label changes to "Use original". The
-           original button name is a footgun in the failed-edit state:
-           it does NOT commit the user's edit (the edit doesn't parse),
-           it commits the unedited OCR team. Renaming makes the action
-           literal so the user can't be surprised by the result.
-
-        Both changes are durable for the rest of the failed-edit state.
-        If the user later edits successfully or cancels, the view stops
-        before any of this matters.
+        modal-submit interaction). The preview embed is NOT touched —
+        the edit didn't apply, so the embed still reflects the current
+        team accurately. The error goes out as a small ephemeral
+        followup; the user can read it, dismiss it, and click Edit
+        again to retry.
         """
         self._pending_edit_text = submitted_text
-
-        error_embed = self._preview_embed.copy()
-        error_embed.color = discord.Color.red()
-        # Title caps at 256 chars. Parser errors are typically <100, but
-        # a misformatted species line can quote the offending input and
-        # blow past that — truncate defensively.
-        title_text = f"⚠️ Couldn't parse — {error_message}"
-        if len(title_text) > 256:
-            title_text = title_text[:253] + "…"
-        error_embed.title = title_text
-        error_embed.add_field(
-            name="What now?",
-            value=(
-                "• **Edit** — retry (your text is preserved)\n"
-                "• **Use original** — upload the team above as-is "
-                "(your edit attempt is discarded)\n"
-                "• **Cancel** — discard everything"
+        await modal_interaction.response.send_message(
+            content=(
+                f"⚠️ **Couldn't parse your edited team:** {error_message}\n"
+                "Click **Edit** to retry — your text is preserved."
             ),
-            inline=False,
-        )
-        # Original footer ("Confirm uploads to pokepast.es...") is
-        # misleading once Confirm is relabeled. The new field carries
-        # the accurate button explanations.
-        error_embed.remove_footer()
-
-        self.confirm.label = "Use original"
-
-        await modal_interaction.response.edit_message(
-            embed=error_embed,
-            view=self,
+            ephemeral=True,
         )
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)

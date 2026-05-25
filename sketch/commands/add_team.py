@@ -59,7 +59,7 @@ from sketch.replica.pokepaste_renderer import (
     post_to_pokepaste,
     render_showdown,
 )
-from sketch.replica.preview_view import ReplicaPreviewView, team_to_embed
+from sketch.replica.preview_view import ReplicaPreviewView
 from sketch.storage.guild_config import GuildConfigStore
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
 
@@ -454,27 +454,21 @@ async def _confirm_preview(
     editing the response to reflect the outcome). The cache only ever
     ingests human-confirmed extractions.
     """
-    preview_content = (
-        "Extracted from your screenshots. **Confirm** to upload to "
-        "pokepast.es and add to the bank, **Edit** to fix the parsed "
-        "team first, or **Cancel** to discard."
-    )
-    preview_embed = team_to_embed(
-        team,
-        code=inputs.replica,
-        description=inputs.description,
-        fmt_name=inputs.fmt_name,
-    )
     view = ReplicaPreviewView(
         interaction.user.id,
         team=team,
-        preview_content=preview_content,
-        preview_embed=preview_embed,
+        code=inputs.replica,
+        description=inputs.description,
+        fmt_name=inputs.fmt_name,
         timeout=config.REPLICA_PREVIEW_TIMEOUT_SECONDS,
     )
     await interaction.edit_original_response(
-        content=preview_content,
-        embed=preview_embed,
+        content=(
+            "Extracted from your screenshots. **Confirm** to upload to "
+            "pokepast.es and add to the bank, **Edit** to fix the parsed "
+            "team first, or **Cancel** to discard."
+        ),
+        embed=view.render_embed(),
         view=view,
     )
     await view.wait()

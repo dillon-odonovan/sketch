@@ -14,8 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import discord
-
 from sketch.replica.extractor import PokemonEntry, TeamData
 from sketch.replica.pokepaste_renderer import render_showdown
 from sketch.replica.preview_view import (
@@ -97,21 +95,19 @@ def _make_view(
     invoker_id: int = 42,
     team: TeamData | None = None,
 ) -> ReplicaPreviewView:
-    """Construct a view with the canonical preview content + embed.
+    """Construct a view with the canonical embed-build inputs.
 
-    The View needs `preview_content` + `preview_embed` so the failure
-    path can rebuild the message with an error prefix while preserving
-    the embed. Tests that don't care about those values get a sensible
-    default from this helper; tests that DO care can override `team`
-    so the embed reflects it.
+    The View renders its own embed via `render_embed()` rather than
+    receiving one pre-built — that single source of truth means a
+    successful edit can re-render the embed for the updated team
+    without the command handler being involved.
     """
-    team = team or _team()
-    embed = team_to_embed(team, code="QBXXWXL05U", description="x", fmt_name="Reg M-A")
     return ReplicaPreviewView(
         invoker_id,
-        team=team,
-        preview_content="Extracted from your screenshots. ...",
-        preview_embed=embed,
+        team=team or _team(),
+        code="QBXXWXL05U",
+        description="x",
+        fmt_name="Reg M-A",
         timeout=300,
     )
 
@@ -266,12 +262,12 @@ class TestReplicaPreviewView:
         # Decision shouldn't flip just from opening the modal.
         assert view.decision is None
 
-    async def test_apply_edited_team_sets_decision_and_stops(self):
-        # `_apply_edited_team` is the modal -> view success callback. A
-        # successful edit auto-commits: view.team is updated, decision
-        # = True, the modal-submit interaction is deferred (no extra
-        # ephemeral message), and the view stops so the command handler
-        # proceeds. Pending text from any earlier failed attempt clears.
+    async def test_apply_edited_team_updates_preview_without_committing(self):
+        # Successful Edit submit applies the change to the preview but
+        # does NOT commit — the user still has to click Confirm. This
+        # matches the standard "Submit = save changes, Confirm = publish"
+        # mental model. The previous auto-commit behavior was confusing
+        # for new users.
         view = _make_view(invoker_id=42)
         view._pending_edit_text = "stale attempt"
         edited = TeamData(
@@ -280,82 +276,78 @@ class TestReplicaPreviewView:
         )
         modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
         await view._apply_edited_team(edited, modal_interaction)
+        # Team replaced, pending cleared.
         assert view.team is edited
-        assert view.decision is True
         assert view._pending_edit_text is None
-        assert modal_interaction.response.defer_calls == 1
-        assert view.is_finished()
+        # Crucially: NOT committed. Confirm still required.
+        assert view.decision is None
+        assert not view.is_finished()
+        # Preview embed re-rendered with the updated team.
+        assert len(modal_interaction.response.edit_message_calls) == 1
+        call = modal_interaction.response.edit_message_calls[0]
+        # The embed reflects the edited team — content unchanged.
+        assert "content" not in call
+        # The first mon's new species should appear in the rendered embed.
+        assert "Urshifu-Rapid-Strike" in call["embed"].description
+        assert call["view"] is view
 
-    async def test_surface_edit_failure_promotes_error_and_renames_confirm(self):
-        # `_surface_edit_failure` is the modal -> view failure callback.
-        # Discord forbids calling send_modal from a modal-submit
-        # interaction (HTTP 400), so the View edits the embed in place
-        # and stashes the failed text.
-        #
-        # The visual treatment matters: error in the embed *title*
-        # (largest text, top of embed) plus an explanation field at
-        # the bottom (right above the buttons), and the embed color
-        # flips to red. Footer is misleading in this state and gets
-        # cleared.
-        #
-        # The Confirm button is renamed to "Use original" because in
-        # the failed-edit state it commits the UNEDITED OCR team, not
-        # the user's failed attempt — and "Confirm" is a footgun
-        # label for that action.
+    async def test_apply_edited_team_lets_subsequent_confirm_commit_edits(self):
+        # End-to-end of the new flow: edit Submit applies changes,
+        # then a separate Confirm click commits. `view.team` after
+        # Confirm should be the edited team — proving the edit
+        # actually flows through to what gets uploaded.
         view = _make_view(invoker_id=42)
+        edited = TeamData(
+            pokemon=[_entry("Urshifu-Rapid-Strike")] + view.team.pokemon[1:],
+            team_id=view.team.team_id,
+        )
+        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view._apply_edited_team(edited, modal_interaction)
+        # User then clicks Confirm.
+        confirm_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view.confirm.callback(confirm_interaction)
+        # Decision is True, view is stopped, and view.team is the
+        # edited version — the command handler will mint with this.
+        assert view.decision is True
+        assert view.is_finished()
+        assert view.team.pokemon[0].species == "Urshifu-Rapid-Strike"
+
+    async def test_surface_edit_failure_sends_ephemeral_leaves_preview_alone(self):
+        # `_surface_edit_failure` is the modal -> view failure callback.
+        # The edit didn't apply (the text didn't parse), so the preview
+        # embed should stay unchanged — the invariant is "the embed
+        # shows what Confirm will upload." The error goes out as an
+        # ephemeral followup so the user sees it without polluting the
+        # preview message.
+        view = _make_view(invoker_id=42)
+        original_team = view.team
         submitted = "deliberately broken paste"
         modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
         await view._surface_edit_failure(
             submitted, "Expected 6 Pokemon, got 5.", modal_interaction
         )
-        # No new modal was opened (the bug we're fixing).
+        # No new modal opened (the HTTP 400 bug we already fixed).
         assert modal_interaction.response.send_modal_calls == []
-        # The preview message was edited with the error surfaced.
-        assert len(modal_interaction.response.edit_message_calls) == 1
-        call = modal_interaction.response.edit_message_calls[0]
-        # Content is unchanged — error lives on the embed where the
-        # user is already looking (next to the buttons).
-        assert "content" not in call
-        # Embed is the error variant; the base embed on the view is
-        # untouched so we could revert if needed.
-        error_embed = call["embed"]
-        assert error_embed is not view._preview_embed
-        assert error_embed.color == discord.Color.red()
-        # Error in the title — prominent placement, user can't miss.
-        assert "Couldn't parse" in error_embed.title
-        assert "Expected 6 Pokemon, got 5." in error_embed.title
-        # Bottom field explains what each button does in this state.
-        assert len(error_embed.fields) == 1
-        field = error_embed.fields[0]
-        assert "What now?" in field.name
-        assert "Use original" in field.value
-        assert "your text is preserved" in field.value
-        # The misleading original footer (which talked about Confirm)
-        # is gone.
-        assert error_embed.footer.text is None
-        # Confirm button renamed for literalness — clicking it commits
-        # the original team, not the failed edit.
-        assert view.confirm.label == "Use original"
-        # The view is re-attached so the buttons stay live.
-        assert call["view"] is view
-        # Failed text is stashed for the next Edit prefill.
-        assert view._pending_edit_text == submitted
-        # Decision is still pending; the view hasn't stopped.
+        # Preview embed NOT touched — edit didn't apply.
+        assert modal_interaction.response.edit_message_calls == []
+        # View state preserved: team unchanged, decision pending.
+        assert view.team is original_team
         assert view.decision is None
         assert not view.is_finished()
-
-    async def test_surface_edit_failure_truncates_long_error_in_title(self):
-        # Embed title caps at 256 chars. A parser error that quotes a
-        # very long offending input could blow past that — title
-        # gets truncated with an ellipsis so the edit_message call
-        # doesn't hit a 400 from Discord.
-        view = _make_view(invoker_id=42)
-        long_error = "x" * 500
-        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
-        await view._surface_edit_failure("paste", long_error, modal_interaction)
-        error_embed = modal_interaction.response.edit_message_calls[0]["embed"]
-        assert len(error_embed.title) <= 256
-        assert error_embed.title.endswith("…")
+        # Confirm button still labelled "Confirm" — no relabel needed
+        # because Confirm always means "commit what the preview shows,"
+        # and the preview still shows the original team.
+        assert view.confirm.label == "Confirm"
+        # User got an ephemeral notification with the error and the
+        # hint that their text is preserved.
+        assert len(modal_interaction.response.send_message_calls) == 1
+        msg = modal_interaction.response.send_message_calls[0]
+        assert msg["ephemeral"] is True
+        assert "Couldn't parse" in msg["content"]
+        assert "Expected 6 Pokemon, got 5." in msg["content"]
+        assert "your text is preserved" in msg["content"]
+        # Failed text is stashed for the next Edit prefill.
+        assert view._pending_edit_text == submitted
 
     async def test_edit_button_uses_pending_text_after_failure(self):
         # After a failed edit, the next Edit click pre-fills the modal
