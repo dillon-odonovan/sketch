@@ -1,0 +1,57 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly.
+title: "<short summary of the bug>"
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: What did the bot do (or not do)?
+      placeholder: |
+        `/add-team` returned "could not parse paste" for a valid Pokepaste URL.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimum steps for someone else (or future-you) to hit the same bug.
+      placeholder: |
+        1. In a guild with a registered sheet, run `/add-team url:https://pokepast.es/abc description:test`
+        2. Observe the error message in chat.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Where did this happen? Skip lines that don't apply.
+      placeholder: |
+        - Guild ID:
+        - Command invoked:
+        - Deploy (prod / local):
+        - Approx time / message link:
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Paste relevant log lines, error text, or screenshots. Redact tokens and IDs as needed.
+    validations:
+      required: false
+  - type: input
+    id: related
+    attributes:
+      label: Related
+      description: Linked PRs, issues, or prior discussion.
+    validations:
+      required: false

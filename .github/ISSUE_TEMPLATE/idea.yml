@@ -1,0 +1,19 @@
+name: Idea
+description: A half-formed thought. Capture it now, decide later whether to commit.
+title: "<short summary of the idea>"
+labels: ["type:idea"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: Brain-dump. Doesn't need to be fleshed out — you can promote this to a feature request later.
+    validations:
+      required: true
+  - type: textarea
+    id: trigger
+    attributes:
+      label: What prompted this
+      description: Conversation, observation, something you read — whatever sparked it.
+    validations:
+      required: false

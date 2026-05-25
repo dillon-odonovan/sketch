@@ -1,0 +1,28 @@
+name: Task / Chore
+description: A small work item that isn't a feature or a bug — infra, refactor, dependency bump.
+title: "<short summary of the task>"
+labels: ["type:chore"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs doing
+      description: One or two sentences is fine.
+      placeholder: |
+        Bump pre-commit hooks to latest stable versions.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why now
+      description: Triggering context — dependency EOL, follow-up from a recent PR, etc.
+    validations:
+      required: false
+  - type: input
+    id: related
+    attributes:
+      label: Related
+      description: Linked PRs, issues, or prior discussion.
+    validations:
+      required: false
