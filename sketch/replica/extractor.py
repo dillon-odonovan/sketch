@@ -97,9 +97,9 @@ _NATURE_MAP: dict[tuple[str, str], str] = {
     ("Sp. Def", "Defense"): "Gentle",
     ("Sp. Def", "Sp. Atk"): "Careful",
     ("Sp. Def", "Speed"): "Sassy",
-    ("Speed", "Attack"): "Jolly",
+    ("Speed", "Attack"): "Timid",
     ("Speed", "Defense"): "Hasty",
-    ("Speed", "Sp. Atk"): "Timid",
+    ("Speed", "Sp. Atk"): "Jolly",
     ("Speed", "Sp. Def"): "Naive",
 }
 

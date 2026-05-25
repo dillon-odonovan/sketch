@@ -242,8 +242,9 @@ class TestSniffMediaType:
 
 class TestResolveNature:
     """The deterministic 20-entry table is the only safe way to translate
-    Page 2's red ↑ / blue ↓ arrows. These cases mirror the reference
-    `build_pokepaste.py` table and the neutral defaults."""
+    Page 2's red ↑ / blue ↓ arrows. The table mirrors the canonical
+    Pokémon nature spec (see e.g.
+    <https://bulbapedia.bulbagarden.net/wiki/Nature>)."""
 
     def test_adamant_atk_up_spa_down(self):
         assert _resolve_nature("Attack", "Sp. Atk") == "Adamant"
@@ -251,8 +252,14 @@ class TestResolveNature:
     def test_modest_spa_up_atk_down(self):
         assert _resolve_nature("Sp. Atk", "Attack") == "Modest"
 
-    def test_timid_speed_up_spa_down(self):
-        assert _resolve_nature("Speed", "Sp. Atk") == "Timid"
+    def test_jolly_speed_up_spa_down(self):
+        # Jolly = +Speed, -Sp. Atk (physical attackers).
+        assert _resolve_nature("Speed", "Sp. Atk") == "Jolly"
+
+    def test_timid_speed_up_atk_down(self):
+        # Timid = +Speed, -Attack (special attackers). Paired with the
+        # Jolly test above so neither direction can silently flip back.
+        assert _resolve_nature("Speed", "Attack") == "Timid"
 
     def test_neutral_when_arrows_absent(self):
         assert _resolve_nature(None, None) == "Serious"
