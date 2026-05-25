@@ -217,8 +217,10 @@ def _parse_species_header(line: str, slot: int) -> tuple[str, str | None, str | 
     if not species:
         raise ShowdownParseError(f"Pokemon {slot}: missing species name.")
     gender = m.group("gender")
-    item_raw = m.group("item")
-    item = item_raw.strip() if item_raw and item_raw.strip() else None
+    # `(item_raw or "").strip() or None` collapses three "no item" cases
+    # to a single None: capture didn't match (item_raw is None), capture
+    # was empty, capture was whitespace only (e.g. user typed `Foo @ `).
+    item = (m.group("item") or "").strip() or None
     return species, gender, item
 
 
