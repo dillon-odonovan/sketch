@@ -18,6 +18,7 @@ def _optional(name: str) -> str | None:
 
 
 DISCORD_TOKEN = _required("DISCORD_TOKEN")
+ANTHROPIC_API_KEY = _required("ANTHROPIC_API_KEY")
 
 # Dev-only slash-command sync target. When set, slash commands are registered
 # against just this guild for instant (~5s) iteration during development. When
@@ -72,3 +73,22 @@ SEARCH_RESULT_LIMIT = 15
 # direct-Sheet-edit staleness bounded. Could go higher (15-30 min) if
 # we ever observe that within-session bursts routinely span longer.
 SEARCH_CACHE_TTL_SECONDS = 300.0
+
+# --- /replica feature -------------------------------------------------------
+
+# Top-level Firestore collection that maps a normalized Replica Code (10-char
+# uppercase alphanumeric) to the PokePaste URL we minted from its OCR'd team.
+# Global (cross-guild) — codes are deterministic across all players, so a
+# guild's OCR work benefits every other guild on the bot.
+REPLICA_CACHE_COLLECTION = "replica_codes"
+
+# Vision model for the /replica OCR pipeline. Sonnet 4.6 handles the Champions
+# share-screen UI well at ~5x lower cost than Opus; tool-use forces schema
+# conformance so we're not relying on the model's free-text JSON discipline.
+# Promote to claude-opus-4-7 if Confirm-rate telemetry shows accuracy issues.
+REPLICA_OCR_MODEL = "claude-sonnet-4-6"
+
+# How long the preview embed (Confirm / Cancel buttons) stays interactive
+# before timing out. Long enough that a user can step away briefly; short
+# enough that a stale embed doesn't sit forever holding a deferred response.
+REPLICA_PREVIEW_TIMEOUT_SECONDS = 300.0
