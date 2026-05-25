@@ -237,25 +237,29 @@ class ReplicaPreviewView(discord.ui.View):
         error_message: str,
         modal_interaction: discord.Interaction,
     ) -> None:
-        """Report a parse failure by editing the preview message.
+        """Report a parse failure by recoloring the embed and stashing text.
 
         Stashes the user's failed text so the next Edit click pre-fills
         with it (Discord won't let us reopen the modal directly from a
         modal-submit interaction — only command / component / autocomplete
-        responses can `send_modal`). The preview embed stays as-is so
-        the user can still see the current canonical team; the content
-        gets a ⚠️ prefix naming the error and pointing back at Edit.
+        responses can `send_modal`).
+
+        The error lives on the embed (color flipped to red, footer text
+        replaced with the parser error) rather than as a content prefix.
+        The embed sits directly above the action buttons, so the user
+        sees the error in their natural reading path; a content prefix
+        would push the user's attention up and off-screen when the
+        embed is tall (a 6-mon paste plus header + description gets
+        close to the preview's vertical budget on mobile).
         """
         self._pending_edit_text = submitted_text
-        error_content = (
-            f"⚠️ Couldn't parse your edited team: {error_message}\n\n"
-            "Click **Edit** to fix it (your text is preserved), "
-            "**Confirm** to upload the team shown below as-is, or "
-            "**Cancel** to discard."
+        error_embed = self._preview_embed.copy()
+        error_embed.color = discord.Color.red()
+        error_embed.set_footer(
+            text=f"⚠️ {error_message}  •  Click Edit to retry — your text is preserved."
         )
         await modal_interaction.response.edit_message(
-            content=error_content,
-            embed=self._preview_embed,
+            embed=error_embed,
             view=self,
         )
 

@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import discord
+
 from sketch.replica.extractor import PokemonEntry, TeamData
 from sketch.replica.pokepaste_renderer import render_showdown
 from sketch.replica.preview_view import (
@@ -284,13 +286,13 @@ class TestReplicaPreviewView:
         assert modal_interaction.response.defer_calls == 1
         assert view.is_finished()
 
-    async def test_surface_edit_failure_edits_message_and_stashes_text(self):
+    async def test_surface_edit_failure_recolors_embed_and_stashes_text(self):
         # `_surface_edit_failure` is the modal -> view failure callback.
         # Discord forbids calling send_modal from a modal-submit
-        # interaction (HTTP 400), so the View edits the original
-        # preview message (adding an error prefix, keeping the embed
-        # and buttons) and stashes the user's failed text for the next
-        # Edit click.
+        # interaction (HTTP 400), so the View edits the embed in place:
+        # color flipped to red, footer text replaced with the error.
+        # The error sits right above the buttons so the user doesn't
+        # have to scroll up to see what went wrong.
         view = _make_view(invoker_id=42)
         submitted = "deliberately broken paste"
         modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
@@ -302,11 +304,18 @@ class TestReplicaPreviewView:
         # The preview message was edited with the error surfaced.
         assert len(modal_interaction.response.edit_message_calls) == 1
         call = modal_interaction.response.edit_message_calls[0]
-        assert "Couldn't parse" in call["content"]
-        assert "Expected 6 Pokemon, got 5." in call["content"]
-        # Embed and view are preserved so the user still sees the
-        # current parsed team and the buttons remain clickable.
-        assert call["embed"] is view._preview_embed
+        # Content is unchanged — error lives on the embed where the
+        # user is already looking (next to the buttons).
+        assert "content" not in call
+        # The embed is the error variant: red color + footer carrying
+        # the parser error. The base embed (still on the view) is
+        # untouched so a later success path can revert cleanly.
+        error_embed = call["embed"]
+        assert error_embed is not view._preview_embed
+        assert error_embed.color == discord.Color.red()
+        assert "Expected 6 Pokemon, got 5." in error_embed.footer.text
+        assert "Edit to retry" in error_embed.footer.text
+        # The view is re-attached so the buttons stay live.
         assert call["view"] is view
         # Failed text is stashed for the next Edit prefill.
         assert view._pending_edit_text == submitted
