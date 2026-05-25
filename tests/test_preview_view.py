@@ -280,15 +280,14 @@ class TestReplicaPreviewView:
         assert view.decision is None
 
     async def test_apply_edited_team_updates_preview_without_committing(self):
-        # Successful Edit submit applies the change to the preview but
-        # does NOT commit — the user still has to click Confirm. This
-        # matches the standard "Submit = save changes, Confirm = publish"
-        # mental model. The previous auto-commit behavior was confusing
-        # for new users.
+        # A successful Edit submit applies the change to the preview
+        # but does NOT commit — the user still has to click Confirm.
+        # Submit means "save changes," Confirm means "publish."
         view = _make_view(invoker_id=42)
         view._pending_edit_text = "stale attempt"
-        # Simulate the failure-state having disabled Confirm; the
-        # success path must clear that disable.
+        # Confirm starts disabled here to simulate the failure-state
+        # carry-over; the success path must clear that disable so the
+        # user can commit the now-valid edit.
         view.confirm.disabled = True
         edited = TeamData(
             pokemon=[_entry("Urshifu-Rapid-Strike")] + view.team.pokemon[1:],
@@ -492,10 +491,11 @@ class TestEditTeamModal:
         assert text == broken_paste
         assert "too many moves" in error
         assert failure_interaction is interaction
-        # The modal itself didn't try to respond — the failure callback
-        # owns the interaction. (This is the bug fix: previously the
-        # modal called `send_modal` here, which Discord rejects with
-        # HTTP 400 on a modal-submit interaction.)
+        # The modal itself doesn't touch the interaction response —
+        # the failure callback owns it. Discord rejects `send_modal`
+        # in response to a modal-submit interaction (HTTP 400, valid
+        # response types {4, 5, 6, 7, 10, 12}), so the modal must
+        # hand the interaction off rather than responding directly.
         assert interaction.response.send_modal_calls == []
         assert interaction.response.edit_message_calls == []
         assert interaction.response.send_message_calls == []

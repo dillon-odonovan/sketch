@@ -106,12 +106,9 @@ class EditTeamModal(discord.ui.Modal):
     On submit:
       - Parses the text via `parse_showdown`.
       - On success, calls `on_success` with the parsed team and the
-        modal-submit interaction. The View applies the team and
-        auto-commits.
+        modal-submit interaction.
       - On parse failure, calls `on_failure` with the user's submitted
-        text + the error message + the modal-submit interaction. The
-        View stashes the text so the next Edit click pre-fills with
-        it, and edits the preview message to surface the error.
+        text + the error message + the modal-submit interaction.
 
     Both callbacks own the interaction response — the modal itself
     never calls `defer`, `edit_message`, or `send_message`, which keeps

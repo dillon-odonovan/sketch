@@ -183,9 +183,10 @@ class TestHappyPath:
         assert klefki.item is None
 
     def test_kangaskhan_two_moves(self):
-        # Canonical < 4-moves Champions set; the old OCR schema rejected
-        # this with `minItems: 4` and the renderer / parser must both
-        # support it now.
+        # Canonical < 4-moves Champions set. Pokemon can run fewer
+        # than 4 moves (e.g. Kangaskhan with Fake Out + Last Resort —
+        # Last Resort requires every other move used at least once,
+        # so a 2-move set is the cap there); the parser must accept it.
         kanga = parse_showdown(_FULL_PASTE).pokemon[3]
         assert kanga.moves == ["Fake Out", "Last Resort"]
 
