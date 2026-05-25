@@ -158,79 +158,61 @@ class TestRenderShowdown:
 
 
 class TestPostToPokepaste:
-    async def test_returns_canonical_url_from_json_response(self):
-        # /create.json returns {"id", "url", "title", "author"} — we read
-        # `url` directly and canonicalize it for dedup-shape consistency.
+    async def test_returns_canonical_url_from_relative_location(self):
+        # /create responds with a 303 whose Location header is the new
+        # paste's path (typically relative, e.g. "/abc123def"). We promote
+        # to absolute and canonicalize.
         with aioresponses() as mock:
             mock.post(
-                "https://pokepast.es/create.json",
-                status=200,
-                payload={
-                    "id": "abc123def",
-                    "url": "https://pokepast.es/abc123def",
-                    "title": "Replica QBXXWXL05U",
-                    "author": "",
-                },
+                "https://pokepast.es/create",
+                status=303,
+                headers={"Location": "/abc123def"},
             )
             url = await post_to_pokepaste("paste text", "Replica QBXXWXL05U")
         assert url == "https://pokepast.es/abc123def"
 
-    async def test_canonicalizes_returned_url(self):
-        # Server might respond with http or trailing slash — the
-        # canonicalizer collapses to the dedup form.
+    async def test_canonicalizes_absolute_location(self):
+        # Server might respond with the full URL, http scheme, or trailing
+        # slash — the canonicalizer collapses to the dedup-shape.
         with aioresponses() as mock:
             mock.post(
-                "https://pokepast.es/create.json",
-                status=200,
-                payload={
-                    "id": "xyz789",
-                    "url": "http://pokepast.es/xyz789/",
-                },
+                "https://pokepast.es/create",
+                status=302,
+                headers={"Location": "http://pokepast.es/xyz789/"},
             )
             url = await post_to_pokepaste("paste text", "Replica BBBB222233")
         assert url == "https://pokepast.es/xyz789"
 
-    async def test_4xx_status_raises_render_error(self):
+    async def test_non_redirect_status_raises(self):
+        # 200 / 4xx / 5xx are all unexpected — pokepast.es should always
+        # 30x on a successful create.
         with aioresponses() as mock:
             mock.post(
-                "https://pokepast.es/create.json",
-                status=400,
-                body="Bad Request",
+                "https://pokepast.es/create",
+                status=404,
+                body="404 page not found",
             )
             with pytest.raises(PokepasteUploadError, match="pokepast.es"):
                 await post_to_pokepaste("paste text", "Replica CCCC333344")
 
-    async def test_5xx_status_raises_render_error(self):
+    async def test_5xx_status_raises(self):
         with aioresponses() as mock:
             mock.post(
-                "https://pokepast.es/create.json",
+                "https://pokepast.es/create",
                 status=500,
                 body="Internal Server Error",
             )
             with pytest.raises(PokepasteUploadError, match="pokepast.es"):
                 await post_to_pokepaste("paste text", "Replica DDDD444455")
 
-    async def test_non_json_body_raises_render_error(self):
-        # A 200 with an HTML body (e.g. cloudflare interstitial) — the
-        # uploader must catch the parse failure rather than crash on the
-        # downstream key access.
+    async def test_redirect_without_location_raises(self):
+        # A 30x without a Location header is malformed; surface the error
+        # rather than returning an empty / nonsensical URL.
         with aioresponses() as mock:
             mock.post(
-                "https://pokepast.es/create.json",
-                status=200,
-                body="<html>not json</html>",
+                "https://pokepast.es/create",
+                status=303,
+                headers={},
             )
             with pytest.raises(PokepasteUploadError, match="pokepast.es"):
                 await post_to_pokepaste("paste text", "Replica EEEE555566")
-
-    async def test_missing_url_field_raises(self):
-        # JSON response but missing the `url` field — defensive against
-        # an API shape change.
-        with aioresponses() as mock:
-            mock.post(
-                "https://pokepast.es/create.json",
-                status=200,
-                payload={"id": "abc123"},
-            )
-            with pytest.raises(PokepasteUploadError, match="pokepast.es"):
-                await post_to_pokepaste("paste text", "Replica FFFF666677")

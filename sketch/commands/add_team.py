@@ -137,17 +137,20 @@ async def _resolve_canonical_url(
 ) -> tuple[str, str, bool] | None:
     """Figure out which Pokepaste URL to write to the sheet.
 
-    Three paths converge on `(canonical_url, canonical_url_for_dedup)`:
+    Four paths converge on `(canonical_url, canonical_url_for_dedup)`:
       - URL supplied by the user → use it directly.
-      - Replica-only + cache hit → reuse the cached URL.
-      - Replica-only + cache miss → OCR the screenshots, show a Confirm
-        / Cancel preview, mint a pokepast.es URL on Confirm, write the
-        cache entry, then use the (possibly race-loser) canonical URL.
+      - Replica-only + full cache hit (URL set) → reuse the cached URL.
+      - Replica-only + partial cache hit (paste cached but URL is None
+        from a prior failed upload) → re-mint using the cached paste,
+        no OCR needed.
+      - Replica-only + cache miss → OCR the screenshots, show a
+        Confirm / Cancel preview, write the parsed paste to the cache,
+        mint a pokepast.es URL, upgrade the cache entry with the URL.
 
-    Returns `(canonical_url, canonical_url_for_dedup, preview_shown)` on
-    success, or None when the user cancelled, the OCR failed, or any
-    other error path was already responded to via `followup.send` /
-    `edit_original_response`.
+    Returns `(canonical_url, canonical_url_for_dedup, preview_shown)`
+    on success, or None when the user cancelled, the OCR failed, or
+    any other error path was already responded to via `followup.send`
+    / `edit_original_response`.
 
     `canonical_url` preserves the user's spelling when they supplied a
     URL (so the sheet shows what they typed); `canonical_url_for_dedup`
@@ -170,13 +173,30 @@ async def _resolve_canonical_url(
         await interaction.followup.send(GENERIC_CACHE_READ_ERROR, ephemeral=True)
         return None
 
-    if cached is not None:
+    if cached is not None and cached.pokepaste_url is not None:
         logger.info(
             "add-team cache HIT for code=%s -> %s",
             inputs.replica,
             cached.pokepaste_url,
         )
         return cached.pokepaste_url, cached.pokepaste_url, False
+
+    if cached is not None:
+        # Partial cache hit: the OCR was confirmed and the paste was
+        # written, but the pokepast.es upload either hasn't happened
+        # yet or failed last time. Retry the upload using the cached
+        # paste — no need to re-OCR, no need for screenshots, no need
+        # for the preview gate (user already confirmed once).
+        logger.info(
+            "add-team cache PARTIAL HIT for code=%s; retrying mint",
+            inputs.replica,
+        )
+        url = await _retry_mint_from_cached_paste(
+            interaction, replica_cache, inputs, cached
+        )
+        if url is None:
+            return None
+        return url, url, False
 
     # Cache miss: hand off to the OCR sub-flow so this function stays a
     # thin URL/cache-hit/miss decision tree.
@@ -197,11 +217,15 @@ async def _resolve_via_ocr(
 ) -> tuple[str, str, bool] | None:
     """OCR-path orchestrator for a cache-missed replica submission.
 
-    Calls each sub-step in order: download attachments → extract team →
-    confirm with the user → mint pokepast.es URL → seed cache. Any step
+    Steps: download attachments → extract team → confirm with the user
+    → render paste text → seed the cache (paste_text, url=None) → mint
+    pokepast.es URL → upgrade the cache entry with the URL. Any step
     returning None (validation failure, user cancel, transport error)
-    short-circuits the whole flow; the sub-step has already sent the
-    user-facing message before returning None.
+    short-circuits; the sub-step has already responded to the user.
+
+    Seeding the cache BEFORE the mint is what makes a failed mint
+    recoverable — the next /add-team for the same code hits the
+    partial-cache-hit branch and retries the upload without re-OCR.
     """
     if inputs.page1 is None:
         await interaction.followup.send(
@@ -227,17 +251,124 @@ async def _resolve_via_ocr(
     if not await _confirm_preview(interaction, inputs, team):
         return None
 
-    minted_url = await _mint_pokepaste(interaction, inputs, team)
+    # Render once, here. The text is what gets cached AND what we POST
+    # to pokepast.es — keeping the two in lockstep avoids any drift
+    # between cache content and minted paste.
+    paste_text = render_showdown(team)
+
+    cache_entry = await _seed_cache_with_paste(
+        interaction, replica_cache, inputs, team, paste_text
+    )
+    if cache_entry is None:
+        return None
+
+    # If we lost a race, the existing entry might already have a URL.
+    # Skip the mint and use it directly.
+    if cache_entry.pokepaste_url is not None:
+        logger.info(
+            "add-team cache race for code=%s; using winner's URL %s",
+            inputs.replica,
+            cache_entry.pokepaste_url,
+        )
+        return cache_entry.pokepaste_url, cache_entry.pokepaste_url, True
+
+    minted_url = await _mint_pokepaste(interaction, inputs, cache_entry.paste_text)
     if minted_url is None:
         return None
 
-    canonical_url = await _seed_cache(
-        interaction, replica_cache, inputs, team, minted_url
+    await _attach_url_to_cache(replica_cache, inputs, minted_url)
+    return minted_url, minted_url, True
+
+
+async def _retry_mint_from_cached_paste(
+    interaction: discord.Interaction,
+    replica_cache: ReplicaCacheStore,
+    inputs: _AddTeamInputs,
+    cache_entry: ReplicaCacheEntry,
+) -> str | None:
+    """Re-attempt the pokepast.es upload for a partial cache entry.
+
+    Used when a previous /add-team for the same code confirmed the OCR
+    and wrote the parsed paste to Firestore, but the upload itself
+    failed. The paste text is the same as the confirmed version — no
+    OCR, no preview, just upload + cache upgrade.
+    """
+    assert cache_entry.pokepaste_url is None
+    await interaction.edit_original_response(
+        content="Retrying pokepast.es upload from the cached paste…",
+        embed=None,
+        view=None,
     )
-    if canonical_url is None:
+    minted_url = await _mint_pokepaste(interaction, inputs, cache_entry.paste_text)
+    if minted_url is None:
+        return None
+    await _attach_url_to_cache(replica_cache, inputs, minted_url)
+    return minted_url
+
+
+async def _seed_cache_with_paste(
+    interaction: discord.Interaction,
+    replica_cache: ReplicaCacheStore,
+    inputs: _AddTeamInputs,
+    team: TeamData,
+    paste_text: str,
+) -> ReplicaCacheEntry | None:
+    """Write the confirmed OCR'd team to the cache with `pokepaste_url=None`.
+
+    The transactional `create` collapses concurrent OCR for the same
+    code: the loser gets back the winner's entry (which may or may not
+    have a URL set yet — caller decides what to do next).
+    """
+    entry = ReplicaCacheEntry(
+        paste_text=paste_text,
+        pokepaste_url=None,
+        species=[p.species for p in team.pokemon],
+        created_at=datetime.now(timezone.utc),
+        created_by_user_id=interaction.user.id,
+        # In a guild interaction `guild_id` is the source of truth; fall
+        # back to the user's id for the rare DM-context case so the
+        # audit column always has a traceable snowflake.
+        created_by_guild_id=(
+            interaction.guild_id
+            if interaction.guild_id is not None
+            else interaction.user.id
+        ),
+    )
+    assert inputs.replica is not None
+    try:
+        return await asyncio.to_thread(replica_cache.create, inputs.replica, entry)
+    except Exception:
+        logger.exception("Replica cache create failed for code=%s", inputs.replica)
+        await interaction.edit_original_response(
+            content=GENERIC_CACHE_WRITE_ERROR, embed=None, view=None
+        )
         return None
 
-    return canonical_url, canonical_url, True
+
+async def _attach_url_to_cache(
+    replica_cache: ReplicaCacheStore,
+    inputs: _AddTeamInputs,
+    url: str,
+) -> None:
+    """Upgrade the cached entry with the freshly-minted URL.
+
+    Best-effort: if the cache write fails after a successful mint, the
+    URL is still valid and the row write proceeds. The next /add-team
+    for this code would re-mint a fresh URL (harmless — both URLs
+    point at valid pastes of the same team — but worth logging at
+    WARN so we notice if it becomes frequent).
+    """
+    assert inputs.replica is not None
+    try:
+        await asyncio.to_thread(replica_cache.set_url, inputs.replica, url)
+    except Exception:
+        logger.warning(
+            "Failed to set pokepaste_url=%s for code=%s; cache will retry on "
+            "next /add-team for this code",
+            url,
+            inputs.replica,
+            exc_info=True,
+        )
 
 
 async def _download_screenshots(
@@ -353,12 +484,15 @@ async def _confirm_preview(
 async def _mint_pokepaste(
     interaction: discord.Interaction,
     inputs: _AddTeamInputs,
-    team: TeamData,
+    paste_text: str,
 ) -> str | None:
-    """Render the team to Showdown text and POST it to pokepast.es.
+    """POST the already-rendered Showdown text to pokepast.es.
 
     Returns the new paste's canonical URL on success, None on upload
     failure (after editing the response to show the error message).
+    Takes pre-rendered `paste_text` rather than a `TeamData` so the
+    same helper handles both fresh-OCR mints and partial-cache-hit
+    retries (the latter has only the cached paste_text, not the team).
     """
     await interaction.edit_original_response(
         content="Uploading to pokepast.es and adding to the bank…",
@@ -366,56 +500,12 @@ async def _mint_pokepaste(
         view=None,
     )
     try:
-        paste_text = render_showdown(team)
         return await post_to_pokepaste(paste_text, title=f"Replica {inputs.replica}")
     except PokepasteUploadError as exc:
         await interaction.edit_original_response(
             content=str(exc), embed=None, view=None
         )
         return None
-
-
-async def _seed_cache(
-    interaction: discord.Interaction,
-    replica_cache: ReplicaCacheStore,
-    inputs: _AddTeamInputs,
-    team: TeamData,
-    minted_url: str,
-) -> str | None:
-    """Write the (replica → URL) entry to Firestore via a transactional
-    create.
-
-    Returns the canonical URL (ours on race-win, the winner's on
-    race-loss thanks to `create` returning the existing entry) or None
-    on Firestore write failure.
-
-    `created_by_guild_id` falls back to `interaction.user.id` for the
-    rare DM-context case so the audit column always has a traceable
-    snowflake.
-    """
-    entry = ReplicaCacheEntry(
-        pokepaste_url=minted_url,
-        species=[p.species for p in team.pokemon],
-        created_at=datetime.now(timezone.utc),
-        created_by_user_id=interaction.user.id,
-        created_by_guild_id=(
-            interaction.guild_id
-            if interaction.guild_id is not None
-            else interaction.user.id
-        ),
-    )
-    assert inputs.replica is not None
-    try:
-        canonical_entry = await asyncio.to_thread(
-            replica_cache.create, inputs.replica, entry
-        )
-    except Exception:
-        logger.exception("Replica cache write failed for code=%s", inputs.replica)
-        await interaction.edit_original_response(
-            content=GENERIC_CACHE_WRITE_ERROR, embed=None, view=None
-        )
-        return None
-    return canonical_entry.pokepaste_url
 
 
 async def _commit_team_row(

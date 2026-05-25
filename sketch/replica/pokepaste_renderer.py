@@ -23,7 +23,6 @@ omits them.
 
 from __future__ import annotations
 
-import json
 import logging
 
 import aiohttp
@@ -50,12 +49,14 @@ _STAT_DISPLAY = {
     "spe": "Spe",
 }
 
-# pokepast.es exposes a JSON variant of the create endpoint that returns
-# {"id": "...", "url": "...", "author": "...", "title": "..."} as the body
-# of a 200 response — no redirect to follow. Using this avoids the
-# follow-the-Location dance of the HTML endpoint, which is fiddly to do
-# in aiohttp without accidentally chasing onto the rendered paste page.
-_POKEPASTE_CREATE_URL = "https://pokepast.es/create.json"
+# pokepast.es accepts POST to /create with form-encoded fields and responds
+# with a 303 redirect whose Location header is the new paste's path
+# (e.g. "/abc123def"). We follow the redirect ourselves with
+# `allow_redirects=False` so we can capture the URL — letting aiohttp follow
+# it would land us on the rendered HTML page and waste bandwidth re-reading
+# the paste we just submitted.
+_POKEPASTE_CREATE_URL = "https://pokepast.es/create"
+_POKEPASTE_HOST = "https://pokepast.es"
 
 
 def _render_mon(p: PokemonEntry) -> str:
@@ -109,30 +110,42 @@ def render_showdown(team: TeamData) -> str:
 async def post_to_pokepaste(paste_text: str, title: str) -> str:
     """Upload `paste_text` to pokepast.es and return the canonical URL.
 
-    Uses the `/create.json` endpoint which returns a JSON body containing
-    the new paste's URL directly — cleaner than the HTML variant that
-    redirects via Location header. Round-trips the URL through
-    `canonicalize_pokepaste_url` so the value handed to
-    `SheetsClient.add_row` matches the form `find_row_by_url` uses for
-    dedup, and so a malformed server response is caught here rather than
-    at row-write time.
+    POSTs to `/create` with the same form fields the website uses
+    (paste, title, author, notes). pokepast.es responds with a 303
+    redirect whose Location header is the new paste's path; we extract
+    the URL from that header rather than follow the redirect.
 
-    Raises `PokepasteUploadError` on any non-2xx response or transport failure.
-    The message is user-facing.
+    Round-trips the URL through `canonicalize_pokepaste_url` so the
+    value handed to `SheetsClient.add_row` matches the form
+    `find_row_by_url` uses for dedup, and so a malformed Location is
+    caught here rather than at row-write time.
+
+    Raises `PokepasteUploadError` on any non-redirect response or
+    transport failure. The message is user-facing.
     """
     try:
         async with (
             aiohttp.ClientSession() as session,
             session.post(
                 _POKEPASTE_CREATE_URL,
-                data={"title": title, "paste": paste_text},
+                # Match the website's form submission shape exactly: paste +
+                # title + empty author + empty notes. Sending only the
+                # fields we care about works too, but matching the browser
+                # avoids any server-side validation surprise.
+                data={
+                    "paste": paste_text,
+                    "title": title,
+                    "author": "",
+                    "notes": "",
+                },
+                allow_redirects=False,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp,
         ):
-            if resp.status >= 400:
+            if resp.status not in (301, 302, 303, 307, 308):
                 body_excerpt = (await resp.text())[:200]
                 logger.warning(
-                    "Pokepaste create returned error status %s: %s",
+                    "Pokepaste create returned non-redirect status %s: %s",
                     resp.status,
                     body_excerpt,
                 )
@@ -140,7 +153,16 @@ async def post_to_pokepaste(paste_text: str, title: str) -> str:
                     "Couldn't upload the team to pokepast.es right now — "
                     "please try again in a moment."
                 )
-            body = await resp.text()
+            location = resp.headers.get("Location", "").strip()
+            if not location:
+                logger.warning(
+                    "Pokepaste create %s response missing Location header",
+                    resp.status,
+                )
+                raise PokepasteUploadError(
+                    "Couldn't upload the team to pokepast.es right now — "
+                    "please try again in a moment."
+                )
     except aiohttp.ClientError as exc:
         logger.warning("Pokepaste upload transport error: %s", exc)
         raise PokepasteUploadError(
@@ -148,20 +170,7 @@ async def post_to_pokepaste(paste_text: str, title: str) -> str:
             "please try again in a moment."
         ) from exc
 
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError as exc:
-        logger.warning("Pokepaste /create.json returned non-JSON body: %s", body[:200])
-        raise PokepasteUploadError(
-            "Couldn't upload the team to pokepast.es right now — "
-            "please try again in a moment."
-        ) from exc
-
-    url = payload.get("url") if isinstance(payload, dict) else None
-    if not isinstance(url, str) or not url:
-        logger.warning("Pokepaste /create.json response missing url field: %s", payload)
-        raise PokepasteUploadError(
-            "Couldn't upload the team to pokepast.es right now — "
-            "please try again in a moment."
-        )
-    return canonicalize_pokepaste_url(url)
+    absolute = (
+        location if location.startswith("http") else f"{_POKEPASTE_HOST}{location}"
+    )
+    return canonicalize_pokepaste_url(absolute)
