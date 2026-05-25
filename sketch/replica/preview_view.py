@@ -1,29 +1,57 @@
-"""Discord UI for the Confirm / Cancel gate on cold OCR.
+"""Discord UI for the Confirm / Cancel / Edit gate on cold OCR.
 
 The replica cache is global (cross-guild), so a bad OCR that lands in the
 cache pollutes every future lookup of that code on every guild. The human
-preview is the v1 safety gate: the invoking user sees the extracted team
-in an ephemeral embed and clicks Confirm before any pokepast.es URL is
-minted or any cache row is written.
+preview is the safety gate: the invoking user sees the extracted team in
+an ephemeral embed and either confirms it, edits it, or cancels before
+any pokepast.es URL is minted or any cache row is written.
+
+Edit opens a Discord modal pre-populated with the rendered Showdown /
+PokePaste text. On Submit the bot parses the text back into a `TeamData`
+and — on parser success — **auto-commits** (treats the edit submission
+as if Confirm had been clicked). The user inspects the canonical text in
+the modal before submitting, so re-rendering the preview embed for a
+second confirm click would only add friction. If the user wants to bail
+mid-edit, the modal's native X button closes without firing on_submit.
 
 The View only ever fires for cold-OCR submissions. Cache hits skip the
 preview entirely — the URL is already canonical from a prior confirmed
-extraction. See the v2 section of the plan for the Showdown-validator
-replacement that retires this manual gate.
+extraction.
 """
 
 from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
 
 import discord
 
 from sketch.replica.extractor import TeamData
 from sketch.replica.pokepaste_renderer import render_showdown
+from sketch.replica.showdown_parser import ShowdownParseError, parse_showdown
 
 # Discord's embed description maxes out at 4096 chars. A 6-Pokemon paste
 # rendered to Showdown export comfortably fits (well under 1k chars), and
 # a markdown code block wrapper preserves whitespace + uses a monospace
 # font so columns line up the way the user expects from PokePaste.
 _DESCRIPTION_LIMIT = 4096
+
+# Discord modal title and TextInput label both cap at 45 chars. We carve
+# out a budget for the static prefix ("Edit team — " / "Showdown text — ")
+# and use the remainder for parser error fragments on re-open.
+_MODAL_TITLE_LIMIT = 45
+_TEXTINPUT_LABEL_LIMIT = 45
+
+# Discord paragraph TextInput accepts up to 4000 chars. A Champions
+# Showdown export tops out around 1k, so this is a wide margin.
+_TEXTINPUT_MAX_LENGTH = 4000
+
+
+# Type alias for the "what to do with a successfully-parsed edit" callback
+# the modal invokes. The modal owns no state about the View or the
+# command handler — it just calls back with the parsed team and the
+# modal-submit interaction, and the caller (the View) decides how to
+# react. Loose coupling keeps the modal independently testable.
+EditedTeamCallback = Callable[[TeamData, discord.Interaction], Awaitable[None]]
 
 
 def team_to_embed(
@@ -58,28 +86,125 @@ def team_to_embed(
     )
     embed.set_footer(
         text=(
-            "Click Confirm to upload to pokepast.es and add this team to the "
-            "bank. Cancel discards the extraction."
+            "Confirm uploads to pokepast.es and adds to the bank. Edit "
+            "lets you fix the parsed team first. Cancel discards."
         )
     )
     return embed
 
 
-class ReplicaPreviewView(discord.ui.View):
-    """View with Confirm and Cancel buttons.
+def _truncate_for_discord(text: str, limit: int) -> str:
+    """Truncate `text` to `limit` chars with a trailing ellipsis if needed.
 
-    Only the invoker (the user who ran `/replica`) can click — other users
-    get an ephemeral refusal so the gate stays meaningful on busy channels.
+    Discord rejects modal titles / input labels that exceed their caps at
+    interaction time with a 400, so we trim defensively rather than rely
+    on parser error messages always being short.
+    """
+    if len(text) <= limit:
+        return text
+    # Reserve one char for the ellipsis.
+    return text[: limit - 1].rstrip() + "…"
 
-    After construction the handler awaits `wait()` and reads `.decision`:
-      - True  → user confirmed; commit the team.
-      - False → user cancelled; discard the extraction.
-      - None  → timed out; same outcome as cancel, distinguishable in logs.
+
+class EditTeamModal(discord.ui.Modal):
+    """Modal that lets the invoker edit the extracted team as Showdown text.
+
+    On submit:
+      - Parses the text via `parse_showdown`.
+      - On parse failure, responds with `send_modal(...)` of a fresh
+        `EditTeamModal` carrying the user's last attempt and a truncated
+        error message in the title + input label. The user perceives the
+        modal as "stayed open with an error" — the close-and-reopen
+        happens client-side without losing their work.
+      - On success, calls the `on_submit_callback` with the parsed team
+        and the modal-submit interaction. The callback (typically a
+        bound method on `ReplicaPreviewView`) handles applying the team
+        and acknowledging the interaction.
     """
 
-    def __init__(self, invoker_id: int, *, timeout: float) -> None:
+    def __init__(
+        self,
+        *,
+        prefill: str,
+        team_id: str | None,
+        on_submit_callback: EditedTeamCallback,
+        error: str | None = None,
+    ) -> None:
+        title = (
+            _truncate_for_discord(f"Edit team — {error}", _MODAL_TITLE_LIMIT)
+            if error
+            else "Edit team"
+        )
+        super().__init__(title=title)
+
+        self._team_id = team_id
+        self._on_submit_callback = on_submit_callback
+
+        label = (
+            _truncate_for_discord(f"Showdown text — {error}", _TEXTINPUT_LABEL_LIMIT)
+            if error
+            else "Showdown text"
+        )
+        # Stored as an attribute so tests can inspect the default text
+        # without going through `self.children[0]` (which is also valid
+        # but couples test code to discord.py's internal ordering).
+        self.paste_input: discord.ui.TextInput = discord.ui.TextInput(
+            label=label,
+            style=discord.TextStyle.paragraph,
+            default=prefill,
+            max_length=_TEXTINPUT_MAX_LENGTH,
+            required=True,
+        )
+        self.add_item(self.paste_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        submitted = self.paste_input.value or ""
+        try:
+            team = parse_showdown(submitted, team_id=self._team_id)
+        except ShowdownParseError as exc:
+            await interaction.response.send_modal(
+                EditTeamModal(
+                    prefill=submitted,
+                    team_id=self._team_id,
+                    on_submit_callback=self._on_submit_callback,
+                    error=str(exc),
+                )
+            )
+            return
+
+        await self._on_submit_callback(team, interaction)
+
+
+class ReplicaPreviewView(discord.ui.View):
+    """View with Confirm / Edit / Cancel buttons.
+
+    Only the invoker (the user who ran `/add-team`) can click — other
+    users get an ephemeral refusal so the gate stays meaningful on busy
+    channels.
+
+    After construction the handler awaits `wait()` and reads `.team` and
+    `.decision`:
+      - decision=True  → user confirmed (or successfully edited, which
+                         auto-commits); commit `self.team`.
+      - decision=False → user cancelled; discard the extraction.
+      - decision=None  → timed out; same outcome as cancel, distinguishable
+                         in logs.
+
+    Edit replaces `self.team` with the user-edited version before the
+    auto-commit, so the command handler always reads the team the user
+    last approved (whether that was the original OCR output or an edit).
+    """
+
+    def __init__(
+        self,
+        invoker_id: int,
+        *,
+        team: TeamData,
+        timeout: float,
+    ) -> None:
         super().__init__(timeout=timeout)
         self.invoker_id = invoker_id
+        self.team = team
         self.decision: bool | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -90,6 +215,26 @@ class ReplicaPreviewView(discord.ui.View):
             )
             return False
         return True
+
+    async def _apply_edited_team(
+        self,
+        new_team: TeamData,
+        modal_interaction: discord.Interaction,
+    ) -> None:
+        """Commit a successfully-parsed edited team.
+
+        Treats the edit submission as if Confirm had been clicked:
+        replaces `self.team`, marks the decision as True, and stops the
+        view so the command handler proceeds to mint + cache. The modal
+        interaction is deferred to acknowledge the click within Discord's
+        3-second window without leaving an extra ephemeral message
+        behind — the command handler will edit the original preview
+        message to "Uploading…" as the next user-visible state.
+        """
+        self.team = new_team
+        self.decision = True
+        await modal_interaction.response.defer()
+        self.stop()
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm(
@@ -103,6 +248,21 @@ class ReplicaPreviewView(discord.ui.View):
         # original preview message after the commit settles.
         await interaction.response.defer()
         self.stop()
+
+    @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary)
+    async def edit(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        paste = render_showdown(self.team)
+        await interaction.response.send_modal(
+            EditTeamModal(
+                prefill=paste,
+                team_id=self.team.team_id,
+                on_submit_callback=self._apply_edited_team,
+            )
+        )
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(
