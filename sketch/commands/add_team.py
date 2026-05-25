@@ -51,6 +51,7 @@ from sketch.pokepaste_validator import (
 from sketch.replica.cache import ReplicaCacheEntry, ReplicaCacheStore
 from sketch.replica.extractor import (
     ExtractionError,
+    TeamData,
     extract_team_from_screenshots,
 )
 from sketch.replica.pokepaste_renderer import (
@@ -177,7 +178,31 @@ async def _resolve_canonical_url(
         )
         return cached.pokepaste_url, cached.pokepaste_url, False
 
-    # Cache miss → OCR path. At minimum page1 is required.
+    # Cache miss: hand off to the OCR sub-flow so this function stays a
+    # thin URL/cache-hit/miss decision tree.
+    return await _resolve_via_ocr(
+        interaction,
+        inputs=inputs,
+        replica_cache=replica_cache,
+        anthropic_client=anthropic_client,
+    )
+
+
+async def _resolve_via_ocr(
+    interaction: discord.Interaction,
+    *,
+    inputs: _AddTeamInputs,
+    replica_cache: ReplicaCacheStore,
+    anthropic_client: anthropic.AsyncAnthropic,
+) -> tuple[str, str, bool] | None:
+    """OCR-path orchestrator for a cache-missed replica submission.
+
+    Calls each sub-step in order: download attachments → extract team →
+    confirm with the user → mint pokepast.es URL → seed cache. Any step
+    returning None (validation failure, user cancel, transport error)
+    short-circuits the whole flow; the sub-step has already sent the
+    user-facing message before returning None.
+    """
     if inputs.page1 is None:
         await interaction.followup.send(
             f"Code `{inputs.replica}` isn't in the cache yet. Either provide "
@@ -189,6 +214,42 @@ async def _resolve_canonical_url(
         )
         return None
 
+    screenshots = await _download_screenshots(interaction, inputs)
+    if screenshots is None:
+        return None
+
+    team = await _extract_and_validate_team(
+        interaction, anthropic_client, inputs, *screenshots
+    )
+    if team is None:
+        return None
+
+    if not await _confirm_preview(interaction, inputs, team):
+        return None
+
+    minted_url = await _mint_pokepaste(interaction, inputs, team)
+    if minted_url is None:
+        return None
+
+    canonical_url = await _seed_cache(
+        interaction, replica_cache, inputs, team, minted_url
+    )
+    if canonical_url is None:
+        return None
+
+    return canonical_url, canonical_url, True
+
+
+async def _download_screenshots(
+    interaction: discord.Interaction,
+    inputs: _AddTeamInputs,
+) -> tuple[bytes, bytes | None] | None:
+    """Read the user-attached page1 (and optional page2) into bytes.
+
+    Returns the byte pair on success, None on Discord download failure
+    (after sending an ephemeral retry message).
+    """
+    assert inputs.page1 is not None
     try:
         page1_bytes = await inputs.page1.read()
         page2_bytes = await inputs.page2.read() if inputs.page2 is not None else None
@@ -204,7 +265,23 @@ async def _resolve_canonical_url(
             ephemeral=True,
         )
         return None
+    return page1_bytes, page2_bytes
 
+
+async def _extract_and_validate_team(
+    interaction: discord.Interaction,
+    anthropic_client: anthropic.AsyncAnthropic,
+    inputs: _AddTeamInputs,
+    page1_bytes: bytes,
+    page2_bytes: bytes | None,
+) -> TeamData | None:
+    """Run Claude vision OCR then cross-check the extracted Team ID
+    against the user's submitted replica code.
+
+    A Team-ID mismatch is almost always a wrong-attachment user error;
+    refusing keeps the global cache from being seeded with the wrong
+    (code → URL) pair, which would mislead every future lookup.
+    """
     try:
         team = await extract_team_from_screenshots(
             anthropic_client, page1_bytes, page2_bytes
@@ -213,10 +290,6 @@ async def _resolve_canonical_url(
         await interaction.followup.send(str(exc), ephemeral=True)
         return None
 
-    # Team-ID mismatch check: the share screen prints the code at the top
-    # of both pages, so the model usually reads it back. Mismatch is
-    # almost always a wrong-attachment user error; refusing keeps the
-    # cache clean from bad (code -> URL) pairs.
     if team.team_id is not None and team.team_id != inputs.replica:
         logger.warning(
             "Team ID mismatch: submitted=%s extracted=%s",
@@ -231,7 +304,20 @@ async def _resolve_canonical_url(
         )
         return None
 
-    # Preview gate. Cache only ingests human-confirmed extractions.
+    return team
+
+
+async def _confirm_preview(
+    interaction: discord.Interaction,
+    inputs: _AddTeamInputs,
+    team: TeamData,
+) -> bool:
+    """Show the Confirm / Cancel preview embed and wait for the click.
+
+    Returns True if the user confirmed, False if they cancelled or
+    timed out (after editing the response to reflect the outcome). The
+    cache only ever ingests human-confirmed extractions.
+    """
     view = ReplicaPreviewView(
         interaction.user.id,
         timeout=config.REPLICA_PREVIEW_TIMEOUT_SECONDS,
@@ -260,42 +346,65 @@ async def _resolve_canonical_url(
             inputs.replica,
             view.decision,
         )
-        return None
+        return False
+    return True
 
+
+async def _mint_pokepaste(
+    interaction: discord.Interaction,
+    inputs: _AddTeamInputs,
+    team: TeamData,
+) -> str | None:
+    """Render the team to Showdown text and POST it to pokepast.es.
+
+    Returns the new paste's canonical URL on success, None on upload
+    failure (after editing the response to show the error message).
+    """
     await interaction.edit_original_response(
         content="Uploading to pokepast.es and adding to the bank…",
         embed=None,
         view=None,
     )
-
     try:
         paste_text = render_showdown(team)
-        minted_url = await post_to_pokepaste(
-            paste_text, title=f"Replica {inputs.replica}"
-        )
+        return await post_to_pokepaste(paste_text, title=f"Replica {inputs.replica}")
     except PokepasteUploadError as exc:
         await interaction.edit_original_response(
             content=str(exc), embed=None, view=None
         )
         return None
 
-    # `create` is transactional fail-if-exists; a concurrent OCR for the
-    # same code will land here too and one of us will catch AlreadyExists.
-    # The store re-reads on that path and returns the winner's URL.
+
+async def _seed_cache(
+    interaction: discord.Interaction,
+    replica_cache: ReplicaCacheStore,
+    inputs: _AddTeamInputs,
+    team: TeamData,
+    minted_url: str,
+) -> str | None:
+    """Write the (replica → URL) entry to Firestore via a transactional
+    create.
+
+    Returns the canonical URL (ours on race-win, the winner's on
+    race-loss thanks to `create` returning the existing entry) or None
+    on Firestore write failure.
+
+    `created_by_guild_id` falls back to `interaction.user.id` for the
+    rare DM-context case so the audit column always has a traceable
+    snowflake.
+    """
     entry = ReplicaCacheEntry(
         pokepaste_url=minted_url,
         species=[p.species for p in team.pokemon],
         created_at=datetime.now(timezone.utc),
         created_by_user_id=interaction.user.id,
-        # In a guild interaction `guild_id` is the source of truth;
-        # fall back to the user's id for the rare DM-context case so the
-        # audit column always has something traceable.
         created_by_guild_id=(
             interaction.guild_id
             if interaction.guild_id is not None
             else interaction.user.id
         ),
     )
+    assert inputs.replica is not None
     try:
         canonical_entry = await asyncio.to_thread(
             replica_cache.create, inputs.replica, entry
@@ -306,9 +415,7 @@ async def _resolve_canonical_url(
             content=GENERIC_CACHE_WRITE_ERROR, embed=None, view=None
         )
         return None
-
-    canonical_url = canonical_entry.pokepaste_url
-    return canonical_url, canonical_url, True
+    return canonical_entry.pokepaste_url
 
 
 async def _commit_team_row(
