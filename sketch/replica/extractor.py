@@ -285,8 +285,9 @@ You extract Pokemon teams from screenshots of the Pokemon Champions \
 images covering the same team:
 
   Page 1 ("Moves & More" tab): a 2x3 grid of Pokemon cards. Each card shows \
-the species name with one or two icons next to it (gender, possibly other \
-status), the ability, the held item, and 4 moves.
+the species name, a gender icon (when applicable) and the Pokemon's 1-2 \
+type icons next to it, the ability, the held item, and 4 moves with a \
+type icon next to each move name.
   Page 2 ("Stats" tab): the same 6 Pokemon in the same slot order. Each card \
 shows the six base stats (HP, Attack, Defense, Sp. Atk, Sp. Def, Speed) with \
 the EV invested in each, and on exactly two of the stats: a red up-arrow on \
@@ -329,26 +330,58 @@ both pages, e.g. "QBXXWXL05U". Null if cropped out.
 
 Form resolution:
 
-  Use your general knowledge of Pokemon and the canonical Showdown / \
-PokePaste form names. The full visible context — ability, moves, held \
-item, Pokemon types if shown — usually disambiguates which form is on the \
-field. Some examples (not exhaustive — apply the same kind of reasoning to \
-any species with multiple competitive formes):
+  The share screen never spells out a Pokemon's form — you infer it from \
+the visible signals (type icons next to the species, type icons next to \
+each move, the ability text, the held item, the sprite, and the Page 2 \
+stat spread). Use the canonical Showdown / PokePaste form names. Reason \
+by signal type:
 
-  - Calyrex with "As One" + "Astral Barrage" or Psychic/Ghost typing → \
-"Calyrex-Shadow"; with "As One" + "Glacial Lance" or Psychic/Ice typing → \
-"Calyrex-Ice"; with "Unnerve" and neither signature move → plain "Calyrex".
-  - Urshifu with "Surging Strikes" or Water typing → "Urshifu-Rapid-Strike"; \
-with "Wicked Blow" or Dark typing → "Urshifu" (the unsuffixed Showdown name \
-for Single-Strike).
-  - Groudon holding "Red Orb" → "Groudon-Primal"; Kyogre holding "Blue Orb" \
-→ "Kyogre-Primal"; Giratina holding "Griseous Orb" or "Griseous Core" → \
-"Giratina-Origin".
+  - Typing change. The species type icon(s) differ from the baseline \
+form's typing. Regional variants are the common case — use suffixes \
+"-Alola", "-Galar", "-Hisui", or "-Paldea". Example: Typhlosion with a \
+Ghost type icon → "Typhlosion-Hisui" (Frisk in the ability slot and \
+Shadow Ball in the moveset reinforce, but the type icon alone is enough).
 
-  These are illustrative, not a closed list — don't refuse to output a form \
-just because it isn't in the examples above, and don't force a form just \
-because the ability matches when other context (moves, types, item) \
-disagrees.
+  - Ability the baseline can't have. Some forms add an ability that the \
+baseline-form's ability pool does not include — when you see it, the form \
+is settled. Example: Slowking with "Curious Medicine" → "Slowking-Galar" \
+(baseline Slowking only rolls Oblivious / Own Tempo / Regenerator).
+
+  - Signature move in the moveset. A move name the baseline-form cannot \
+learn pins down the alternate form. Examples: Samurott with "Ceaseless \
+Edge" → "Samurott-Hisui"; Slowking with "Eerie Spell" → "Slowking-Galar"; \
+Slowbro with "Shell Side Arm" → "Slowbro-Galar"; Calyrex with "Astral \
+Barrage" → "Calyrex-Shadow", with "Glacial Lance" → "Calyrex-Ice", with \
+"As One" and neither signature move → plain "Calyrex"; Urshifu with \
+"Surging Strikes" → "Urshifu-Rapid-Strike", with "Wicked Blow" → \
+"Urshifu" (the unsuffixed Showdown name for Single-Strike). Mainline \
+reference: Sacred Sword → "Keldeo-Resolute" — apply the same reasoning \
+if the move appears, even though Champions move tables may diverge from \
+mainline.
+
+  - Held item or signature move (legendaries). Some legendaries forme-shift \
+via a specific item and also gain a form-exclusive move; either is \
+sufficient. Groudon with "Red Orb" or "Precipice Blades" → \
+"Groudon-Primal"; Kyogre with "Blue Orb" or "Origin Pulse" → \
+"Kyogre-Primal"; Giratina with "Griseous Orb" or "Griseous Core" → \
+"Giratina-Origin". Mega Stones follow the same item-triggered pattern: \
+holding "Charizardite Y" → "Charizard-Mega-Y", and analogously for any \
+other Mega Stone.
+
+  - Sprite or stat-spread only. When no ability, move, item, or type icon \
+disambiguates, lean on the sprite (Page 1) and the Page 2 stat readout. \
+Deoxys forms (Normal / Attack / Defense / Speed) share the species name \
+and Psychic typing but have visibly different sprites and drastically \
+different stat distributions; Gourgeist sizes (Small / Average / Large / \
+Super) have minor sprite differences and HP / Speed totals that shift \
+across sizes.
+
+  These are illustrative, not a closed list — don't refuse to output a \
+form just because it isn't in the examples above, and don't force a form \
+just because one signal matches when other context (moves, types, item) \
+disagrees. When no visible signal disambiguates a form (e.g. battle-only \
+forms like Aegislash Blade or Cherrim Sunshine), output the baseline \
+species rather than guessing.
 
 Champions roster note: the only Floette in Champions is the mega-capable \
 form, output as "Floette-Eternal" (never plain "Floette"). All other \
