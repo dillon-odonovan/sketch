@@ -56,21 +56,20 @@ _STAT_LABEL_TO_KEY: dict[str, str] = {
     "spe": "spe",
 }
 
-# Species header: species name, optional gender in parens, optional item
-# after ` @ `. The species capture excludes `@` and parens so the
-# subsequent optional groups can claim them.
-_SPECIES_HEADER_RE = re.compile(
-    r"^(?P<species>[^@()]+?)"
-    r"(?:\s*\((?P<gender>[MF])\))?"
-    r"(?:\s*@\s*(?P<item>.+?))?\s*$"
-)
+# Per-line patterns. Each is anchored and matches one whole line — easy
+# to verify in isolation on regex101 with no multiline flag. The species
+# header is parsed step-by-step in `_parse_species_header` rather than
+# with a mega-regex, because the lazy-quantifier interplay needed to
+# carve species / gender / item out of a single match is hard to read.
 _ABILITY_RE = re.compile(r"^Ability:\s*(?P<ability>.+?)\s*$")
 _EVS_RE = re.compile(r"^EVs:\s*(?P<body>.+?)\s*$")
-# Nature line: any sequence of words followed by a literal `Nature`.
-# The nature name itself is validated against `_VALID_NATURES` after
-# capture — the regex just locates the line.
-_NATURE_LINE_RE = re.compile(r"^(?P<nature>\S+(?:\s+\S+)*?)\s+Nature\s*$")
 _MOVE_RE = re.compile(r"^-\s*(?P<move>.+?)\s*$")
+
+# Trailing marker on a nature line, e.g. `Modest Nature`. We locate the
+# line by suffix match (`endswith _NATURE_SUFFIX`) rather than regex so
+# the lookup is obvious — the nature name is whatever sits before it,
+# trimmed and validated against `_VALID_NATURES`.
+_NATURE_SUFFIX = " Nature"
 
 # EV entry: `<n> <Label>` e.g. `32 HP` or `4 SpA`.
 _EV_ENTRY_RE = re.compile(r"^(?P<value>\d+)\s+(?P<label>[A-Za-z]+)$")
@@ -133,8 +132,8 @@ def _parse_block(block: str, slot: int) -> PokemonEntry:
             ability = m.group("ability").strip()
         elif (m := _EVS_RE.match(line)) and evs is None:
             evs = _parse_evs(m.group("body"), slot)
-        elif (m := _NATURE_LINE_RE.match(line)) and nature is None:
-            nature = m.group("nature").strip()
+        elif line.endswith(_NATURE_SUFFIX) and nature is None:
+            nature = line[: -len(_NATURE_SUFFIX)].strip()
             if nature not in _VALID_NATURES:
                 raise ShowdownParseError(
                     f"Pokemon {slot}: unknown nature `{nature}`. Use one of "
@@ -183,16 +182,51 @@ def _parse_block(block: str, slot: int) -> PokemonEntry:
 
 
 def _parse_species_header(line: str, slot: int) -> tuple[str, str | None, str | None]:
-    """Pull species / gender / item out of the first line of a block."""
-    m = _SPECIES_HEADER_RE.match(line)
-    if not m:
-        raise ShowdownParseError(f"Pokemon {slot}: can't parse species line `{line}`.")
-    species = m.group("species").strip()
+    """Pull species / gender / item out of the first line of a block.
+
+    Header shape (from `pokepaste_renderer._render_mon`):
+        `{species}[ ({M|F})][ @ {item}]`
+
+    Carved step by step rather than with one regex because the three
+    fields stack as suffixes — peeling them off the right end leaves
+    the species exposed without juggling lazy quantifiers.
+    """
+    rest = line.strip()
+    if not rest:
+        raise ShowdownParseError(f"Pokemon {slot}: empty species line.")
+
+    # Peel the item off the right first, if any. The renderer uses
+    # ` @ ` (space-at-space); accept any whitespace around `@` so a
+    # user-typed `Mimikyu @Life Orb` also works.
+    item: str | None = None
+    at_match = re.search(r"\s*@\s*", rest)
+    if at_match:
+        item_raw = rest[at_match.end() :].strip()
+        item = item_raw or None
+        rest = rest[: at_match.start()].rstrip()
+        # An unmatched `(` after stripping the item half points at a
+        # malformed gender group like `Floette-Eternal (F` — easier to
+        # reject explicitly here than to let the species capture
+        # silently absorb the stray paren.
+        if "(" in rest and ")" not in rest:
+            raise ShowdownParseError(
+                f"Pokemon {slot}: malformed species line `{line}`."
+            )
+
+    # Peel the gender off the right next, if any. Must be at the very
+    # end and exactly one capital letter — anything else (e.g. `(F-`)
+    # is a malformed header and not a valid gender marker.
+    gender: str | None = None
+    gender_match = re.search(r"\s*\((M|F)\)\s*$", rest)
+    if gender_match:
+        gender = gender_match.group(1)
+        rest = rest[: gender_match.start()].rstrip()
+    elif "(" in rest or ")" in rest:
+        raise ShowdownParseError(f"Pokemon {slot}: malformed species line `{line}`.")
+
+    species = rest.strip()
     if not species:
         raise ShowdownParseError(f"Pokemon {slot}: missing species name.")
-    gender = m.group("gender")
-    item_raw = m.group("item")
-    item = item_raw.strip() if item_raw and item_raw.strip() else None
     return species, gender, item
 
 
