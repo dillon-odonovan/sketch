@@ -1,0 +1,205 @@
+"""End-to-end test for the VRPaste branch of `/add-team`'s URL resolver.
+
+Drives `_resolve_via_vrpaste` directly with a minimal fake
+`discord.Interaction` rather than running the full slash-command handler
+(which would need to mock CommandTree, choices, defer, etc.). That's
+enough to verify the happy-path routing — fetch → render → mint → cache
+— and the cache-hit shortcut without standing up Discord plumbing.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
+from aioresponses import aioresponses
+
+from sketch.commands.add_team import _AddTeamInputs, _resolve_via_vrpaste
+from sketch.vrpaste.cache import InMemoryVRPasteCacheStore
+
+_SAMPLE_PAYLOAD = {
+    "id": "gxmfscC1",
+    "is_public": True,
+    "is_encrypted": False,
+    "title": "Test Team",
+    "teams": [
+        {
+            "species": "Dragonite",
+            "item": "Dragonium Z",
+            "ability": "Multiscale",
+            "moves": ["Dragon Pulse", "Thunderbolt", "Heat Wave", "Protect"],
+            "nature": "Timid",
+        }
+    ],
+    "hasPassword": False,
+}
+
+
+@dataclass
+class _FakeUser:
+    id: int = 111
+
+
+@dataclass
+class _FakeFollowup:
+    sent: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+
+    async def send(self, content: str, **kwargs: Any) -> None:
+        self.sent.append((content, kwargs))
+
+
+@dataclass
+class _FakeInteraction:
+    """Minimal interaction double — only the surface `_resolve_via_vrpaste` touches."""
+
+    user: _FakeUser = field(default_factory=_FakeUser)
+    guild_id: int | None = 222
+    edits: list[dict[str, Any]] = field(default_factory=list)
+    followup: _FakeFollowup = field(default_factory=_FakeFollowup)
+
+    async def edit_original_response(self, **kwargs: Any) -> None:
+        self.edits.append(kwargs)
+
+
+def _inputs(url: str = "https://www.vrpastes.com/gxmfscC1") -> _AddTeamInputs:
+    return _AddTeamInputs(
+        description="desc",
+        fmt_name="Reg M-A",
+        sheet_name="Reg M-A Sheet",
+        paste_type_value="Exact",
+        url=url,
+        replica=None,
+        page1=None,
+        page2=None,
+    )
+
+
+def _backend_url(vrpaste_id: str) -> str:
+    return f"https://vrpaste-backend.vercel.app/api/paste/{vrpaste_id}?lang=english"
+
+
+class TestResolveViaVRPaste:
+    async def test_cache_miss_fetches_mints_and_caches(self):
+        cache = InMemoryVRPasteCacheStore()
+        interaction = _FakeInteraction()
+
+        with aioresponses() as mock:
+            mock.get(_backend_url("gxmfscC1"), payload=_SAMPLE_PAYLOAD)
+            mock.post(
+                "https://pokepast.es/create",
+                status=303,
+                headers={"Location": "/minted123"},
+            )
+            result = await _resolve_via_vrpaste(
+                interaction,
+                inputs=_inputs(),
+                vrpaste_cache=cache,
+            )
+
+        assert result is not None
+        canonical_url, dedup_url, preview_shown = result
+        assert canonical_url == "https://pokepast.es/minted123"
+        assert dedup_url == "https://pokepast.es/minted123"
+        assert preview_shown is False
+
+        cached = cache.get("gxmfscC1")
+        assert cached is not None
+        assert cached.pokepaste_url == "https://pokepast.es/minted123"
+        assert cached.created_by_user_id == 111
+        assert cached.created_by_guild_id == 222
+
+    async def test_cache_hit_skips_fetch_and_mint(self):
+        # Pre-seed the cache so we shouldn't see any HTTP calls.
+        cache = InMemoryVRPasteCacheStore()
+        cache.set(
+            "gxmfscC1",
+            "https://pokepast.es/already-minted",
+            user_id=111,
+            guild_id=222,
+        )
+        interaction = _FakeInteraction()
+
+        # aioresponses with no registered mocks raises on any unexpected call,
+        # which is exactly what we want — a cache hit must not touch the network.
+        with aioresponses():
+            result = await _resolve_via_vrpaste(
+                interaction,
+                inputs=_inputs(),
+                vrpaste_cache=cache,
+            )
+
+        assert result is not None
+        canonical_url, dedup_url, _ = result
+        assert canonical_url == "https://pokepast.es/already-minted"
+        assert dedup_url == "https://pokepast.es/already-minted"
+
+    async def test_password_protected_paste_surfaces_user_error(self):
+        cache = InMemoryVRPasteCacheStore()
+        interaction = _FakeInteraction()
+        payload = {**_SAMPLE_PAYLOAD, "hasPassword": True}
+
+        with aioresponses() as mock:
+            mock.get(_backend_url("gxmfscC1"), payload=payload)
+            result = await _resolve_via_vrpaste(
+                interaction,
+                inputs=_inputs(),
+                vrpaste_cache=cache,
+            )
+
+        assert result is None
+        # The status edit should mention the password issue (the message
+        # comes from VRPasteFetchError).
+        last_edit = interaction.edits[-1]
+        assert "password-protected" in last_edit["content"]
+        # Nothing should land in the cache.
+        assert cache.get("gxmfscC1") is None
+
+    async def test_malformed_vrpaste_url_returns_validation_error(self):
+        cache = InMemoryVRPasteCacheStore()
+        interaction = _FakeInteraction()
+
+        # No HTTP mocks registered — extract_vrpaste_id raises before any
+        # network call when the URL doesn't match the VRPaste regex.
+        with aioresponses():
+            result = await _resolve_via_vrpaste(
+                interaction,
+                inputs=_inputs(url="https://example.com/nope"),
+                vrpaste_cache=cache,
+            )
+
+        assert result is None
+        assert len(interaction.followup.sent) == 1
+        content, kwargs = interaction.followup.sent[0]
+        assert "VRPaste URL" in content
+        assert kwargs.get("ephemeral") is True
+
+
+class TestRoutingDispatch:
+    """Sanity check: VRPaste URL vs Pokepaste URL hit different code paths."""
+
+    def test_vrpaste_url_detected(self):
+        from sketch.vrpaste.validator import is_vrpaste_url
+
+        assert is_vrpaste_url("https://www.vrpastes.com/gxmfscC1") is True
+        assert is_vrpaste_url("https://vrpastes.com/abc123") is True
+
+    def test_pokepaste_url_not_detected_as_vrpaste(self):
+        from sketch.vrpaste.validator import is_vrpaste_url
+
+        # The whole point of the dispatch — Pokepaste URLs must not
+        # route through the VRPaste resolver.
+        assert is_vrpaste_url("https://pokepast.es/abc123") is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "",
+            "not a url",
+            "https://example.com/abc",
+        ],
+    )
+    def test_garbage_url_not_detected_as_vrpaste(self, url):
+        from sketch.vrpaste.validator import is_vrpaste_url
+
+        assert is_vrpaste_url(url) is False
