@@ -57,10 +57,22 @@ _STAT_LABEL_TO_KEY: dict[str, str] = {
 }
 
 # Per-line patterns. Each is anchored and matches one whole line — easy
-# to verify in isolation on regex101 with no multiline flag. The species
-# header is parsed step-by-step in `_parse_species_header` rather than
-# with a mega-regex, because the lazy-quantifier interplay needed to
-# carve species / gender / item out of a single match is hard to read.
+# to verify in isolation on regex101 with the `m` (multiline) flag OFF.
+#
+# Species header: species name, optional gender in parens, optional item
+# after ` @ `. The species capture is non-greedy (`+?`) so the optional
+# gender and item groups can claim their trailing whitespace + content
+# rather than being absorbed into species. When testing on regex101
+# without the rest of the line attached, the lazy `+?` will appear to
+# match just one character — that's expected, because there's nothing
+# downstream forcing it to grow. With the full line (`$` anchored), the
+# engine backs the species capture forward as needed for the optional
+# groups + end-anchor to also match.
+_SPECIES_HEADER_RE = re.compile(
+    r"^(?P<species>[^@()]+?)"
+    r"(?:\s*\((?P<gender>[MF])\))?"
+    r"(?:\s*@\s*(?P<item>.+?))?\s*$"
+)
 _ABILITY_RE = re.compile(r"^Ability:\s*(?P<ability>.+?)\s*$")
 _EVS_RE = re.compile(r"^EVs:\s*(?P<body>.+?)\s*$")
 _MOVE_RE = re.compile(r"^-\s*(?P<move>.+?)\s*$")
@@ -187,46 +199,26 @@ def _parse_species_header(line: str, slot: int) -> tuple[str, str | None, str | 
     Header shape (from `pokepaste_renderer._render_mon`):
         `{species}[ ({M|F})][ @ {item}]`
 
-    Carved step by step rather than with one regex because the three
-    fields stack as suffixes — peeling them off the right end leaves
-    the species exposed without juggling lazy quantifiers.
+    `_SPECIES_HEADER_RE` carves all three fields in one anchored match —
+    see that pattern's comment for the lazy-quantifier nuance. A failed
+    `match` here means the line isn't a valid species header at all
+    (e.g. unmatched `(` from a truncated gender group); the explicit
+    error keeps that distinct from "species name empty".
     """
-    rest = line.strip()
-    if not rest:
-        raise ShowdownParseError(f"Pokemon {slot}: empty species line.")
-
-    # Peel the item off the right first, if any. The renderer uses
-    # ` @ ` (space-at-space); accept any whitespace around `@` so a
-    # user-typed `Mimikyu @Life Orb` also works.
-    item: str | None = None
-    at_match = re.search(r"\s*@\s*", rest)
-    if at_match:
-        item_raw = rest[at_match.end() :].strip()
-        item = item_raw or None
-        rest = rest[: at_match.start()].rstrip()
-        # An unmatched `(` after stripping the item half points at a
-        # malformed gender group like `Floette-Eternal (F` — easier to
-        # reject explicitly here than to let the species capture
-        # silently absorb the stray paren.
-        if "(" in rest and ")" not in rest:
-            raise ShowdownParseError(
-                f"Pokemon {slot}: malformed species line `{line}`."
-            )
-
-    # Peel the gender off the right next, if any. Must be at the very
-    # end and exactly one capital letter — anything else (e.g. `(F-`)
-    # is a malformed header and not a valid gender marker.
-    gender: str | None = None
-    gender_match = re.search(r"\s*\((M|F)\)\s*$", rest)
-    if gender_match:
-        gender = gender_match.group(1)
-        rest = rest[: gender_match.start()].rstrip()
-    elif "(" in rest or ")" in rest:
+    m = _SPECIES_HEADER_RE.match(line)
+    if not m:
+        # Reachable when the line has an unmatched `(` or `)` (e.g.
+        # `Floette-Eternal (F` from a truncated gender marker) — the
+        # species character class excludes parens, the gender group
+        # needs a balanced pair, and the end anchor leaves nothing else
+        # that can consume the stray. All three together = no match.
         raise ShowdownParseError(f"Pokemon {slot}: malformed species line `{line}`.")
-
-    species = rest.strip()
+    species = m.group("species").strip()
     if not species:
         raise ShowdownParseError(f"Pokemon {slot}: missing species name.")
+    gender = m.group("gender")
+    item_raw = m.group("item")
+    item = item_raw.strip() if item_raw and item_raw.strip() else None
     return species, gender, item
 
 
