@@ -59,7 +59,7 @@ from sketch.replica.pokepaste_renderer import (
     post_to_pokepaste,
     render_showdown,
 )
-from sketch.replica.preview_view import ReplicaPreviewView, team_to_embed
+from sketch.replica.preview_view import ReplicaPreviewView
 from sketch.storage.guild_config import GuildConfigStore
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
 
@@ -248,16 +248,19 @@ async def _resolve_via_ocr(
     if team is None:
         return None
 
-    if not await _confirm_preview(interaction, inputs, team):
+    confirmed_team = await _confirm_preview(interaction, inputs, team)
+    if confirmed_team is None:
         return None
 
     # Render once, here. The text is what gets cached AND what we POST
     # to pokepast.es — keeping the two in lockstep avoids any drift
-    # between cache content and minted paste.
-    paste_text = render_showdown(team)
+    # between cache content and minted paste. `confirmed_team` may
+    # differ from the original OCR output if the user used the Edit
+    # button before confirming.
+    paste_text = render_showdown(confirmed_team)
 
     cache_entry = await _seed_cache_with_paste(
-        interaction, replica_cache, inputs, team, paste_text
+        interaction, replica_cache, inputs, confirmed_team, paste_text
     )
     if cache_entry is None:
         return None
@@ -442,29 +445,30 @@ async def _confirm_preview(
     interaction: discord.Interaction,
     inputs: _AddTeamInputs,
     team: TeamData,
-) -> bool:
-    """Show the Confirm / Cancel preview embed and wait for the click.
+) -> TeamData | None:
+    """Show the Confirm / Edit / Cancel preview and wait for the click.
 
-    Returns True if the user confirmed, False if they cancelled or
-    timed out (after editing the response to reflect the outcome). The
-    cache only ever ingests human-confirmed extractions.
+    Returns the team the user approved (the original OCR output, or an
+    edited version if they used the Edit button before confirming) on
+    success, or None if they cancelled or the preview timed out (after
+    editing the response to reflect the outcome). The cache only ever
+    ingests human-confirmed extractions.
     """
     view = ReplicaPreviewView(
         interaction.user.id,
-        timeout=config.REPLICA_PREVIEW_TIMEOUT_SECONDS,
-    )
-    preview_embed = team_to_embed(
-        team,
+        team=team,
         code=inputs.replica,
         description=inputs.description,
         fmt_name=inputs.fmt_name,
+        timeout=config.REPLICA_PREVIEW_TIMEOUT_SECONDS,
     )
     await interaction.edit_original_response(
         content=(
             "Extracted from your screenshots. **Confirm** to upload to "
-            "pokepast.es and add to the bank; **Cancel** to discard."
+            "pokepast.es and add to the bank, **Edit** to fix the parsed "
+            "team first, or **Cancel** to discard."
         ),
-        embed=preview_embed,
+        embed=view.render_embed(),
         view=view,
     )
     await view.wait()
@@ -477,8 +481,8 @@ async def _confirm_preview(
             inputs.replica,
             view.decision,
         )
-        return False
-    return True
+        return None
+    return view.team
 
 
 async def _mint_pokepaste(

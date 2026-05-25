@@ -245,10 +245,10 @@ _POKEMON_SCHEMA: dict[str, Any] = {
         },
         "moves": {
             "type": "array",
-            "minItems": 4,
+            "minItems": 1,
             "maxItems": 4,
             "items": {"type": "string"},
-            "description": "Exactly 4 move names from Page 1, in display order.",
+            "description": "1 to 4 move names from Page 1, in display order.",
         },
     },
 }
@@ -320,7 +320,10 @@ name — do not attempt to name the nature yourself.
 Pokemon Champions caps EVs at 32 per stat with ~66 total — much smaller than \
 mainline Pokemon's 252/508 system. Use 0 for stats with no investment. The \
 output keys are Showdown short forms (hp, atk, def, spa, spd, spe).
-  - Moves: exactly 4 per Pokemon, in the order shown on Page 1.
+  - Moves: 1 to 4 per Pokemon, in the order shown on Page 1. Most \
+Pokemon have 4 moves, but rare sets run fewer (e.g. Kangaskhan with just \
+Fake Out + Last Resort). Output only the moves actually shown on the \
+card; do not pad to 4.
   - team_id: the alphanumeric code shown next to "Team ID:" at the top of \
 both pages, e.g. "QBXXWXL05U". Null if cropped out.
 

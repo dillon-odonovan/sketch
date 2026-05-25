@@ -15,7 +15,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sketch.replica.extractor import PokemonEntry, TeamData
-from sketch.replica.preview_view import ReplicaPreviewView, team_to_embed
+from sketch.replica.pokepaste_renderer import render_showdown
+from sketch.replica.preview_view import (
+    EditTeamModal,
+    ReplicaPreviewView,
+    team_to_embed,
+)
 
 
 def _entry(species: str = "Floette-Eternal") -> PokemonEntry:
@@ -57,14 +62,19 @@ class _FakeUser:
 class _FakeResponse:
     """Minimal Interaction.response stub.
 
-    Only `defer()` and `send_message()` are exercised by the View — both
-    are awaited inside the callbacks. We record what gets called so the
-    invoker-gate test can assert the refusal path went through
-    `send_message` (ephemeral=True) rather than silently failing.
+    `defer()` and `send_message()` are exercised by the View buttons
+    (Confirm / Cancel defer; the invoker gate uses send_message).
+    `send_modal()` is exercised by the Edit button. `edit_message()`
+    is exercised by both the Edit success path (re-render with the
+    edited team) and the Edit failure path (push the disabled-Confirm
+    state). We record what gets called so each test can assert the
+    right code path fired.
     """
 
     defer_calls: int = 0
     send_message_calls: list[dict] = field(default_factory=list)
+    send_modal_calls: list[Any] = field(default_factory=list)
+    edit_message_calls: list[dict] = field(default_factory=list)
 
     async def defer(self) -> None:
         self.defer_calls += 1
@@ -72,11 +82,57 @@ class _FakeResponse:
     async def send_message(self, content: str, **kwargs: Any) -> None:
         self.send_message_calls.append({"content": content, **kwargs})
 
+    async def send_modal(self, modal: Any) -> None:
+        self.send_modal_calls.append(modal)
+
+    async def edit_message(self, **kwargs: Any) -> None:
+        self.edit_message_calls.append(kwargs)
+
+
+@dataclass
+class _FakeFollowup:
+    """Minimal Interaction.followup stub.
+
+    Used by the Edit failure path: after the modal-submit `response`
+    edits the preview (to push the disabled-Confirm state), the
+    parser error goes out as a `followup.send(ephemeral=True, ...)`
+    so the user gets a visible notification without taking another
+    interaction slot on the parent message.
+    """
+
+    send_calls: list[dict] = field(default_factory=list)
+
+    async def send(self, content: str | None = None, **kwargs: Any) -> None:
+        self.send_calls.append({"content": content, **kwargs})
+
+
+def _make_view(
+    *,
+    invoker_id: int = 42,
+    team: TeamData | None = None,
+) -> ReplicaPreviewView:
+    """Construct a view with the canonical embed-build inputs.
+
+    The View renders its own embed via `render_embed()` rather than
+    receiving one pre-built — that single source of truth means a
+    successful edit can re-render the embed for the updated team
+    without the command handler being involved.
+    """
+    return ReplicaPreviewView(
+        invoker_id,
+        team=team or _team(),
+        code="QBXXWXL05U",
+        description="x",
+        fmt_name="Reg M-A",
+        timeout=300,
+    )
+
 
 @dataclass
 class _FakeInteraction:
     user: _FakeUser
     response: _FakeResponse = field(default_factory=_FakeResponse)
+    followup: _FakeFollowup = field(default_factory=_FakeFollowup)
 
 
 class TestTeamToEmbed:
@@ -170,17 +226,19 @@ class TestTeamToEmbed:
 
 class TestReplicaPreviewView:
     async def test_initial_decision_is_none(self):
-        view = ReplicaPreviewView(invoker_id=1, timeout=300)
+        view = _make_view(invoker_id=1)
         assert view.decision is None
+        # The view holds the original team unchanged until Edit / Confirm.
+        assert view.team is not None
 
     async def test_invoker_can_pass_check(self):
-        view = ReplicaPreviewView(invoker_id=42, timeout=300)
+        view = _make_view(invoker_id=42)
         interaction = _FakeInteraction(user=_FakeUser(id=42))
         assert await view.interaction_check(interaction) is True
         assert interaction.response.send_message_calls == []
 
     async def test_other_user_blocked_with_refusal(self):
-        view = ReplicaPreviewView(invoker_id=42, timeout=300)
+        view = _make_view(invoker_id=42)
         interaction = _FakeInteraction(user=_FakeUser(id=99))
         assert await view.interaction_check(interaction) is False
         # The refusal goes out as an ephemeral message — the user who
@@ -191,7 +249,7 @@ class TestReplicaPreviewView:
         assert "Only the user" in call["content"]
 
     async def test_confirm_sets_decision_true_and_defers(self):
-        view = ReplicaPreviewView(invoker_id=42, timeout=300)
+        view = _make_view(invoker_id=42)
         interaction = _FakeInteraction(user=_FakeUser(id=42))
         # `view.confirm.callback` is discord.py's `_ItemCallback` wrapper —
         # it implicitly binds `self=view` and takes only the interaction.
@@ -200,8 +258,274 @@ class TestReplicaPreviewView:
         assert interaction.response.defer_calls == 1
 
     async def test_cancel_sets_decision_false_and_defers(self):
-        view = ReplicaPreviewView(invoker_id=42, timeout=300)
+        view = _make_view(invoker_id=42)
         interaction = _FakeInteraction(user=_FakeUser(id=42))
         await view.cancel.callback(interaction)
         assert view.decision is False
         assert interaction.response.defer_calls == 1
+
+    async def test_edit_button_opens_modal_with_current_paste(self):
+        # The Edit button feeds the view's current team into the modal's
+        # prefill — re-clicking Edit after an iteration should reflect
+        # the most-recently-applied team, not the original OCR.
+        view = _make_view(invoker_id=42)
+        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view.edit.callback(interaction)
+        assert len(interaction.response.send_modal_calls) == 1
+        modal = interaction.response.send_modal_calls[0]
+        assert isinstance(modal, EditTeamModal)
+        # Prefill is the canonical Showdown render of the current team.
+        assert modal.paste_input.default == render_showdown(view.team)
+        # Decision shouldn't flip just from opening the modal.
+        assert view.decision is None
+
+    async def test_apply_edited_team_updates_preview_without_committing(self):
+        # A successful Edit submit applies the change to the preview
+        # but does NOT commit — the user still has to click Confirm.
+        # Submit means "save changes," Confirm means "publish."
+        view = _make_view(invoker_id=42)
+        view._pending_edit_text = "stale attempt"
+        # Confirm starts disabled here to simulate the failure-state
+        # carry-over; the success path must clear that disable so the
+        # user can commit the now-valid edit.
+        view.confirm.disabled = True
+        edited = TeamData(
+            pokemon=[_entry("Urshifu-Rapid-Strike")] + view.team.pokemon[1:],
+            team_id=view.team.team_id,
+        )
+        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view._apply_edited_team(edited, modal_interaction)
+        # Team replaced, pending cleared, Confirm re-enabled.
+        assert view.team is edited
+        assert view._pending_edit_text is None
+        assert view.confirm.disabled is False
+        # Crucially: NOT committed. Confirm still required.
+        assert view.decision is None
+        assert not view.is_finished()
+        # Preview embed re-rendered with the updated team.
+        assert len(modal_interaction.response.edit_message_calls) == 1
+        call = modal_interaction.response.edit_message_calls[0]
+        # The embed reflects the edited team — content unchanged.
+        assert "content" not in call
+        # The first mon's new species should appear in the rendered embed.
+        assert "Urshifu-Rapid-Strike" in call["embed"].description
+        assert call["view"] is view
+
+    async def test_apply_edited_team_lets_subsequent_confirm_commit_edits(self):
+        # End-to-end of the new flow: edit Submit applies changes,
+        # then a separate Confirm click commits. `view.team` after
+        # Confirm should be the edited team — proving the edit
+        # actually flows through to what gets uploaded.
+        view = _make_view(invoker_id=42)
+        edited = TeamData(
+            pokemon=[_entry("Urshifu-Rapid-Strike")] + view.team.pokemon[1:],
+            team_id=view.team.team_id,
+        )
+        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view._apply_edited_team(edited, modal_interaction)
+        # User then clicks Confirm.
+        confirm_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view.confirm.callback(confirm_interaction)
+        # Decision is True, view is stopped, and view.team is the
+        # edited version — the command handler will mint with this.
+        assert view.decision is True
+        assert view.is_finished()
+        assert view.team.pokemon[0].species == "Urshifu-Rapid-Strike"
+
+    async def test_surface_edit_failure_disables_confirm_and_stashes_text(self):
+        # `_surface_edit_failure` is the modal -> view failure callback.
+        # The footgun it guards: edit fails, preview still shows
+        # original team, user clicks Confirm thinking it commits their
+        # edit — but it commits the original. Disabling Confirm makes
+        # that path inaccessible until the user resolves the failed
+        # edit (either by retrying successfully or cancelling).
+        view = _make_view(invoker_id=42)
+        original_team = view.team
+        assert view.confirm.disabled is False  # baseline
+        submitted = "deliberately broken paste"
+        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view._surface_edit_failure(
+            submitted, "Expected 6 Pokemon, got 5.", modal_interaction
+        )
+        # View state preserved EXCEPT for the Confirm disable + stashed text.
+        assert view.team is original_team
+        assert view.decision is None
+        assert not view.is_finished()
+        assert view._pending_edit_text == submitted
+        # The Confirm-disable guard.
+        assert view.confirm.disabled is True
+        # No new modal opened (the HTTP 400 bug we already fixed).
+        assert modal_interaction.response.send_modal_calls == []
+
+    async def test_surface_edit_failure_pushes_disabled_state_and_followup_error(self):
+        # The disabled-Confirm state is pushed to the message via
+        # `response.edit_message(view=self)` so the user actually sees
+        # the grayed-out button. The parser error then goes out as a
+        # `followup.send(ephemeral=True, ...)` — a separate ephemeral
+        # message the user can read and dismiss.
+        view = _make_view(invoker_id=42)
+        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view._surface_edit_failure(
+            "broken", "Expected 6 Pokemon, got 5.", modal_interaction
+        )
+        # Modal response was edit_message with the updated view (which
+        # carries the disabled Confirm). Content / embed not touched —
+        # the preview still shows the original team, which Confirm
+        # can no longer commit anyway.
+        assert len(modal_interaction.response.edit_message_calls) == 1
+        edit_call = modal_interaction.response.edit_message_calls[0]
+        assert edit_call["view"] is view
+        assert "content" not in edit_call
+        assert "embed" not in edit_call
+        # Error delivered via followup (so it appears as a separate
+        # message bubble for the user). The footgun-escape hint is
+        # included so users who actually want the original have a path.
+        assert len(modal_interaction.followup.send_calls) == 1
+        followup = modal_interaction.followup.send_calls[0]
+        assert followup["ephemeral"] is True
+        assert "Couldn't parse" in followup["content"]
+        assert "Expected 6 Pokemon, got 5." in followup["content"]
+        assert "your text is preserved" in followup["content"]
+        assert "Cancel" in followup["content"]
+        assert "re-run" in followup["content"]
+
+    async def test_edit_button_uses_pending_text_after_failure(self):
+        # After a failed edit, the next Edit click pre-fills the modal
+        # with the user's last submitted text — NOT the unchanged
+        # render of the current team — so they don't have to retype
+        # their work.
+        view = _make_view(invoker_id=42)
+        view._pending_edit_text = "user's in-progress edit"
+        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view.edit.callback(interaction)
+        assert len(interaction.response.send_modal_calls) == 1
+        modal = interaction.response.send_modal_calls[0]
+        assert modal.paste_input.default == "user's in-progress edit"
+
+    async def test_cancel_clears_pending_edit_text(self):
+        # Cancelling out of the preview discards any in-progress edit
+        # work — cosmetic, since the view is about to be destroyed
+        # anyway, but makes the state transitions predictable.
+        view = _make_view(invoker_id=42)
+        view._pending_edit_text = "doesn't matter"
+        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view.cancel.callback(interaction)
+        assert view._pending_edit_text is None
+        assert view.decision is False
+
+
+class TestEditTeamModal:
+    async def test_submit_parses_and_calls_success_callback(self):
+        # Happy path: feed the modal a valid Showdown paste; on submit
+        # the parser succeeds and `on_success` fires with the parsed
+        # team + the modal-submit interaction. `on_failure` does not.
+        original = _team()
+        successes: list[tuple] = []
+        failures: list[tuple] = []
+
+        async def on_success(team, interaction):
+            successes.append((team, interaction))
+
+        async def on_failure(text, error, interaction):
+            failures.append((text, error, interaction))
+
+        modal = EditTeamModal(
+            prefill=render_showdown(original),
+            team_id="QBXXWXL05U",
+            on_success=on_success,
+            on_failure=on_failure,
+        )
+        # `TextInput.value` is a property backed by `_value`; in production
+        # discord.py populates it from the interaction payload. Tests
+        # write it directly so we can exercise on_submit without a
+        # gateway round-trip.
+        modal.paste_input._value = render_showdown(original)  # type: ignore[attr-defined]
+
+        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await modal.on_submit(interaction)
+
+        assert len(successes) == 1
+        assert failures == []
+        parsed_team, parsed_interaction = successes[0]
+        assert parsed_interaction is interaction
+        assert parsed_team.team_id == "QBXXWXL05U"
+        assert len(parsed_team.pokemon) == 6
+        assert parsed_team.pokemon[0].species == "Floette-Eternal"
+
+    async def test_submit_with_parse_error_calls_failure_callback(self):
+        # Sad path: feed the modal a paste that parses-fails (too many
+        # moves on slot 1). The modal hands the user's submitted text
+        # + the error message + the modal interaction to `on_failure`
+        # and does NOT touch the response itself — the View decides
+        # how to surface the failure to the user.
+        successes: list[tuple] = []
+        failures: list[tuple] = []
+
+        async def on_success(team, interaction):
+            successes.append((team, interaction))
+
+        async def on_failure(text, error, interaction):
+            failures.append((text, error, interaction))
+
+        # Take the canonical paste and inject a 5th move onto slot 1.
+        broken_paste = render_showdown(_team()).replace(
+            "- Protect\r\n\r\nAerodactyl",
+            "- Protect\r\n- Substitute\r\n\r\nAerodactyl",
+            1,
+        )
+
+        modal = EditTeamModal(
+            prefill=broken_paste,
+            team_id="QBXXWXL05U",
+            on_success=on_success,
+            on_failure=on_failure,
+        )
+        modal.paste_input._value = broken_paste  # type: ignore[attr-defined]
+
+        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await modal.on_submit(interaction)
+
+        assert successes == []
+        assert len(failures) == 1
+        text, error, failure_interaction = failures[0]
+        assert text == broken_paste
+        assert "too many moves" in error
+        assert failure_interaction is interaction
+        # The modal itself doesn't touch the interaction response —
+        # the failure callback owns it. Discord rejects `send_modal`
+        # in response to a modal-submit interaction (HTTP 400, valid
+        # response types {4, 5, 6, 7, 10, 12}), so the modal must
+        # hand the interaction off rather than responding directly.
+        assert interaction.response.send_modal_calls == []
+        assert interaction.response.edit_message_calls == []
+        assert interaction.response.send_message_calls == []
+        assert interaction.response.defer_calls == 0
+
+    async def test_submit_with_nature_error_mentions_serious(self):
+        # The nature error must explicitly tell the user to use "Serious"
+        # for neutral natures — Hardy is a Showdown-accepted neutral but
+        # we don't support it. Surfaces via the on_failure callback.
+        failures: list[tuple] = []
+
+        async def on_success(team, interaction):
+            raise AssertionError("on_success should not fire on parse error")
+
+        async def on_failure(text, error, interaction):
+            failures.append((text, error, interaction))
+
+        paste = render_showdown(_team()).replace("Modest Nature", "Hardy Nature", 1)
+
+        modal = EditTeamModal(
+            prefill=paste,
+            team_id="QBXXWXL05U",
+            on_success=on_success,
+            on_failure=on_failure,
+        )
+        modal.paste_input._value = paste  # type: ignore[attr-defined]
+
+        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await modal.on_submit(interaction)
+
+        assert len(failures) == 1
+        _, error, _ = failures[0]
+        assert "Hardy" in error or "Serious" in error
