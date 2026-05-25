@@ -14,6 +14,16 @@ the modal before submitting, so re-rendering the preview embed for a
 second confirm click would only add friction. If the user wants to bail
 mid-edit, the modal's native X button closes without firing on_submit.
 
+On parse failure the modal-submit response edits the preview message
+content with the error and stashes the user's failed text on the View;
+the next Edit click pre-fills the modal with the stashed text so the
+user can fix their typo without losing work. (Discord's API forbids
+calling `send_modal` in response to a modal-submit interaction —
+[interaction response types 4 / 5 / 6 / 7 / 10 / 12 only], so the
+modal cannot "reopen itself" on failure. `edit_message` is permitted
+on modal-submit when the modal was launched from a component, and is
+the right vehicle here.)
+
 The View only ever fires for cold-OCR submissions. Cache hits skip the
 preview entirely — the URL is already canonical from a prior confirmed
 extraction.
@@ -35,23 +45,19 @@ from sketch.replica.showdown_parser import ShowdownParseError, parse_showdown
 # font so columns line up the way the user expects from PokePaste.
 _DESCRIPTION_LIMIT = 4096
 
-# Discord modal title and TextInput label both cap at 45 chars. We carve
-# out a budget for the static prefix ("Edit team — " / "Showdown text — ")
-# and use the remainder for parser error fragments on re-open.
-_MODAL_TITLE_LIMIT = 45
-_TEXTINPUT_LABEL_LIMIT = 45
-
 # Discord paragraph TextInput accepts up to 4000 chars. A Champions
 # Showdown export tops out around 1k, so this is a wide margin.
 _TEXTINPUT_MAX_LENGTH = 4000
 
 
-# Type alias for the "what to do with a successfully-parsed edit" callback
-# the modal invokes. The modal owns no state about the View or the
-# command handler — it just calls back with the parsed team and the
-# modal-submit interaction, and the caller (the View) decides how to
-# react. Loose coupling keeps the modal independently testable.
+# Callbacks the modal invokes on submit. The modal owns no state about
+# the View or the command handler — it just calls back with the parsed
+# team (on success) or the user's failed text + error message (on
+# parse failure), letting the caller (typically `ReplicaPreviewView`)
+# decide what to do. Loose coupling keeps the modal independently
+# testable and the View's policy in one place.
 EditedTeamCallback = Callable[[TeamData, discord.Interaction], Awaitable[None]]
+EditFailureCallback = Callable[[str, str, discord.Interaction], Awaitable[None]]
 
 
 def team_to_embed(
@@ -93,33 +99,22 @@ def team_to_embed(
     return embed
 
 
-def _truncate_for_discord(text: str, limit: int) -> str:
-    """Truncate `text` to `limit` chars with a trailing ellipsis if needed.
-
-    Discord rejects modal titles / input labels that exceed their caps at
-    interaction time with a 400, so we trim defensively rather than rely
-    on parser error messages always being short.
-    """
-    if len(text) <= limit:
-        return text
-    # Reserve one char for the ellipsis.
-    return text[: limit - 1].rstrip() + "…"
-
-
 class EditTeamModal(discord.ui.Modal):
     """Modal that lets the invoker edit the extracted team as Showdown text.
 
     On submit:
       - Parses the text via `parse_showdown`.
-      - On parse failure, responds with `send_modal(...)` of a fresh
-        `EditTeamModal` carrying the user's last attempt and a truncated
-        error message in the title + input label. The user perceives the
-        modal as "stayed open with an error" — the close-and-reopen
-        happens client-side without losing their work.
-      - On success, calls the `on_submit_callback` with the parsed team
-        and the modal-submit interaction. The callback (typically a
-        bound method on `ReplicaPreviewView`) handles applying the team
-        and acknowledging the interaction.
+      - On success, calls `on_success` with the parsed team and the
+        modal-submit interaction. The View applies the team and
+        auto-commits.
+      - On parse failure, calls `on_failure` with the user's submitted
+        text + the error message + the modal-submit interaction. The
+        View stashes the text so the next Edit click pre-fills with
+        it, and edits the preview message to surface the error.
+
+    Both callbacks own the interaction response — the modal itself
+    never calls `defer`, `edit_message`, or `send_message`, which keeps
+    UI policy out of the modal and in the View.
     """
 
     def __init__(
@@ -127,29 +122,20 @@ class EditTeamModal(discord.ui.Modal):
         *,
         prefill: str,
         team_id: str | None,
-        on_submit_callback: EditedTeamCallback,
-        error: str | None = None,
+        on_success: EditedTeamCallback,
+        on_failure: EditFailureCallback,
     ) -> None:
-        title = (
-            _truncate_for_discord(f"Edit team — {error}", _MODAL_TITLE_LIMIT)
-            if error
-            else "Edit team"
-        )
-        super().__init__(title=title)
+        super().__init__(title="Edit team")
 
         self._team_id = team_id
-        self._on_submit_callback = on_submit_callback
+        self._on_success = on_success
+        self._on_failure = on_failure
 
-        label = (
-            _truncate_for_discord(f"Showdown text — {error}", _TEXTINPUT_LABEL_LIMIT)
-            if error
-            else "Showdown text"
-        )
         # Stored as an attribute so tests can inspect the default text
         # without going through `self.children[0]` (which is also valid
         # but couples test code to discord.py's internal ordering).
         self.paste_input: discord.ui.TextInput = discord.ui.TextInput(
-            label=label,
+            label="Showdown text",
             style=discord.TextStyle.paragraph,
             default=prefill,
             max_length=_TEXTINPUT_MAX_LENGTH,
@@ -162,17 +148,9 @@ class EditTeamModal(discord.ui.Modal):
         try:
             team = parse_showdown(submitted, team_id=self._team_id)
         except ShowdownParseError as exc:
-            await interaction.response.send_modal(
-                EditTeamModal(
-                    prefill=submitted,
-                    team_id=self._team_id,
-                    on_submit_callback=self._on_submit_callback,
-                    error=str(exc),
-                )
-            )
+            await self._on_failure(submitted, str(exc), interaction)
             return
-
-        await self._on_submit_callback(team, interaction)
+        await self._on_success(team, interaction)
 
 
 class ReplicaPreviewView(discord.ui.View):
@@ -200,12 +178,28 @@ class ReplicaPreviewView(discord.ui.View):
         invoker_id: int,
         *,
         team: TeamData,
+        preview_content: str,
+        preview_embed: discord.Embed,
         timeout: float,
     ) -> None:
         super().__init__(timeout=timeout)
         self.invoker_id = invoker_id
         self.team = team
         self.decision: bool | None = None
+        # The View needs to remember the original preview content + embed
+        # so a parse-failure path that edits the message can later
+        # restore the unprefixed version on a subsequent successful
+        # edit. Without this the error notice would stick around even
+        # after the user fixes their typo.
+        self._original_content = preview_content
+        self._preview_embed = preview_embed
+        # User's most recent failed edit attempt, if any. When set, the
+        # next Edit click pre-fills the modal with it instead of the
+        # current team's render — preserving their in-progress work
+        # across the failed-submit / click-Edit-again cycle that
+        # Discord forces (since the modal can't reopen itself from a
+        # modal-submit response).
+        self._pending_edit_text: str | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker_id:
@@ -233,8 +227,37 @@ class ReplicaPreviewView(discord.ui.View):
         """
         self.team = new_team
         self.decision = True
+        self._pending_edit_text = None
         await modal_interaction.response.defer()
         self.stop()
+
+    async def _surface_edit_failure(
+        self,
+        submitted_text: str,
+        error_message: str,
+        modal_interaction: discord.Interaction,
+    ) -> None:
+        """Report a parse failure by editing the preview message.
+
+        Stashes the user's failed text so the next Edit click pre-fills
+        with it (Discord won't let us reopen the modal directly from a
+        modal-submit interaction — only command / component / autocomplete
+        responses can `send_modal`). The preview embed stays as-is so
+        the user can still see the current canonical team; the content
+        gets a ⚠️ prefix naming the error and pointing back at Edit.
+        """
+        self._pending_edit_text = submitted_text
+        error_content = (
+            f"⚠️ Couldn't parse your edited team: {error_message}\n\n"
+            "Click **Edit** to fix it (your text is preserved), "
+            "**Confirm** to upload the team shown below as-is, or "
+            "**Cancel** to discard."
+        )
+        await modal_interaction.response.edit_message(
+            content=error_content,
+            embed=self._preview_embed,
+            view=self,
+        )
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm(
@@ -255,12 +278,13 @@ class ReplicaPreviewView(discord.ui.View):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
-        paste = render_showdown(self.team)
+        prefill = self._pending_edit_text or render_showdown(self.team)
         await interaction.response.send_modal(
             EditTeamModal(
-                prefill=paste,
+                prefill=prefill,
                 team_id=self.team.team_id,
-                on_submit_callback=self._apply_edited_team,
+                on_success=self._apply_edited_team,
+                on_failure=self._surface_edit_failure,
             )
         )
 
@@ -271,5 +295,6 @@ class ReplicaPreviewView(discord.ui.View):
         _button: discord.ui.Button,
     ) -> None:
         self.decision = False
+        self._pending_edit_text = None
         await interaction.response.defer()
         self.stop()

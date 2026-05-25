@@ -454,10 +454,10 @@ async def _confirm_preview(
     editing the response to reflect the outcome). The cache only ever
     ingests human-confirmed extractions.
     """
-    view = ReplicaPreviewView(
-        interaction.user.id,
-        team=team,
-        timeout=config.REPLICA_PREVIEW_TIMEOUT_SECONDS,
+    preview_content = (
+        "Extracted from your screenshots. **Confirm** to upload to "
+        "pokepast.es and add to the bank, **Edit** to fix the parsed "
+        "team first, or **Cancel** to discard."
     )
     preview_embed = team_to_embed(
         team,
@@ -465,12 +465,15 @@ async def _confirm_preview(
         description=inputs.description,
         fmt_name=inputs.fmt_name,
     )
+    view = ReplicaPreviewView(
+        interaction.user.id,
+        team=team,
+        preview_content=preview_content,
+        preview_embed=preview_embed,
+        timeout=config.REPLICA_PREVIEW_TIMEOUT_SECONDS,
+    )
     await interaction.edit_original_response(
-        content=(
-            "Extracted from your screenshots. **Confirm** to upload to "
-            "pokepast.es and add to the bank, **Edit** to fix the parsed "
-            "team first, or **Cancel** to discard."
-        ),
+        content=preview_content,
         embed=preview_embed,
         view=view,
     )

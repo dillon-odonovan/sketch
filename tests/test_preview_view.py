@@ -62,17 +62,20 @@ class _FakeUser:
 class _FakeResponse:
     """Minimal Interaction.response stub.
 
-    `defer()` and `send_message()` are exercised by the View buttons;
-    `send_modal()` is exercised by the Edit button and the modal's
-    re-open path on parse failure. We record what gets called so each
-    test can assert the right code path fired (e.g. refusal path goes
-    through `send_message` with ephemeral=True; modal re-open goes
-    through `send_modal` with a fresh modal carrying the user's text).
+    `defer()` and `send_message()` are exercised by the View buttons
+    (Confirm / Cancel defer; the invoker gate uses send_message).
+    `send_modal()` is exercised by the Edit button. `edit_message()` is
+    exercised by the modal's failure path — Discord forbids
+    `send_modal` in response to a modal submit, so on parse failure
+    the View edits the original preview message with an error prefix
+    instead. We record what gets called so each test can assert the
+    right code path fired.
     """
 
     defer_calls: int = 0
     send_message_calls: list[dict] = field(default_factory=list)
     send_modal_calls: list[Any] = field(default_factory=list)
+    edit_message_calls: list[dict] = field(default_factory=list)
 
     async def defer(self) -> None:
         self.defer_calls += 1
@@ -82,6 +85,33 @@ class _FakeResponse:
 
     async def send_modal(self, modal: Any) -> None:
         self.send_modal_calls.append(modal)
+
+    async def edit_message(self, **kwargs: Any) -> None:
+        self.edit_message_calls.append(kwargs)
+
+
+def _make_view(
+    *,
+    invoker_id: int = 42,
+    team: TeamData | None = None,
+) -> ReplicaPreviewView:
+    """Construct a view with the canonical preview content + embed.
+
+    The View needs `preview_content` + `preview_embed` so the failure
+    path can rebuild the message with an error prefix while preserving
+    the embed. Tests that don't care about those values get a sensible
+    default from this helper; tests that DO care can override `team`
+    so the embed reflects it.
+    """
+    team = team or _team()
+    embed = team_to_embed(team, code="QBXXWXL05U", description="x", fmt_name="Reg M-A")
+    return ReplicaPreviewView(
+        invoker_id,
+        team=team,
+        preview_content="Extracted from your screenshots. ...",
+        preview_embed=embed,
+        timeout=300,
+    )
 
 
 @dataclass
@@ -181,19 +211,19 @@ class TestTeamToEmbed:
 
 class TestReplicaPreviewView:
     async def test_initial_decision_is_none(self):
-        view = ReplicaPreviewView(invoker_id=1, team=_team(), timeout=300)
+        view = _make_view(invoker_id=1)
         assert view.decision is None
         # The view holds the original team unchanged until Edit / Confirm.
         assert view.team is not None
 
     async def test_invoker_can_pass_check(self):
-        view = ReplicaPreviewView(invoker_id=42, team=_team(), timeout=300)
+        view = _make_view(invoker_id=42)
         interaction = _FakeInteraction(user=_FakeUser(id=42))
         assert await view.interaction_check(interaction) is True
         assert interaction.response.send_message_calls == []
 
     async def test_other_user_blocked_with_refusal(self):
-        view = ReplicaPreviewView(invoker_id=42, team=_team(), timeout=300)
+        view = _make_view(invoker_id=42)
         interaction = _FakeInteraction(user=_FakeUser(id=99))
         assert await view.interaction_check(interaction) is False
         # The refusal goes out as an ephemeral message — the user who
@@ -204,7 +234,7 @@ class TestReplicaPreviewView:
         assert "Only the user" in call["content"]
 
     async def test_confirm_sets_decision_true_and_defers(self):
-        view = ReplicaPreviewView(invoker_id=42, team=_team(), timeout=300)
+        view = _make_view(invoker_id=42)
         interaction = _FakeInteraction(user=_FakeUser(id=42))
         # `view.confirm.callback` is discord.py's `_ItemCallback` wrapper —
         # it implicitly binds `self=view` and takes only the interaction.
@@ -213,7 +243,7 @@ class TestReplicaPreviewView:
         assert interaction.response.defer_calls == 1
 
     async def test_cancel_sets_decision_false_and_defers(self):
-        view = ReplicaPreviewView(invoker_id=42, team=_team(), timeout=300)
+        view = _make_view(invoker_id=42)
         interaction = _FakeInteraction(user=_FakeUser(id=42))
         await view.cancel.callback(interaction)
         assert view.decision is False
@@ -223,7 +253,7 @@ class TestReplicaPreviewView:
         # The Edit button feeds the view's current team into the modal's
         # prefill — re-clicking Edit after an iteration should reflect
         # the most-recently-applied team, not the original OCR.
-        view = ReplicaPreviewView(invoker_id=42, team=_team(), timeout=300)
+        view = _make_view(invoker_id=42)
         interaction = _FakeInteraction(user=_FakeUser(id=42))
         await view.edit.callback(interaction)
         assert len(interaction.response.send_modal_calls) == 1
@@ -235,118 +265,191 @@ class TestReplicaPreviewView:
         assert view.decision is None
 
     async def test_apply_edited_team_sets_decision_and_stops(self):
-        # `_apply_edited_team` is the modal -> view callback. A successful
-        # edit auto-commits: view.team is updated, decision=True, the
-        # modal-submit interaction is deferred (no extra ephemeral
-        # message), and the view stops so the command handler proceeds.
-        original = _team()
-        view = ReplicaPreviewView(invoker_id=42, team=original, timeout=300)
+        # `_apply_edited_team` is the modal -> view success callback. A
+        # successful edit auto-commits: view.team is updated, decision
+        # = True, the modal-submit interaction is deferred (no extra
+        # ephemeral message), and the view stops so the command handler
+        # proceeds. Pending text from any earlier failed attempt clears.
+        view = _make_view(invoker_id=42)
+        view._pending_edit_text = "stale attempt"
         edited = TeamData(
-            pokemon=[_entry("Urshifu-Rapid-Strike")] + original.pokemon[1:],
-            team_id=original.team_id,
+            pokemon=[_entry("Urshifu-Rapid-Strike")] + view.team.pokemon[1:],
+            team_id=view.team.team_id,
         )
         modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
         await view._apply_edited_team(edited, modal_interaction)
         assert view.team is edited
         assert view.decision is True
+        assert view._pending_edit_text is None
         assert modal_interaction.response.defer_calls == 1
         assert view.is_finished()
 
+    async def test_surface_edit_failure_edits_message_and_stashes_text(self):
+        # `_surface_edit_failure` is the modal -> view failure callback.
+        # Discord forbids calling send_modal from a modal-submit
+        # interaction (HTTP 400), so the View edits the original
+        # preview message (adding an error prefix, keeping the embed
+        # and buttons) and stashes the user's failed text for the next
+        # Edit click.
+        view = _make_view(invoker_id=42)
+        submitted = "deliberately broken paste"
+        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view._surface_edit_failure(
+            submitted, "Expected 6 Pokemon, got 5.", modal_interaction
+        )
+        # No new modal was opened (the bug we're fixing).
+        assert modal_interaction.response.send_modal_calls == []
+        # The preview message was edited with the error surfaced.
+        assert len(modal_interaction.response.edit_message_calls) == 1
+        call = modal_interaction.response.edit_message_calls[0]
+        assert "Couldn't parse" in call["content"]
+        assert "Expected 6 Pokemon, got 5." in call["content"]
+        # Embed and view are preserved so the user still sees the
+        # current parsed team and the buttons remain clickable.
+        assert call["embed"] is view._preview_embed
+        assert call["view"] is view
+        # Failed text is stashed for the next Edit prefill.
+        assert view._pending_edit_text == submitted
+        # Decision is still pending; the view hasn't stopped.
+        assert view.decision is None
+        assert not view.is_finished()
+
+    async def test_edit_button_uses_pending_text_after_failure(self):
+        # After a failed edit, the next Edit click pre-fills the modal
+        # with the user's last submitted text — NOT the unchanged
+        # render of the current team — so they don't have to retype
+        # their work.
+        view = _make_view(invoker_id=42)
+        view._pending_edit_text = "user's in-progress edit"
+        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view.edit.callback(interaction)
+        assert len(interaction.response.send_modal_calls) == 1
+        modal = interaction.response.send_modal_calls[0]
+        assert modal.paste_input.default == "user's in-progress edit"
+
+    async def test_cancel_clears_pending_edit_text(self):
+        # Cancelling out of the preview discards any in-progress edit
+        # work — cosmetic, since the view is about to be destroyed
+        # anyway, but makes the state transitions predictable.
+        view = _make_view(invoker_id=42)
+        view._pending_edit_text = "doesn't matter"
+        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view.cancel.callback(interaction)
+        assert view._pending_edit_text is None
+        assert view.decision is False
+
 
 class TestEditTeamModal:
-    async def test_submit_parses_and_calls_callback(self):
+    async def test_submit_parses_and_calls_success_callback(self):
         # Happy path: feed the modal a valid Showdown paste; on submit
-        # the parser succeeds and the callback fires with the parsed
-        # team + the modal-submit interaction.
+        # the parser succeeds and `on_success` fires with the parsed
+        # team + the modal-submit interaction. `on_failure` does not.
         original = _team()
-        captured: list[tuple] = []
+        successes: list[tuple] = []
+        failures: list[tuple] = []
 
-        async def callback(team, interaction):
-            captured.append((team, interaction))
+        async def on_success(team, interaction):
+            successes.append((team, interaction))
+
+        async def on_failure(text, error, interaction):
+            failures.append((text, error, interaction))
 
         modal = EditTeamModal(
             prefill=render_showdown(original),
             team_id="QBXXWXL05U",
-            on_submit_callback=callback,
+            on_success=on_success,
+            on_failure=on_failure,
         )
         # `TextInput.value` is a property backed by `_value`; in production
         # discord.py populates it from the interaction payload. Tests
         # write it directly so we can exercise on_submit without a
-        # gateway round-trip. Simulates the user not changing anything
-        # (or re-submitting the same canonical text).
+        # gateway round-trip.
         modal.paste_input._value = render_showdown(original)  # type: ignore[attr-defined]
 
         interaction = _FakeInteraction(user=_FakeUser(id=42))
         await modal.on_submit(interaction)
 
-        assert len(captured) == 1
-        parsed_team, parsed_interaction = captured[0]
+        assert len(successes) == 1
+        assert failures == []
+        parsed_team, parsed_interaction = successes[0]
         assert parsed_interaction is interaction
-        # The parser preserves the passed-in team_id.
         assert parsed_team.team_id == "QBXXWXL05U"
-        # Six Pokemon, first one still Floette-Eternal (canonical fixture).
         assert len(parsed_team.pokemon) == 6
         assert parsed_team.pokemon[0].species == "Floette-Eternal"
-        # No re-open modal was triggered.
-        assert interaction.response.send_modal_calls == []
 
-    async def test_submit_with_parse_error_reopens_modal(self):
-        # Sad path: feed the modal a paste that parses-fails. The modal
-        # responds by sending a fresh modal back to the user with the
-        # broken text in its prefill and the error fragment in the title
-        # / input label.
-        async def callback(team, interaction):
-            raise AssertionError("callback should not fire on parse error")
+    async def test_submit_with_parse_error_calls_failure_callback(self):
+        # Sad path: feed the modal a paste that parses-fails (too many
+        # moves on slot 1). The modal hands the user's submitted text
+        # + the error message + the modal interaction to `on_failure`
+        # and does NOT touch the response itself — the View decides
+        # how to surface the failure to the user.
+        successes: list[tuple] = []
+        failures: list[tuple] = []
 
-        # Only 5 Pokemon blocks → "Expected 6 Pokemon, got 5."
-        broken_paste = "\r\n\r\n".join(
-            [
-                "Mimikyu\nAbility: Disguise\nAdamant Nature\n- Play Rough",
-            ]
-            * 5
+        async def on_success(team, interaction):
+            successes.append((team, interaction))
+
+        async def on_failure(text, error, interaction):
+            failures.append((text, error, interaction))
+
+        # Take the canonical paste and inject a 5th move onto slot 1.
+        broken_paste = render_showdown(_team()).replace(
+            "- Protect\r\n\r\nAerodactyl",
+            "- Protect\r\n- Substitute\r\n\r\nAerodactyl",
+            1,
         )
 
         modal = EditTeamModal(
             prefill=broken_paste,
             team_id="QBXXWXL05U",
-            on_submit_callback=callback,
+            on_success=on_success,
+            on_failure=on_failure,
         )
         modal.paste_input._value = broken_paste  # type: ignore[attr-defined]
 
         interaction = _FakeInteraction(user=_FakeUser(id=42))
         await modal.on_submit(interaction)
 
-        # A new modal was opened with the user's broken text preserved.
-        assert len(interaction.response.send_modal_calls) == 1
-        reopened = interaction.response.send_modal_calls[0]
-        assert isinstance(reopened, EditTeamModal)
-        assert reopened.paste_input.default == broken_paste
-        # The error fragment is reflected in the modal title.
-        assert "Expected 6" in reopened.title
+        assert successes == []
+        assert len(failures) == 1
+        text, error, failure_interaction = failures[0]
+        assert text == broken_paste
+        assert "too many moves" in error
+        assert failure_interaction is interaction
+        # The modal itself didn't try to respond — the failure callback
+        # owns the interaction. (This is the bug fix: previously the
+        # modal called `send_modal` here, which Discord rejects with
+        # HTTP 400 on a modal-submit interaction.)
+        assert interaction.response.send_modal_calls == []
+        assert interaction.response.edit_message_calls == []
+        assert interaction.response.send_message_calls == []
+        assert interaction.response.defer_calls == 0
 
     async def test_submit_with_nature_error_mentions_serious(self):
-        # The plan calls out that the nature error must explicitly tell
-        # the user to use "Serious" for neutral natures — Hardy is a
-        # Showdown-accepted neutral but we don't support it.
-        async def callback(team, interaction):
-            raise AssertionError("callback should not fire on parse error")
+        # The nature error must explicitly tell the user to use "Serious"
+        # for neutral natures — Hardy is a Showdown-accepted neutral but
+        # we don't support it. Surfaces via the on_failure callback.
+        failures: list[tuple] = []
 
-        # Take the canonical paste and swap one nature to Hardy.
+        async def on_success(team, interaction):
+            raise AssertionError("on_success should not fire on parse error")
+
+        async def on_failure(text, error, interaction):
+            failures.append((text, error, interaction))
+
         paste = render_showdown(_team()).replace("Modest Nature", "Hardy Nature", 1)
 
         modal = EditTeamModal(
             prefill=paste,
             team_id="QBXXWXL05U",
-            on_submit_callback=callback,
+            on_success=on_success,
+            on_failure=on_failure,
         )
         modal.paste_input._value = paste  # type: ignore[attr-defined]
 
         interaction = _FakeInteraction(user=_FakeUser(id=42))
         await modal.on_submit(interaction)
 
-        assert len(interaction.response.send_modal_calls) == 1
-        reopened = interaction.response.send_modal_calls[0]
-        # Error must surface in the modal title (capped at 45 chars by
-        # Discord and by `_truncate_for_discord`), naming either the
-        # offending nature or the accepted neutral.
-        assert "Hardy" in reopened.title or "Serious" in reopened.title
+        assert len(failures) == 1
+        _, error, _ = failures[0]
+        assert "Hardy" in error or "Serious" in error
