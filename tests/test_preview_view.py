@@ -14,13 +14,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from sketch.replica.extractor import PokemonEntry, TeamData
-from sketch.replica.pokepaste_renderer import render_showdown
-from sketch.replica.preview_view import (
+from sketch.champions.preview_view import (
     EditTeamModal,
     ReplicaPreviewView,
     team_to_embed,
 )
+from sketch.pokepaste.renderer import render_showdown
+from sketch.team import PokemonEntry, TeamData
 
 
 def _entry(species: str = "Floette-Eternal") -> PokemonEntry:

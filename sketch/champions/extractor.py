@@ -35,12 +35,12 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 import anthropic
 
 from sketch import config
+from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +54,6 @@ class ExtractionError(Exception):
     separately at WARNING.
     """
 
-
-# Showdown stat keys, in canonical export order. Used as the keys of the
-# `evs` dict on every PokemonEntry and as the source for renderer-side
-# display labels. Internal-only — the in-game labels the model returns
-# (e.g. "Sp. Atk") are mapped via `_SHOWDOWN_STAT_KEY` below.
-STAT_KEYS = ("hp", "atk", "def", "spa", "spd", "spe")
 
 # The in-game UI labels next to each stat (used in the nature-arrow lookup
 # below and in the prompt). Order parallels STAT_KEYS, minus HP — nature
@@ -121,28 +115,6 @@ def _resolve_nature(boosted: str | None, reduced: str | None) -> str:
     if boosted is None or reduced is None or boosted == reduced:
         return _NEUTRAL_NATURE
     return _NATURE_MAP.get((boosted, reduced), _NEUTRAL_NATURE)
-
-
-@dataclass(frozen=True)
-class PokemonEntry:
-    species: str
-    gender: str | None  # "M", "F", or None for genderless / not displayed
-    item: str | None
-    ability: str
-    nature: str  # canonical Showdown name; resolved from arrows in _parse_pokemon
-    evs: dict[str, int]  # keys = STAT_KEYS, values 0-32
-    moves: list[str]
-
-
-@dataclass(frozen=True)
-class TeamData:
-    pokemon: list[PokemonEntry]
-    # `team_id` is the 10-char alphanumeric code shown at the top of both
-    # share-screen pages. Captured so the command handler can verify that
-    # the user-submitted code matches what the screenshots actually show —
-    # protects against cache poisoning by mismatched code/screenshot pairs.
-    # None when the model couldn't read it (e.g. cropped-out header).
-    team_id: str | None = None
 
 
 # --- JSON schema for the submit_team tool ----------------------------------

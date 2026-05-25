@@ -19,9 +19,9 @@ from __future__ import annotations
 
 import pytest
 
-from sketch.replica.extractor import PokemonEntry, TeamData
-from sketch.replica.pokepaste_renderer import render_showdown
-from sketch.replica.showdown_parser import ShowdownParseError, parse_showdown
+from sketch.champions.showdown_parser import ShowdownParseError, parse_showdown
+from sketch.pokepaste.renderer import render_showdown
+from sketch.team import PokemonEntry, TeamData
 
 # Canonical 6-mon paste — hand-written so the parser's contract is
 # pinned independently of `render_showdown`. CRLF line endings match

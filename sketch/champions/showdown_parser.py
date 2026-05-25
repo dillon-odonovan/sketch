@@ -19,13 +19,8 @@ from __future__ import annotations
 
 import re
 
-from sketch.replica.extractor import (
-    _NATURE_MAP,
-    _NEUTRAL_NATURE,
-    STAT_KEYS,
-    PokemonEntry,
-    TeamData,
-)
+from sketch.champions.extractor import _NATURE_MAP, _NEUTRAL_NATURE
+from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
 
 class ShowdownParseError(Exception):

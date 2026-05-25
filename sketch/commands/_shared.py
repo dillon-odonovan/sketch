@@ -24,7 +24,7 @@ import discord
 from discord import app_commands
 
 from sketch import config
-from sketch.pokepaste_validator import ValidationError, canonicalize_pokepaste_url
+from sketch.pokepaste.validator import ValidationError, canonicalize_pokepaste_url
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry, TeamRow
 
 logger = logging.getLogger(__name__)

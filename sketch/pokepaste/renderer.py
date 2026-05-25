@@ -1,4 +1,4 @@
-"""Turn an extracted TeamData into a PokePaste.
+"""Turn a TeamData (from any source) into a PokePaste.
 
 Two steps the caller composes:
   1. `render_showdown(team)` — produce the Showdown / PokePaste export text,
@@ -12,12 +12,11 @@ The two steps are separate so tests can golden-file the text without
 touching the network, and so the slash command can render once and then
 reuse the rendered string for both the upload and the user-facing preview.
 
-The rendered shape matches the sample output from the reference script
-(`build_pokepaste.py`) used to validate the OCR approach end-to-end: gender
-suffix on the species line, EVs line listing only non-zero stats, Nature
-line, four `- Move` lines. No Tera Type, Level, or IVs — the Champions
-Replica share screen doesn't surface those, and the reference paste
-that round-trips cleanly through pokepast.es and the in-sheet AppsScript
+The rendered shape: gender suffix on the species line, EVs line listing
+only non-zero stats, Nature line, four `- Move` lines. No Tera Type,
+Level, or IVs — Champions Replica share screens don't surface those,
+VRPaste's API doesn't expose them, and the reference paste that
+round-trips cleanly through pokepast.es and the in-sheet AppsScript
 omits them.
 """
 
@@ -27,8 +26,8 @@ import logging
 
 import aiohttp
 
-from sketch.pokepaste_validator import canonicalize_pokepaste_url
-from sketch.replica.extractor import STAT_KEYS, PokemonEntry, TeamData
+from sketch.pokepaste.validator import canonicalize_pokepaste_url
+from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
 logger = logging.getLogger(__name__)
 

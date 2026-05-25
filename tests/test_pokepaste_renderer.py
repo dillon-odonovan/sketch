@@ -17,12 +17,12 @@ from __future__ import annotations
 import pytest
 from aioresponses import aioresponses
 
-from sketch.replica.extractor import PokemonEntry, TeamData
-from sketch.replica.pokepaste_renderer import (
+from sketch.pokepaste.renderer import (
     PokepasteUploadError,
     post_to_pokepaste,
     render_showdown,
 )
+from sketch.team import PokemonEntry, TeamData
 
 # CRLF separator the renderer emits. Kept local to the test rather than
 # importing the private `_LINE_END` from `pokepaste_renderer` so this

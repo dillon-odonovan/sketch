@@ -1,13 +1,16 @@
+"""Pokepaste URL validation and canonicalization.
+
+`ValidationError` is also used by other URL-source validators
+(e.g. `sketch.champions.replica_validator.normalize_replica`,
+`sketch.vrpaste.validator`) so callers can catch one exception type
+across every URL-shaped slash-command input.
+"""
+
 import re
 
 import aiohttp
 
 _POKEPASTE_URL_RE = re.compile(r"^https?://pokepast\.es/[A-Za-z0-9]+/?$")
-# Pokemon Champions "Replica" / Team IDs are 10 chars of uppercase letters
-# and digits (e.g. "QBXXWXL05U"). We accept any ASCII alphanumeric of
-# length 10 and uppercase it for a single canonical form — matches how the
-# in-game UI displays the code, and keeps cache keys / dedup case-insensitive.
-_REPLICA_RE = re.compile(r"^[A-Za-z0-9]{10}$")
 
 
 class ValidationError(Exception):
@@ -33,15 +36,6 @@ async def validate_pokepaste_url(url: str) -> None:
                 raise ValidationError(f"Could not fetch `{url}`: HTTP {resp.status}.")
     except aiohttp.ClientError as exc:
         raise ValidationError(f"Could not fetch `{url}`: {exc}") from exc
-
-
-def normalize_replica(replica: str) -> str:
-    if not _REPLICA_RE.match(replica):
-        raise ValidationError(
-            f"`replica` must be a 10-character alphanumeric Champions team ID "
-            f"(e.g. `QBXXWXL05U`). Got `{replica}`."
-        )
-    return replica.upper()
 
 
 def canonicalize_pokepaste_url(url: str) -> str:

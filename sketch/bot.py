@@ -6,8 +6,8 @@ from discord import app_commands
 from google.cloud import firestore
 
 from sketch import config, logging_setup
+from sketch.champions.replica_cache import FirestoreReplicaCacheStore
 from sketch.commands import setup_commands
-from sketch.replica.cache import FirestoreReplicaCacheStore
 from sketch.storage.guild_config import FirestoreGuildConfigStore
 from sketch.storage.sheets_client import SheetsClientRegistry
 

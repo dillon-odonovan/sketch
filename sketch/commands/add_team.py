@@ -29,6 +29,13 @@ import discord
 from discord import app_commands
 
 from sketch import config
+from sketch.champions.extractor import (
+    ExtractionError,
+    extract_team_from_screenshots,
+)
+from sketch.champions.preview_view import ReplicaPreviewView
+from sketch.champions.replica_cache import ReplicaCacheEntry, ReplicaCacheStore
+from sketch.champions.replica_validator import normalize_replica
 from sketch.commands._shared import (
     GENERIC_CACHE_READ_ERROR,
     GENERIC_CACHE_WRITE_ERROR,
@@ -42,26 +49,19 @@ from sketch.commands._shared import (
     _resolve_guild_sheets,
 )
 from sketch.logging_setup import trace_id_var
-from sketch.pokepaste_validator import (
-    ValidationError,
-    canonicalize_pokepaste_url,
-    normalize_replica,
-    validate_pokepaste_url,
-)
-from sketch.replica.cache import ReplicaCacheEntry, ReplicaCacheStore
-from sketch.replica.extractor import (
-    ExtractionError,
-    TeamData,
-    extract_team_from_screenshots,
-)
-from sketch.replica.pokepaste_renderer import (
+from sketch.pokepaste.renderer import (
     PokepasteUploadError,
     post_to_pokepaste,
     render_showdown,
 )
-from sketch.replica.preview_view import ReplicaPreviewView
+from sketch.pokepaste.validator import (
+    ValidationError,
+    canonicalize_pokepaste_url,
+    validate_pokepaste_url,
+)
 from sketch.storage.guild_config import GuildConfigStore
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
+from sketch.team import TeamData
 
 logger = logging.getLogger(__name__)
 
@@ -589,7 +589,7 @@ async def _commit_team_row(
         )
     else:
         logger.info(
-            "Skipping broadcast for guild_id=%s: no broadcast_channel_id " "configured",
+            "Skipping broadcast for guild_id=%s: no broadcast_channel_id configured",
             interaction.guild_id,
         )
 
@@ -646,7 +646,7 @@ def register(
     @tree.command(
         name="add-team",
         description=(
-            "Add a team to the bank — by Pokepaste URL, Champions Team ID, " "or both."
+            "Add a team to the bank — by Pokepaste URL, Champions Team ID, or both."
         ),
     )
     @app_commands.describe(

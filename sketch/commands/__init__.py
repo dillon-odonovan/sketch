@@ -16,6 +16,7 @@ from __future__ import annotations
 import anthropic
 from discord import app_commands
 
+from sketch.champions.replica_cache import ReplicaCacheStore
 from sketch.commands._shared import (
     _SPREADSHEET_ID_RE,
     _filter_team_rows,
@@ -25,7 +26,6 @@ from sketch.commands.add_team import register as _register_add_team
 from sketch.commands.admin import register as _register_admin
 from sketch.commands.help import register as _register_help
 from sketch.commands.search_teams import register as _register_search_teams
-from sketch.replica.cache import ReplicaCacheStore
 from sketch.search.dex import DexIndex  # re-exported for backwards-compatible callers
 from sketch.storage.guild_config import GuildConfigStore
 from sketch.storage.sheets_client import SheetsClientRegistry
