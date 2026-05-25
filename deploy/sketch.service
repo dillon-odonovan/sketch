@@ -29,6 +29,7 @@ ExecStart=/usr/bin/docker run --rm --name sketch \
   -e GUILD_CONFIG_JSON \
   -e GCP_PROJECT \
   -e SKETCH_SECRET_DISCORD_TOKEN \
+  -e SKETCH_SECRET_ANTHROPIC_API_KEY \
   ${SKETCH_IMAGE}
 ExecStop=/usr/bin/docker stop sketch
 Restart=always

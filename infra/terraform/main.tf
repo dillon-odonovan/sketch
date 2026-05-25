@@ -97,6 +97,26 @@ resource "google_secret_manager_secret_iam_member" "vm_token_access" {
 }
 
 # ----------------------------------------------------------------------------
+# Secret Manager — Anthropic API key (vision OCR for /add-team)
+# ----------------------------------------------------------------------------
+
+resource "google_secret_manager_secret" "anthropic_api_key" {
+  secret_id = "sketch-anthropic-api-key"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.enabled]
+}
+
+resource "google_secret_manager_secret_iam_member" "vm_anthropic_api_key_access" {
+  secret_id = google_secret_manager_secret.anthropic_api_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# ----------------------------------------------------------------------------
 # Firestore — per-guild runtime config (spreadsheet_id, broadcast_channel_id)
 # ----------------------------------------------------------------------------
 #
@@ -258,6 +278,7 @@ resource "google_compute_instance" "sketch" {
     google_project_service.enabled,
     google_artifact_registry_repository_iam_member.vm_reader,
     google_secret_manager_secret_iam_member.vm_token_access,
+    google_secret_manager_secret_iam_member.vm_anthropic_api_key_access,
   ]
 }
 
