@@ -6,10 +6,12 @@ Open issues at <https://github.com/dillon-odonovan/sketch/issues/new/choose>. Fo
 
 - **Feature request** — new capability or enhancement. Stay product-focused; implementation gets decided when the work is picked up.
 - **Bug report** — something is broken or behaving unexpectedly.
-- **Task / Chore** — small work items (infra, refactor, dependency bump). Also the right home for "I'm starting a session — log what I'm about to do."
+- **Task / Chore** — small work items that aren't a feature or bug (infra, refactor, dependency bump).
 - **Idea** — half-formed thoughts you don't want to lose. Promote to a feature request later if it's worth doing.
 
 Required fields are kept to the minimum needed to make the issue understandable later. Skip anything optional you don't have an answer for.
+
+Starting a Claude Code session on something new? File an issue first using whichever template matches the work — a feature, a bug, a chore, or an idea you're about to flesh out.
 
 ## Submitting changes
 
