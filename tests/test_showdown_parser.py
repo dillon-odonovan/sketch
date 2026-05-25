@@ -19,9 +19,9 @@ from __future__ import annotations
 
 import pytest
 
-from sketch.replica.extractor import PokemonEntry, TeamData
-from sketch.replica.pokepaste_renderer import render_showdown
-from sketch.replica.showdown_parser import ShowdownParseError, parse_showdown
+from sketch.champions.showdown_parser import ShowdownParseError, parse_showdown
+from sketch.pokepaste.renderer import render_showdown
+from sketch.team import PokemonEntry, TeamData
 
 # Canonical 6-mon paste — hand-written so the parser's contract is
 # pinned independently of `render_showdown`. CRLF line endings match
@@ -289,9 +289,7 @@ class TestErrorCases:
         # Build a paste where the first block has header lines but no
         # `- Move` lines.
         moveless_block = (
-            "Floette-Eternal (F) @ Floettite\r\n"
-            "Ability: Flower Veil\r\n"
-            "Modest Nature"
+            "Floette-Eternal (F) @ Floettite\r\nAbility: Flower Veil\r\nModest Nature"
         )
         rest = "\r\n\r\n".join(_FULL_PASTE.split("\r\n\r\n")[1:])
         broken = moveless_block + "\r\n\r\n" + rest

@@ -11,7 +11,7 @@ import google.auth
 from googleapiclient.discovery import build
 
 from sketch import config
-from sketch.pokepaste_validator import ValidationError, canonicalize_pokepaste_url
+from sketch.pokepaste.validator import ValidationError, canonicalize_pokepaste_url
 from sketch.search.dex import DexIndex
 from sketch.search.text_search import DescriptionIndex
 from sketch.storage.guild_config import GuildConfigStore

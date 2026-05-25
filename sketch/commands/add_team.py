@@ -29,6 +29,13 @@ import discord
 from discord import app_commands
 
 from sketch import config
+from sketch.champions.extractor import (
+    ExtractionError,
+    extract_team_from_screenshots,
+)
+from sketch.champions.preview_view import ReplicaPreviewView
+from sketch.champions.replica_cache import ReplicaCacheEntry, ReplicaCacheStore
+from sketch.champions.replica_validator import normalize_replica
 from sketch.commands._shared import (
     GENERIC_CACHE_READ_ERROR,
     GENERIC_CACHE_WRITE_ERROR,
@@ -42,26 +49,26 @@ from sketch.commands._shared import (
     _resolve_guild_sheets,
 )
 from sketch.logging_setup import trace_id_var
-from sketch.pokepaste_validator import (
-    ValidationError,
-    canonicalize_pokepaste_url,
-    normalize_replica,
-    validate_pokepaste_url,
-)
-from sketch.replica.cache import ReplicaCacheEntry, ReplicaCacheStore
-from sketch.replica.extractor import (
-    ExtractionError,
-    TeamData,
-    extract_team_from_screenshots,
-)
-from sketch.replica.pokepaste_renderer import (
+from sketch.pokepaste.renderer import (
     PokepasteUploadError,
     post_to_pokepaste,
     render_showdown,
 )
-from sketch.replica.preview_view import ReplicaPreviewView
+from sketch.pokepaste.validator import (
+    ValidationError,
+    canonicalize_pokepaste_url,
+    validate_pokepaste_url,
+)
 from sketch.storage.guild_config import GuildConfigStore
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
+from sketch.team import TeamData
+from sketch.vrpaste.cache import VRPasteCacheStore
+from sketch.vrpaste.fetcher import VRPasteFetchError, fetch_vrpaste
+from sketch.vrpaste.validator import (
+    canonicalize_vrpaste_url,
+    extract_vrpaste_id,
+    is_vrpaste_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,12 +140,15 @@ async def _resolve_canonical_url(
     *,
     inputs: _AddTeamInputs,
     replica_cache: ReplicaCacheStore,
+    vrpaste_cache: VRPasteCacheStore,
     anthropic_client: anthropic.AsyncAnthropic,
 ) -> tuple[str, str, bool] | None:
     """Figure out which Pokepaste URL to write to the sheet.
 
-    Four paths converge on `(canonical_url, canonical_url_for_dedup)`:
-      - URL supplied by the user → use it directly.
+    Five paths converge on `(canonical_url, canonical_url_for_dedup)`:
+      - Pokepaste URL supplied → use it directly.
+      - VRPaste URL supplied → fetch its team, mint a Pokepaste, store
+        the Pokepaste URL; results in a Pokepaste URL on the sheet.
       - Replica-only + full cache hit (URL set) → reuse the cached URL.
       - Replica-only + partial cache hit (paste cached but URL is None
         from a prior failed upload) → re-mint using the cached paste,
@@ -153,14 +163,27 @@ async def _resolve_canonical_url(
     / `edit_original_response`.
 
     `canonical_url` preserves the user's spelling when they supplied a
-    URL (so the sheet shows what they typed); `canonical_url_for_dedup`
-    is always the canonicalized form for `find_row_by_url` comparison.
+    Pokepaste URL (so the sheet shows what they typed); the VRPaste
+    branch sets it to the minted Pokepaste URL since that's what gets
+    written. `canonical_url_for_dedup` is always the canonicalized
+    Pokepaste form for `find_row_by_url` comparison.
     """
     if inputs.url is not None:
+        if is_vrpaste_url(inputs.url):
+            return await _resolve_via_vrpaste(
+                interaction,
+                inputs=inputs,
+                vrpaste_cache=vrpaste_cache,
+            )
         try:
             canonical_url_for_dedup = canonicalize_pokepaste_url(inputs.url)
-        except ValidationError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
+        except ValidationError:
+            await interaction.followup.send(
+                f"`{inputs.url}` doesn't look like a Pokepaste or VRPaste URL. "
+                "Expected something like `https://pokepast.es/abc123` or "
+                "`https://www.vrpastes.com/abc123`.",
+                ephemeral=True,
+            )
             return None
         return inputs.url, canonical_url_for_dedup, False
 
@@ -206,6 +229,122 @@ async def _resolve_canonical_url(
         replica_cache=replica_cache,
         anthropic_client=anthropic_client,
     )
+
+
+async def _resolve_via_vrpaste(
+    interaction: discord.Interaction,
+    *,
+    inputs: _AddTeamInputs,
+    vrpaste_cache: VRPasteCacheStore,
+) -> tuple[str, str, bool] | None:
+    """Fetch a VRPaste, mint a Pokepaste from it, return the Pokepaste URL.
+
+    Cache-first: re-submissions of the same VRPaste reuse the previously
+    minted Pokepaste URL, which restores sheet-level dedup (without the
+    cache, two submissions of the same VRPaste would mint two distinct
+    pokepast.es URLs and land on two distinct sheet rows).
+
+    No preview gate, unlike the Champions OCR flow: the VRPaste backend
+    returns structured JSON we trust the same way we'd trust a user
+    typing a pokepast.es URL directly.
+
+    Returns `(pokepaste_url, pokepaste_url, preview_shown=False)` — both
+    fields are the minted URL because that's what gets written to the
+    sheet and that's what dedup keys on.
+    """
+    assert inputs.url is not None
+    try:
+        vrpaste_id = extract_vrpaste_id(inputs.url)
+        canonical_vrpaste_url = canonicalize_vrpaste_url(inputs.url)
+    except ValidationError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+        return None
+
+    try:
+        cached = await asyncio.to_thread(vrpaste_cache.get, vrpaste_id)
+    except Exception:
+        logger.exception("VRPaste cache read failed for id=%s", vrpaste_id)
+        await interaction.followup.send(GENERIC_CACHE_READ_ERROR, ephemeral=True)
+        return None
+
+    if cached is not None:
+        logger.info(
+            "add-team VRPaste cache HIT for id=%s -> %s",
+            vrpaste_id,
+            cached.pokepaste_url,
+        )
+        return cached.pokepaste_url, cached.pokepaste_url, False
+
+    await interaction.edit_original_response(
+        content="Fetching team from VRPaste and uploading to pokepast.es…",
+        embed=None,
+        view=None,
+    )
+    try:
+        team = await fetch_vrpaste(canonical_vrpaste_url)
+    except VRPasteFetchError as exc:
+        await _edit_status(interaction, str(exc))
+        return None
+
+    paste_text = render_showdown(team)
+    try:
+        minted_url = await post_to_pokepaste(paste_text, title=f"VRPaste {vrpaste_id}")
+    except PokepasteUploadError as exc:
+        await _edit_status(interaction, str(exc))
+        return None
+
+    # Race-safe cache write: `create` is fail-if-exists. If two
+    # submissions of the same VRPaste both make it past the cache.get
+    # check above (they minted in parallel), only the first create
+    # wins. The loser gets back the winner's entry and uses the
+    # winner's URL — so both sheet writes converge on a single
+    # Pokepaste URL and dedup catches the second row. The loser's
+    # minted paste becomes a harmless orphan on pokepast.es.
+    guild_id_for_audit = (
+        interaction.guild_id
+        if interaction.guild_id is not None
+        else interaction.user.id
+    )
+    try:
+        entry = await asyncio.to_thread(
+            vrpaste_cache.create,
+            vrpaste_id,
+            minted_url,
+            user_id=interaction.user.id,
+            guild_id=guild_id_for_audit,
+        )
+    except Exception:
+        # Cache write failed entirely (transport error, etc.). Fall
+        # back to our minted URL — we'd rather write a (potentially
+        # duplicate) row than fail the whole command after a successful
+        # mint. The next submission for this id re-mints; persistent
+        # outages surface in the warning log.
+        logger.warning(
+            "VRPaste cache create failed for id=%s -> %s; using minted URL "
+            "without dedup convergence",
+            vrpaste_id,
+            minted_url,
+            exc_info=True,
+        )
+        canonical_url = minted_url
+    else:
+        canonical_url = entry.pokepaste_url
+        if canonical_url != minted_url:
+            logger.info(
+                "add-team VRPaste id=%s lost race; using winner's URL %s "
+                "(local mint %s orphaned on pokepast.es)",
+                vrpaste_id,
+                canonical_url,
+                minted_url,
+            )
+        else:
+            logger.info(
+                "add-team VRPaste id=%s minted -> %s",
+                vrpaste_id,
+                minted_url,
+            )
+
+    return canonical_url, canonical_url, False
 
 
 async def _resolve_via_ocr(
@@ -589,7 +728,7 @@ async def _commit_team_row(
         )
     else:
         logger.info(
-            "Skipping broadcast for guild_id=%s: no broadcast_channel_id " "configured",
+            "Skipping broadcast for guild_id=%s: no broadcast_channel_id configured",
             interaction.guild_id,
         )
 
@@ -632,27 +771,30 @@ def register(
     registry: SheetsClientRegistry,
     *,
     replica_cache: ReplicaCacheStore,
+    vrpaste_cache: VRPasteCacheStore,
     anthropic_client: anthropic.AsyncAnthropic,
 ) -> None:
     """Register the /add-team slash command on the given tree.
 
-    Captures `store`, `registry`, `replica_cache`, and `anthropic_client`
-    in the handler's closure so each invocation can route to the right
-    spreadsheet, look up the broadcast channel, hit the replica cache,
-    and drive Claude vision without re-deriving the dependencies on
-    every call.
+    Captures `store`, `registry`, the two source-specific caches, and
+    `anthropic_client` in the handler's closure so each invocation can
+    route to the right spreadsheet, look up the broadcast channel, hit
+    the appropriate paste-source cache, and drive Claude vision without
+    re-deriving the dependencies on every call.
     """
 
     @tree.command(
         name="add-team",
         description=(
-            "Add a team to the bank — by Pokepaste URL, Champions Team ID, " "or both."
+            "Add a team to the bank — by Pokepaste URL, VRPaste URL, "
+            "Champions Team ID, or a URL + Team ID."
         ),
     )
     @app_commands.describe(
         url=(
-            "Pokepaste URL (e.g., https://pokepast.es/abc123). Required "
-            "unless you provide a Team ID instead."
+            "Pokepaste URL (e.g., https://pokepast.es/abc123) or VRPaste "
+            "URL (e.g., https://www.vrpastes.com/abc123). Required unless "
+            "you provide a Team ID instead."
         ),
         replica=(
             "10-character Champions Team ID (e.g. 'QBXXWXL05U'). Required "
@@ -730,6 +872,7 @@ def register(
             interaction,
             inputs=inputs,
             replica_cache=replica_cache,
+            vrpaste_cache=vrpaste_cache,
             anthropic_client=anthropic_client,
         )
         if resolved is None:

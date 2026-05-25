@@ -21,7 +21,7 @@ from sketch.commands._shared import (
     _resolve_guild_sheets,
 )
 from sketch.logging_setup import trace_id_var
-from sketch.pokepaste_validator import ValidationError, canonicalize_pokepaste_url
+from sketch.pokepaste.validator import ValidationError, canonicalize_pokepaste_url
 from sketch.storage.sheets_client import SheetsClientRegistry
 
 logger = logging.getLogger(__name__)

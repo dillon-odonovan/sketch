@@ -6,10 +6,11 @@ from discord import app_commands
 from google.cloud import firestore
 
 from sketch import config, logging_setup
+from sketch.champions.replica_cache import FirestoreReplicaCacheStore
 from sketch.commands import setup_commands
-from sketch.replica.cache import FirestoreReplicaCacheStore
 from sketch.storage.guild_config import FirestoreGuildConfigStore
 from sketch.storage.sheets_client import SheetsClientRegistry
+from sketch.vrpaste.cache import FirestoreVRPasteCacheStore
 
 logging_setup.configure()
 logger = logging.getLogger(__name__)
@@ -36,6 +37,11 @@ class SketchBot(discord.Client):
         # constructing this are still fatal at boot (we'd rather fail loudly
         # than register a /replica handler that errors on every invocation).
         self._replica_cache = FirestoreReplicaCacheStore(firestore_client)
+        # VRPaste cache uses the same Firestore client. It backs the
+        # /add-team URL-source branch for vrpastes.com submissions —
+        # cache misses fetch the team and mint a Pokepaste, cache hits
+        # reuse the previously-minted Pokepaste URL.
+        self._vrpaste_cache = FirestoreVRPasteCacheStore(firestore_client)
         # One singleton AsyncAnthropic client across the bot lifetime.
         # Anthropic SDK calls are async-native, so no asyncio.to_thread
         # wrapping is needed (unlike the blocking Google clients).
@@ -69,6 +75,7 @@ class SketchBot(discord.Client):
             self._store,
             self._registry,
             replica_cache=self._replica_cache,
+            vrpaste_cache=self._vrpaste_cache,
             anthropic_client=self._anthropic_client,
         )
         if self._dev_guild:

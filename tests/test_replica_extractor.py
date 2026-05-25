@@ -23,14 +23,13 @@ from typing import Any
 import anthropic
 import pytest
 
-from sketch.replica.extractor import (
+from sketch.champions.extractor import (
     ExtractionError,
-    PokemonEntry,
-    TeamData,
     _resolve_nature,
     _sniff_media_type,
     extract_team_from_screenshots,
 )
+from sketch.team import PokemonEntry, TeamData
 
 # --- Fakes for the Anthropic SDK -------------------------------------------
 

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import pytest
 from google.api_core import exceptions as gax_exceptions
 
-from sketch.replica.cache import (
+from sketch.champions.replica_cache import (
     FirestoreReplicaCacheStore,
     InMemoryReplicaCacheStore,
     ReplicaCacheEntry,

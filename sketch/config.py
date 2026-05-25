@@ -88,6 +88,16 @@ REPLICA_CACHE_COLLECTION = "replica_codes"
 # Promote to claude-opus-4-7 if Confirm-rate telemetry shows accuracy issues.
 REPLICA_OCR_MODEL = "claude-sonnet-4-6"
 
+# --- VRPaste source --------------------------------------------------------
+
+# Top-level Firestore collection mapping a VRPaste id (the slug portion of
+# `https://www.vrpastes.com/<id>`) to the Pokepaste URL we minted from its
+# fetched team data. Global (cross-guild) — VRPaste ids are deterministic
+# globally, so one guild's fetch benefits every other guild on the bot, and
+# repeat submissions of the same VRPaste settle on the same Pokepaste URL
+# for sheet-level dedup.
+VRPASTE_CACHE_COLLECTION = "vrpaste_codes"
+
 # How long the preview embed (Confirm / Cancel buttons) stays interactive
 # before timing out. Long enough that a user can step away briefly; short
 # enough that a stale embed doesn't sit forever holding a deferred response.
