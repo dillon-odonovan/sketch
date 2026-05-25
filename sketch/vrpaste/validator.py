@@ -4,25 +4,23 @@ VRPastes is Victory Road's Pokemon team sharer. URLs look like
 `https://www.vrpastes.com/<id>` where `<id>` is a short alphanumeric
 slug (the sample paste used during development was `gxmfscC1`).
 
-Two-layer validation mirrors `sketch.pokepaste.validator`: cheap regex
-first to reject typos, then an HTTP GET to confirm the paste exists
-before we commit to the fetch+mint flow. The HTTP probe uses the same
-URL the browser does (the public page), not the JSON backend — the
-backend is an implementation detail and a 404 on the public page is
-the user-meaningful signal.
-
 `canonicalize_vrpaste_url` collapses spelling variants (with/without
 `www.`, http vs https, trailing slash) so the same paste compares
 equal regardless of how the user typed it. The id portion is treated
 as case-sensitive: `gxmfscC1` and `gxmfscc1` resolve to different
 pastes on VRPaste, mirroring how `pokepast.es` treats its paste ids.
+
+No standalone HTTP probe: `sketch.vrpaste.fetcher.fetch_vrpaste` is
+the only call path that needs a backend round-trip, and it already
+fails cleanly when the paste doesn't exist. A separate `validate`
+function would either duplicate that fetch or probe the user-facing
+HTML page (which is a Next.js shell that 200s for any path the route
+matches — useless as an existence check).
 """
 
 from __future__ import annotations
 
 import re
-
-import aiohttp
 
 from sketch.pokepaste.validator import ValidationError
 
@@ -72,22 +70,3 @@ def extract_vrpaste_id(url: str) -> str:
 def canonicalize_vrpaste_url(url: str) -> str:
     match = _match_or_raise(url)
     return f"{_CANONICAL_HOST_PREFIX}{match.group(1)}"
-
-
-async def validate_vrpaste_url(url: str) -> None:
-    # Layer 1: shape check rejects typos before any network round-trip.
-    canonical = canonicalize_vrpaste_url(url)
-    # Layer 2: confirm the paste actually exists. We GET the user-facing
-    # page (which is what the user shared) rather than the JSON backend
-    # endpoint, since a 404 on the page is the signal the user will
-    # recognize. The page is a Next.js shell that always 200s when the
-    # paste exists, and 404s when it doesn't.
-    try:
-        async with (
-            aiohttp.ClientSession() as session,
-            session.get(canonical, allow_redirects=True, timeout=10) as resp,
-        ):
-            if resp.status != 200:
-                raise ValidationError(f"Could not fetch `{url}`: HTTP {resp.status}.")
-    except aiohttp.ClientError as exc:
-        raise ValidationError(f"Could not fetch `{url}`: {exc}") from exc

@@ -21,7 +21,7 @@ _SAMPLE_PAYLOAD = {
     "teams": [
         {
             "species": "Dragonite",
-            "item": "Dragonium Z",
+            "item": "Dragoninite",
             "ability": "Multiscale",
             "moves": ["Dragon Pulse", "Thunderbolt", "Heat Wave", "Protect"],
             "nature": "Timid",
@@ -68,7 +68,7 @@ class TestFetchVRPasteHappyPath:
             team = await fetch_vrpaste(_SAMPLE_URL)
         dragonite = team.pokemon[0]
         assert dragonite.species == "Dragonite"
-        assert dragonite.item == "Dragonium Z"
+        assert dragonite.item == "Dragoninite"
         assert dragonite.ability == "Multiscale"
         assert dragonite.nature == "Timid"
         assert dragonite.moves == [
@@ -111,8 +111,13 @@ class TestFetchVRPasteHappyPath:
             }
 
     async def test_evs_pass_through_when_present(self):
-        # If/when VRPaste starts returning EVs in this field, we want to
-        # propagate them.
+        # CTS (Closed Team Sheet) pastes include EVs in the API payload;
+        # we propagate them as-is. Champions uses a 32-per-stat / ~66
+        # total budget — example below sits inside that envelope since
+        # Champions is the primary format the bot serves. The fetcher
+        # does NOT validate EV totals or per-stat caps: a mainline VGC
+        # paste with classic 252/4/252 spreads would round-trip
+        # unchanged too.
         payload = {
             **_SAMPLE_PAYLOAD,
             "teams": [
@@ -122,9 +127,9 @@ class TestFetchVRPasteHappyPath:
                         "hp": 4,
                         "atk": 0,
                         "def": 0,
-                        "spa": 252,
+                        "spa": 32,
                         "spd": 0,
-                        "spe": 252,
+                        "spe": 30,
                     },
                 }
             ],
@@ -136,9 +141,9 @@ class TestFetchVRPasteHappyPath:
             "hp": 4,
             "atk": 0,
             "def": 0,
-            "spa": 252,
+            "spa": 32,
             "spd": 0,
-            "spe": 252,
+            "spe": 30,
         }
 
     async def test_item_null_passes_through_as_none(self):

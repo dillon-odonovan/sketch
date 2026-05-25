@@ -149,12 +149,15 @@ def _parse_pokemon(raw: Any) -> PokemonEntry:
       gender  (string, optional)  → gender ("M"/"F" or None)
       evs     (dict, optional)    → evs   (defaults to all-zero when absent)
 
-    The sample paste the feature was developed against doesn't include
-    EVs in the response; we default to an all-zero dict so the renderer
-    omits the EV line entirely (matching the existing behavior for
-    zero-investment teams). If/when VRPaste starts surfacing EVs we
-    pick them up automatically with no code change here, since we
-    already iterate STAT_KEYS to populate the dict.
+    VRPaste distinguishes Open Team Sheet (OTS) from Closed Team Sheet
+    (CTS) submissions: OTS pastes strip EVs from the public payload
+    while CTS pastes include them. We default to an all-zero dict when
+    the field is absent so the renderer omits the EV line entirely
+    (matching the existing behavior for zero-investment teams), and we
+    propagate non-zero EVs as-is when present — no clamping, no
+    interpretation. Champions caps at 32 per stat / ~66 total, while
+    mainline VGC caps at 252/4/252 within 510 total; the renderer just
+    emits whatever we hand it.
     """
     if not isinstance(raw, dict):
         raise TypeError(f"pokemon entry must be a dict, got {type(raw).__name__}")

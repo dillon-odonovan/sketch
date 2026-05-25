@@ -1,11 +1,9 @@
 import pytest
-from aioresponses import aioresponses
 
 from sketch.pokepaste.validator import ValidationError
 from sketch.vrpaste.validator import (
     canonicalize_vrpaste_url,
     extract_vrpaste_id,
-    validate_vrpaste_url,
 )
 
 
@@ -61,33 +59,3 @@ class TestExtractVRPasteId:
     def test_rejects_malformed(self):
         with pytest.raises(ValidationError):
             extract_vrpaste_id("not a url")
-
-
-class TestValidateVRPasteUrl:
-    async def test_accepts_valid_url_when_fetch_succeeds(self):
-        # validate_vrpaste_url GETs the canonical (www-prefixed) form
-        # regardless of how the user spelled it, so the mock matches the
-        # canonical URL.
-        with aioresponses() as mock:
-            mock.get("https://www.vrpastes.com/gxmfscC1", status=200)
-            await validate_vrpaste_url("https://vrpastes.com/gxmfscC1")
-
-    async def test_rejects_when_fetch_returns_non_200(self):
-        with aioresponses() as mock:
-            mock.get("https://www.vrpastes.com/gxmfscC1", status=404)
-            with pytest.raises(ValidationError, match="HTTP 404"):
-                await validate_vrpaste_url("https://www.vrpastes.com/gxmfscC1")
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "https://example.com/abc",
-            "https://www.vrpastes.com/",
-            "ftp://vrpastes.com/abc",
-            "",
-        ],
-    )
-    async def test_rejects_malformed_url_before_fetch(self, url):
-        # Layer-1 regex rejection short-circuits before any HTTP call.
-        with pytest.raises(ValidationError):
-            await validate_vrpaste_url(url)

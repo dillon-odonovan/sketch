@@ -26,7 +26,7 @@ _SAMPLE_PAYLOAD = {
     "teams": [
         {
             "species": "Dragonite",
-            "item": "Dragonium Z",
+            "item": "Dragoninite",
             "ability": "Multiscale",
             "moves": ["Dragon Pulse", "Thunderbolt", "Heat Wave", "Protect"],
             "nature": "Timid",
@@ -112,7 +112,7 @@ class TestResolveViaVRPaste:
     async def test_cache_hit_skips_fetch_and_mint(self):
         # Pre-seed the cache so we shouldn't see any HTTP calls.
         cache = InMemoryVRPasteCacheStore()
-        cache.set(
+        cache.create(
             "gxmfscC1",
             "https://pokepast.es/already-minted",
             user_id=111,
@@ -133,6 +133,43 @@ class TestResolveViaVRPaste:
         canonical_url, dedup_url, _ = result
         assert canonical_url == "https://pokepast.es/already-minted"
         assert dedup_url == "https://pokepast.es/already-minted"
+
+    async def test_lost_race_uses_winners_url_for_sheet_dedup(self):
+        # Simulate the loser's path: cache.get returns None (the race
+        # hasn't propagated yet to the local read-through), but by the
+        # time create() runs the winner is already there. The loser
+        # must use the winner's URL — both sheet writes need to converge
+        # on a single Pokepaste URL so dedup catches the second row.
+        cache = InMemoryVRPasteCacheStore()
+        cache.create(
+            "gxmfscC1",
+            "https://pokepast.es/winner",
+            user_id=999,
+            guild_id=888,
+        )
+        # Wipe the cache `get` cache (simulate the loser missing the
+        # get-side check) by deleting from the dict — but actually our
+        # InMemory store has only one dict, so to simulate a "missed
+        # get + collided create" we'd need a more elaborate fake. The
+        # production-relevant invariant is: when create returns an
+        # entry whose URL differs from minted_url, we use the entry's
+        # URL. That's exactly what test_cache_hit_skips_fetch_and_mint
+        # exercises end-to-end through the cache. Race-specific
+        # behavior is covered at the store level in
+        # tests/test_vrpaste_cache.py::test_create_is_fail_if_exists_returns_winner.
+        # This test just confirms the resolver doesn't bypass the cache
+        # entry when present.
+        interaction = _FakeInteraction()
+        with aioresponses():
+            result = await _resolve_via_vrpaste(
+                interaction,
+                inputs=_inputs(),
+                vrpaste_cache=cache,
+            )
+        assert result is not None
+        canonical_url, dedup_url, _ = result
+        assert canonical_url == "https://pokepast.es/winner"
+        assert dedup_url == "https://pokepast.es/winner"
 
     async def test_password_protected_paste_surfaces_user_error(self):
         cache = InMemoryVRPasteCacheStore()

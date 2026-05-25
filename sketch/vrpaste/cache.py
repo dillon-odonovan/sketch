@@ -7,11 +7,21 @@ sheet-level dedup: without this cache, every submission would mint a
 fresh pokepast.es URL, so two submissions of the same VRPaste would
 land on different sheet rows.
 
-Simpler than `sketch.champions.replica_cache` on purpose — only one
-stored field (the Pokepaste URL) and no partial-cache-hit retry. If a
-mint failed, the user reruns and we hit pokepast.es again; there's no
-intermediate state to preserve like the OCR + confirm + render the
-Champions flow accumulates before the mint.
+Writes go through `create()` — the transactional fail-if-exists
+primitive — so two guilds (or two users in the same guild) racing on
+the same VRPaste converge on a single Pokepaste URL. Both submissions
+may mint distinct pokepast.es URLs locally; whichever lands first
+wins the cache slot, and the loser reads the winner's URL out and
+uses it. The loser's minted URL becomes a harmless orphan paste on
+pokepast.es — but the sheet sees one URL, so dedup catches the
+second row.
+
+Simpler than `sketch.champions.replica_cache` even with the race
+semantics: only one stored field (the Pokepaste URL), no
+partial-cache-hit retry, no `set_url`. If a mint failed, the user
+reruns and we hit pokepast.es again; there's no intermediate state to
+preserve like the OCR + confirm + render the Champions flow
+accumulates before the mint.
 
 Backed by a top-level Firestore collection (one doc per VRPaste id,
 doc_id = the id verbatim — id case is preserved so two ids that
@@ -26,6 +36,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
 
+from google.api_core import exceptions as gax_exceptions
 from google.cloud import firestore
 
 from sketch import config
@@ -55,15 +66,17 @@ class VRPasteCacheEntry:
 
 
 class VRPasteCacheStore(Protocol):
-    """`get` returns None for unknown ids. `set` writes-or-overwrites
-    the mapping (idempotent; later mints settle on the last value,
-    which is harmless since both URLs point at valid pastes of the
-    same team).
+    """`get` returns None for unknown ids. `create` is fail-if-exists
+    and returns the canonical entry — the winner's value on race, the
+    new value when there's no race. Callers should always use the
+    returned entry's `pokepaste_url` rather than the URL they passed
+    in: on a lost race that's the winner's URL, which is what the
+    sheet write needs to converge on for dedup.
     """
 
     def get(self, vrpaste_id: str) -> VRPasteCacheEntry | None: ...
 
-    def set(
+    def create(
         self,
         vrpaste_id: str,
         pokepaste_url: str,
@@ -82,7 +95,7 @@ class InMemoryVRPasteCacheStore:
     def get(self, vrpaste_id: str) -> VRPasteCacheEntry | None:
         return self._mapping.get(vrpaste_id)
 
-    def set(
+    def create(
         self,
         vrpaste_id: str,
         pokepaste_url: str,
@@ -90,6 +103,9 @@ class InMemoryVRPasteCacheStore:
         user_id: int,
         guild_id: int,
     ) -> VRPasteCacheEntry:
+        existing = self._mapping.get(vrpaste_id)
+        if existing is not None:
+            return existing
         entry = VRPasteCacheEntry(
             pokepaste_url=pokepaste_url,
             created_at=datetime.now(timezone.utc),
@@ -127,7 +143,7 @@ class FirestoreVRPasteCacheStore:
             self._cache[vrpaste_id] = entry
         return entry
 
-    def set(
+    def create(
         self,
         vrpaste_id: str,
         pokepaste_url: str,
@@ -141,10 +157,29 @@ class FirestoreVRPasteCacheStore:
             created_by_user_id=user_id,
             created_by_guild_id=guild_id,
         )
-        # Use set() (not create()) — re-mints on race or after a mint
-        # failure both want last-write-wins semantics here, since both
-        # URLs point at valid pastes of the same team.
-        self._doc(vrpaste_id).set(_serialize(entry))
+        try:
+            self._doc(vrpaste_id).create(_serialize(entry))
+        except gax_exceptions.AlreadyExists:
+            # Lost the race against another concurrent submission. The
+            # winning entry is now in Firestore; re-read it and let the
+            # caller use that URL so the sheet writes converge on a
+            # single Pokepaste URL. Our minted URL is wasted but harmless
+            # (it's a valid paste of the same team) and only happens
+            # when two users hit the same VRPaste in the same instant.
+            existing = self.get(vrpaste_id)
+            if existing is None:
+                # AlreadyExists raised but the doc isn't readable — would
+                # require an external delete between create and get.
+                # Surface as transient and let the user retry.
+                logger.warning(
+                    "Firestore create raised AlreadyExists for vrpaste id=%s "
+                    "but the doc isn't readable; surfacing as transient error",
+                    vrpaste_id,
+                )
+                raise
+            return existing
+        # We won the race. Warm the local cache so the immediate next
+        # get() doesn't round-trip just to confirm what we just wrote.
         self._cache[vrpaste_id] = entry
         return entry
 

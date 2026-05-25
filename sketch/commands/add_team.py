@@ -293,36 +293,58 @@ async def _resolve_via_vrpaste(
         await _edit_status(interaction, str(exc))
         return None
 
-    # Best-effort cache write: a failed cache set after a successful
-    # mint just means the next submission of the same VRPaste re-mints
-    # (harmless — both URLs point at valid pastes of the same team —
-    # but worth a WARN to spot persistent cache outages).
+    # Race-safe cache write: `create` is fail-if-exists. If two
+    # submissions of the same VRPaste both make it past the cache.get
+    # check above (they minted in parallel), only the first create
+    # wins. The loser gets back the winner's entry and uses the
+    # winner's URL — so both sheet writes converge on a single
+    # Pokepaste URL and dedup catches the second row. The loser's
+    # minted paste becomes a harmless orphan on pokepast.es.
+    guild_id_for_audit = (
+        interaction.guild_id
+        if interaction.guild_id is not None
+        else interaction.user.id
+    )
     try:
-        await asyncio.to_thread(
-            vrpaste_cache.set,
+        entry = await asyncio.to_thread(
+            vrpaste_cache.create,
             vrpaste_id,
             minted_url,
             user_id=interaction.user.id,
-            guild_id=(
-                interaction.guild_id
-                if interaction.guild_id is not None
-                else interaction.user.id
-            ),
+            guild_id=guild_id_for_audit,
         )
     except Exception:
+        # Cache write failed entirely (transport error, etc.). Fall
+        # back to our minted URL — we'd rather write a (potentially
+        # duplicate) row than fail the whole command after a successful
+        # mint. The next submission for this id re-mints; persistent
+        # outages surface in the warning log.
         logger.warning(
-            "Failed to cache VRPaste id=%s -> %s; will re-mint on next submission",
+            "VRPaste cache create failed for id=%s -> %s; using minted URL "
+            "without dedup convergence",
             vrpaste_id,
             minted_url,
             exc_info=True,
         )
+        canonical_url = minted_url
+    else:
+        canonical_url = entry.pokepaste_url
+        if canonical_url != minted_url:
+            logger.info(
+                "add-team VRPaste id=%s lost race; using winner's URL %s "
+                "(local mint %s orphaned on pokepast.es)",
+                vrpaste_id,
+                canonical_url,
+                minted_url,
+            )
+        else:
+            logger.info(
+                "add-team VRPaste id=%s minted -> %s",
+                vrpaste_id,
+                minted_url,
+            )
 
-    logger.info(
-        "add-team VRPaste id=%s minted -> %s",
-        vrpaste_id,
-        minted_url,
-    )
-    return minted_url, minted_url, False
+    return canonical_url, canonical_url, False
 
 
 async def _resolve_via_ocr(
