@@ -242,9 +242,14 @@ class ReplicaPreviewView(discord.ui.View):
         applies the change, but Confirm is still required to upload
         it. (This matches the mental model new users bring: Submit
         means "save changes," Confirm means "publish.")
+
+        Re-enables Confirm in case a previous failed-edit attempt had
+        disabled it; the user's edit now applies cleanly and the
+        preview embed is a truthful view of what Confirm will upload.
         """
         self.team = new_team
         self._pending_edit_text = None
+        self.confirm.disabled = False
         await modal_interaction.response.edit_message(
             embed=self.render_embed(),
             view=self,
@@ -256,21 +261,36 @@ class ReplicaPreviewView(discord.ui.View):
         error_message: str,
         modal_interaction: discord.Interaction,
     ) -> None:
-        """Notify the user a failed edit via ephemeral message.
+        """Disable Confirm, stash the failed text, notify the user.
 
-        Stashes the user's failed text so the next Edit click pre-fills
-        with it (Discord won't let us reopen the modal directly from a
-        modal-submit interaction). The preview embed is NOT touched —
-        the edit didn't apply, so the embed still reflects the current
-        team accurately. The error goes out as a small ephemeral
-        followup; the user can read it, dismiss it, and click Edit
-        again to retry.
+        The footgun this guards against: user makes an edit, the edit
+        fails to parse, the preview embed stays as the unedited OCR
+        team (because the edit didn't apply). If Confirm stayed live,
+        the user might click it thinking it commits their edit — and
+        instead it silently commits the unedited team. Disabling
+        Confirm forces the user to either fix the edit or explicitly
+        bail out via Cancel + re-run.
+
+        The user's text is stashed so the next Edit click pre-fills
+        with it; the preview embed is NOT changed (the edit didn't
+        apply, so the embed still reflects the current team
+        accurately — invariant: "preview shows what Confirm uploads"
+        survives even in this state because Confirm is disabled).
         """
         self._pending_edit_text = submitted_text
-        await modal_interaction.response.send_message(
+        self.confirm.disabled = True
+        # Push the disabled-Confirm state via the modal-submit response,
+        # then deliver the error as a followup ephemeral. Discord
+        # allows one interaction response per interaction; followups
+        # come after.
+        await modal_interaction.response.edit_message(view=self)
+        await modal_interaction.followup.send(
             content=(
                 f"⚠️ **Couldn't parse your edited team:** {error_message}\n"
-                "Click **Edit** to retry — your text is preserved."
+                "Click **Edit** to retry — your text is preserved.\n"
+                "_Confirm is disabled until your edit applies. To upload "
+                "the original team instead, click **Cancel** and re-run "
+                "`/add-team` without using Edit._"
             ),
             ephemeral=True,
         )

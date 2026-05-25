@@ -64,11 +64,10 @@ class _FakeResponse:
 
     `defer()` and `send_message()` are exercised by the View buttons
     (Confirm / Cancel defer; the invoker gate uses send_message).
-    `send_modal()` is exercised by the Edit button. `edit_message()` is
-    exercised by the modal's failure path — Discord forbids
-    `send_modal` in response to a modal submit, so on parse failure
-    the View edits the original preview message with an error prefix
-    instead. We record what gets called so each test can assert the
+    `send_modal()` is exercised by the Edit button. `edit_message()`
+    is exercised by both the Edit success path (re-render with the
+    edited team) and the Edit failure path (push the disabled-Confirm
+    state). We record what gets called so each test can assert the
     right code path fired.
     """
 
@@ -88,6 +87,23 @@ class _FakeResponse:
 
     async def edit_message(self, **kwargs: Any) -> None:
         self.edit_message_calls.append(kwargs)
+
+
+@dataclass
+class _FakeFollowup:
+    """Minimal Interaction.followup stub.
+
+    Used by the Edit failure path: after the modal-submit `response`
+    edits the preview (to push the disabled-Confirm state), the
+    parser error goes out as a `followup.send(ephemeral=True, ...)`
+    so the user gets a visible notification without taking another
+    interaction slot on the parent message.
+    """
+
+    send_calls: list[dict] = field(default_factory=list)
+
+    async def send(self, content: str | None = None, **kwargs: Any) -> None:
+        self.send_calls.append({"content": content, **kwargs})
 
 
 def _make_view(
@@ -116,6 +132,7 @@ def _make_view(
 class _FakeInteraction:
     user: _FakeUser
     response: _FakeResponse = field(default_factory=_FakeResponse)
+    followup: _FakeFollowup = field(default_factory=_FakeFollowup)
 
 
 class TestTeamToEmbed:
@@ -270,15 +287,19 @@ class TestReplicaPreviewView:
         # for new users.
         view = _make_view(invoker_id=42)
         view._pending_edit_text = "stale attempt"
+        # Simulate the failure-state having disabled Confirm; the
+        # success path must clear that disable.
+        view.confirm.disabled = True
         edited = TeamData(
             pokemon=[_entry("Urshifu-Rapid-Strike")] + view.team.pokemon[1:],
             team_id=view.team.team_id,
         )
         modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
         await view._apply_edited_team(edited, modal_interaction)
-        # Team replaced, pending cleared.
+        # Team replaced, pending cleared, Confirm re-enabled.
         assert view.team is edited
         assert view._pending_edit_text is None
+        assert view.confirm.disabled is False
         # Crucially: NOT committed. Confirm still required.
         assert view.decision is None
         assert not view.is_finished()
@@ -312,42 +333,62 @@ class TestReplicaPreviewView:
         assert view.is_finished()
         assert view.team.pokemon[0].species == "Urshifu-Rapid-Strike"
 
-    async def test_surface_edit_failure_sends_ephemeral_leaves_preview_alone(self):
+    async def test_surface_edit_failure_disables_confirm_and_stashes_text(self):
         # `_surface_edit_failure` is the modal -> view failure callback.
-        # The edit didn't apply (the text didn't parse), so the preview
-        # embed should stay unchanged — the invariant is "the embed
-        # shows what Confirm will upload." The error goes out as an
-        # ephemeral followup so the user sees it without polluting the
-        # preview message.
+        # The footgun it guards: edit fails, preview still shows
+        # original team, user clicks Confirm thinking it commits their
+        # edit — but it commits the original. Disabling Confirm makes
+        # that path inaccessible until the user resolves the failed
+        # edit (either by retrying successfully or cancelling).
         view = _make_view(invoker_id=42)
         original_team = view.team
+        assert view.confirm.disabled is False  # baseline
         submitted = "deliberately broken paste"
         modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
         await view._surface_edit_failure(
             submitted, "Expected 6 Pokemon, got 5.", modal_interaction
         )
-        # No new modal opened (the HTTP 400 bug we already fixed).
-        assert modal_interaction.response.send_modal_calls == []
-        # Preview embed NOT touched — edit didn't apply.
-        assert modal_interaction.response.edit_message_calls == []
-        # View state preserved: team unchanged, decision pending.
+        # View state preserved EXCEPT for the Confirm disable + stashed text.
         assert view.team is original_team
         assert view.decision is None
         assert not view.is_finished()
-        # Confirm button still labelled "Confirm" — no relabel needed
-        # because Confirm always means "commit what the preview shows,"
-        # and the preview still shows the original team.
-        assert view.confirm.label == "Confirm"
-        # User got an ephemeral notification with the error and the
-        # hint that their text is preserved.
-        assert len(modal_interaction.response.send_message_calls) == 1
-        msg = modal_interaction.response.send_message_calls[0]
-        assert msg["ephemeral"] is True
-        assert "Couldn't parse" in msg["content"]
-        assert "Expected 6 Pokemon, got 5." in msg["content"]
-        assert "your text is preserved" in msg["content"]
-        # Failed text is stashed for the next Edit prefill.
         assert view._pending_edit_text == submitted
+        # The Confirm-disable guard.
+        assert view.confirm.disabled is True
+        # No new modal opened (the HTTP 400 bug we already fixed).
+        assert modal_interaction.response.send_modal_calls == []
+
+    async def test_surface_edit_failure_pushes_disabled_state_and_followup_error(self):
+        # The disabled-Confirm state is pushed to the message via
+        # `response.edit_message(view=self)` so the user actually sees
+        # the grayed-out button. The parser error then goes out as a
+        # `followup.send(ephemeral=True, ...)` — a separate ephemeral
+        # message the user can read and dismiss.
+        view = _make_view(invoker_id=42)
+        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view._surface_edit_failure(
+            "broken", "Expected 6 Pokemon, got 5.", modal_interaction
+        )
+        # Modal response was edit_message with the updated view (which
+        # carries the disabled Confirm). Content / embed not touched —
+        # the preview still shows the original team, which Confirm
+        # can no longer commit anyway.
+        assert len(modal_interaction.response.edit_message_calls) == 1
+        edit_call = modal_interaction.response.edit_message_calls[0]
+        assert edit_call["view"] is view
+        assert "content" not in edit_call
+        assert "embed" not in edit_call
+        # Error delivered via followup (so it appears as a separate
+        # message bubble for the user). The footgun-escape hint is
+        # included so users who actually want the original have a path.
+        assert len(modal_interaction.followup.send_calls) == 1
+        followup = modal_interaction.followup.send_calls[0]
+        assert followup["ephemeral"] is True
+        assert "Couldn't parse" in followup["content"]
+        assert "Expected 6 Pokemon, got 5." in followup["content"]
+        assert "your text is preserved" in followup["content"]
+        assert "Cancel" in followup["content"]
+        assert "re-run" in followup["content"]
 
     async def test_edit_button_uses_pending_text_after_failure(self):
         # After a failed edit, the next Edit click pre-fills the modal
