@@ -27,3 +27,8 @@ output "discord_token_secret" {
   description = "Resource name of the Discord token secret. Add the token value with: gcloud secrets versions add <name> --data-file=-"
   value       = google_secret_manager_secret.discord_token.id
 }
+
+output "anthropic_api_key_secret" {
+  description = "Resource name of the Anthropic API key secret. Add the key value with: gcloud secrets versions add <name> --data-file=-"
+  value       = google_secret_manager_secret.anthropic_api_key.id
+}

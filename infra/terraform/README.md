@@ -1,6 +1,6 @@
 # Sketch — Infrastructure (Terraform)
 
-All GCP resources for Sketch live here. A single `terraform apply` provisions the GCE VM, the runtime and deployer service accounts, the Discord-token secret slot, the Firestore database that holds per-guild config, the Artifact Registry repository with its cleanup policy, the IAP-only SSH firewall rule, and the Workload Identity Federation pool that GitHub Actions uses to authenticate.
+All GCP resources for Sketch live here. A single `terraform apply` provisions the GCE VM, the runtime and deployer service accounts, the Discord-token and Anthropic-API-key secret slots, the Firestore database that holds per-guild config, the Artifact Registry repository with its cleanup policy, the IAP-only SSH firewall rule, and the Workload Identity Federation pool that GitHub Actions uses to authenticate.
 
 State is stored in a GCS bucket in the same project — there is no third-party SaaS dependency.
 
@@ -12,6 +12,7 @@ State is stored in a GCS bucket in the same project — there is no third-party 
 - Application-Default Credentials set up for Terraform: `gcloud auth application-default login`.
 - A target Google Sheet that the bot will write to.
 - A Discord bot token (Developer Portal → your app → Bot → Reset Token).
+- An Anthropic API key for the `/add-team` OCR pipeline (Console → API Keys).
 
 ## Bootstrap (one-time per project)
 
@@ -63,12 +64,13 @@ terraform apply
 
 On the first apply you may need to re-run if API enablement is slow to propagate (Google occasionally returns `accessNotConfigured` briefly even after `google_project_service` succeeds).
 
-### 5. Drop the Discord token into Secret Manager
+### 5. Drop the secrets into Secret Manager
 
-The secret slot is Terraform-managed; its **value** is supplied out-of-band so the token never enters Terraform state.
+The secret slots are Terraform-managed; their **values** are supplied out-of-band so neither ever enters Terraform state. The container will crash-loop until both versions exist.
 
 ```bash
-echo -n 'YOUR_BOT_TOKEN' | gcloud secrets versions add sketch-discord-token --data-file=-
+echo -n 'YOUR_BOT_TOKEN'      | gcloud secrets versions add sketch-discord-token     --data-file=-
+echo -n 'YOUR_ANTHROPIC_KEY'  | gcloud secrets versions add sketch-anthropic-api-key --data-file=-
 ```
 
 ### 6. Seed Firestore with the first guild(s)
@@ -179,11 +181,13 @@ alias gcssh='gcloud compute ssh --tunnel-through-iap'
 
 Then `gcssh sketch --zone=us-west1-a` works as a drop-in for the public-internet version.
 
-### Rotating the Discord token
+### Rotating a secret (Discord token or Anthropic API key)
 
 ```bash
-echo -n 'NEW_TOKEN' | gcloud secrets versions add sketch-discord-token --data-file=-
-gcloud secrets versions disable OLD_VERSION --secret=sketch-discord-token
+# Pick the secret name: sketch-discord-token  OR  sketch-anthropic-api-key
+SECRET=sketch-discord-token
+echo -n 'NEW_VALUE' | gcloud secrets versions add "$SECRET" --data-file=-
+gcloud secrets versions disable OLD_VERSION --secret="$SECRET"
 gcloud compute ssh sketch --tunnel-through-iap --zone=us-west1-a \
   --command="sudo systemctl restart sketch"
 ```
@@ -222,7 +226,8 @@ gcloud compute ssh sketch --tunnel-through-iap --zone=us-west1-a \
 | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `terraform apply` fails with `accessNotConfigured`                                | API enablement hasn't propagated yet                                                        | Wait ~30 seconds and re-run                                                                                      |
 | `docker pull` fails with `denied: Unauthenticated`                                | VM SA missing `artifactregistry.reader` on the repo                                         | Check `google_artifact_registry_repository_iam_member.vm_reader` exists; re-apply                                |
-| Bot fails at startup with `PERMISSION_DENIED` on `accessSecretVersion`            | VM SA missing `secretmanager.secretAccessor` on the secret                                  | Check `google_secret_manager_secret_iam_member.vm_token_access` exists; re-apply                                 |
+| Bot fails at startup with `PERMISSION_DENIED` on `accessSecretVersion`            | VM SA missing `secretmanager.secretAccessor` on the secret                                  | Check `google_secret_manager_secret_iam_member.vm_token_access` and `…vm_anthropic_api_key_access` exist; re-apply |
+| Bot fails at startup with `FailedPrecondition: secret has no versions`            | Created the secret slot via `terraform apply` but never added a version                     | Run the `gcloud secrets versions add` commands from §5 for whichever secret is missing                           |
 | Sheets API returns `ACCESS_TOKEN_SCOPE_INSUFFICIENT`                              | VM created without the `spreadsheets` scope alongside `cloud-platform`                      | The Terraform sets both; if the VM pre-dates Terraform, recreate it (or `set-service-account` with both scopes)  |
 | `discord.errors.LoginFailure: Improper token has been passed`                     | Wrong secret content (e.g., Client Secret instead of Bot Token)                             | Add a new version of `sketch-discord-token` with the real bot token; restart                                     |
 | `403 Missing Access` on `tree.sync`                                               | `dev_guild_id` points at a guild the bot isn't installed in                                 | Fix `terraform.tfvars`, re-apply, reboot the VM                                                                  |
