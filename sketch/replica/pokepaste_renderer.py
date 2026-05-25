@@ -58,6 +58,15 @@ _STAT_DISPLAY = {
 _POKEPASTE_CREATE_URL = "https://pokepast.es/create"
 _POKEPASTE_HOST = "https://pokepast.es"
 
+# CRLF line endings throughout the rendered paste. Pokemon Showdown's
+# clipboard export uses CRLF (authored for Windows clipboard interchange),
+# and pokepast.es's parser splits Pokemon blocks on `\r\n\r\n` specifically
+# — emitting plain LF produces a paste that pokepast.es treats as one
+# giant single-Pokemon entry instead of six separate ones. The in-sheet
+# TEAMDATAFROMPASTE AppsScript fetches the same canonical raw text from
+# pokepast.es, so CRLF round-trips through both renderers without surprise.
+_LINE_END = "\r\n"
+
 
 def _render_mon(p: PokemonEntry) -> str:
     """Render one Pokemon as a Showdown-export block.
@@ -94,17 +103,17 @@ def _render_mon(p: PokemonEntry) -> str:
     for move in p.moves:
         lines.append(f"- {move}")
 
-    return "\n".join(lines)
+    return _LINE_END.join(lines)
 
 
 def render_showdown(team: TeamData) -> str:
     """Render the full team as one PokePaste-compatible string.
 
-    Each Pokemon block is separated by a blank line. No trailing newline —
-    matching how Showdown's clipboard export and pokepast.es's display
-    treat the format.
+    Each Pokemon block is separated by a blank line. CRLF line endings
+    are required by pokepast.es's block-splitter — see `_LINE_END`. No
+    trailing newline, matching Showdown's clipboard export shape.
     """
-    return "\n\n".join(_render_mon(p) for p in team.pokemon)
+    return (_LINE_END * 2).join(_render_mon(p) for p in team.pokemon)
 
 
 async def post_to_pokepaste(paste_text: str, title: str) -> str:

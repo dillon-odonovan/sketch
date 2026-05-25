@@ -159,8 +159,13 @@ class TestTeamToEmbed:
         )
         embed = team_to_embed(team, code="X" * 10, description="d", fmt_name="Reg M-A")
         # The species line in the rendered paste should be just "Klefki".
-        # Asserts on the description body containing that exact line.
-        assert "\nKlefki\n" in embed.description or "```\nKlefki\n" in embed.description
+        # The rendered paste uses CRLF line endings (required by
+        # pokepast.es' block-splitter — see _LINE_END in
+        # pokepaste_renderer) while the surrounding embed code fence
+        # uses LF, so the assertion targets the species line bounded by
+        # the code fence on the LF side and the next CRLF-terminated
+        # line on the other.
+        assert "```\nKlefki\r\n" in embed.description
 
 
 class TestReplicaPreviewView:

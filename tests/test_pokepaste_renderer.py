@@ -48,10 +48,12 @@ def _entry(
 
 class TestRenderShowdown:
     def test_floette_matches_reference_block(self):
-        # Golden against the first block of wyatt_team.pokepaste.txt — the
-        # canonical shape the AppsScript parses against.
+        # Golden against the canonical Showdown-export shape. CRLF line
+        # endings are load-bearing — pokepast.es's block-splitter only
+        # recognizes `\r\n\r\n` as the Pokemon separator (Showdown's
+        # clipboard export uses CRLF, and pokepast.es matches that).
         team = TeamData(pokemon=[_entry()])
-        expected = "\n".join(
+        expected = "\r\n".join(
             [
                 "Floette-Eternal (F) @ Floettite",
                 "Ability: Flower Veil",
@@ -140,10 +142,14 @@ class TestRenderShowdown:
         rendered = render_showdown(team)
         assert "IVs:" not in rendered
 
-    def test_six_mons_separated_by_blank_lines(self):
+    def test_six_mons_separated_by_crlf_blank_lines(self):
+        # The Pokemon separator is `\r\n\r\n` (CRLF blank line), not
+        # `\n\n`. pokepast.es's block-splitter requires CRLF to identify
+        # Pokemon boundaries; emitting LF only collapses the whole
+        # paste into one big block on render.
         team = TeamData(pokemon=[_entry() for _ in range(6)])
         rendered = render_showdown(team)
-        blocks = rendered.split("\n\n")
+        blocks = rendered.split("\r\n\r\n")
         assert len(blocks) == 6
 
     def test_no_trailing_newline(self):
