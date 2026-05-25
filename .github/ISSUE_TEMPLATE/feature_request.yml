@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a new capability or enhancement.
+title: "<short summary of the feature>"
+labels: ["type:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep this product/requirement focused. Describe **what** should change
+        from a user's perspective; implementation details get decided when the
+        work is picked up.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What problem, gap, or opportunity does this address? Focus on the user/product outcome, not the code.
+      placeholder: |
+        Today, `/search-teams` can't filter by replica code, so users with the code in hand have to fall back to browsing the sheet.
+    validations:
+      required: true
+  - type: textarea
+    id: desired_behavior
+    attributes:
+      label: Desired behavior
+      description: What should the bot do from a Discord user's perspective? Example commands and expected output are great here.
+      placeholder: |
+        `/search-teams replica:QBXXWXL05U` returns the single team matching that replica code, combinable with existing filters.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance signal
+      description: How will we know this is done? Concrete examples, edge cases, or success criteria.
+      placeholder: |
+        - Replica match is case-insensitive.
+        - When no row matches in this guild but the global cache knows the code, the bot surfaces a hint.
+    validations:
+      required: false
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal (optional)
+      description: If you already have a solution sketch, drop it here. Otherwise leave blank — implementation gets decided at plan time.
+    validations:
+      required: false
+  - type: input
+    id: related
+    attributes:
+      label: Related
+      description: Linked PRs, issues, or prior discussion.
+      placeholder: "#19, #22"
+    validations:
+      required: false
