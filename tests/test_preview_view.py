@@ -286,13 +286,22 @@ class TestReplicaPreviewView:
         assert modal_interaction.response.defer_calls == 1
         assert view.is_finished()
 
-    async def test_surface_edit_failure_recolors_embed_and_stashes_text(self):
+    async def test_surface_edit_failure_promotes_error_and_renames_confirm(self):
         # `_surface_edit_failure` is the modal -> view failure callback.
         # Discord forbids calling send_modal from a modal-submit
-        # interaction (HTTP 400), so the View edits the embed in place:
-        # color flipped to red, footer text replaced with the error.
-        # The error sits right above the buttons so the user doesn't
-        # have to scroll up to see what went wrong.
+        # interaction (HTTP 400), so the View edits the embed in place
+        # and stashes the failed text.
+        #
+        # The visual treatment matters: error in the embed *title*
+        # (largest text, top of embed) plus an explanation field at
+        # the bottom (right above the buttons), and the embed color
+        # flips to red. Footer is misleading in this state and gets
+        # cleared.
+        #
+        # The Confirm button is renamed to "Use original" because in
+        # the failed-edit state it commits the UNEDITED OCR team, not
+        # the user's failed attempt — and "Confirm" is a footgun
+        # label for that action.
         view = _make_view(invoker_id=42)
         submitted = "deliberately broken paste"
         modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
@@ -307,14 +316,26 @@ class TestReplicaPreviewView:
         # Content is unchanged — error lives on the embed where the
         # user is already looking (next to the buttons).
         assert "content" not in call
-        # The embed is the error variant: red color + footer carrying
-        # the parser error. The base embed (still on the view) is
-        # untouched so a later success path can revert cleanly.
+        # Embed is the error variant; the base embed on the view is
+        # untouched so we could revert if needed.
         error_embed = call["embed"]
         assert error_embed is not view._preview_embed
         assert error_embed.color == discord.Color.red()
-        assert "Expected 6 Pokemon, got 5." in error_embed.footer.text
-        assert "Edit to retry" in error_embed.footer.text
+        # Error in the title — prominent placement, user can't miss.
+        assert "Couldn't parse" in error_embed.title
+        assert "Expected 6 Pokemon, got 5." in error_embed.title
+        # Bottom field explains what each button does in this state.
+        assert len(error_embed.fields) == 1
+        field = error_embed.fields[0]
+        assert "What now?" in field.name
+        assert "Use original" in field.value
+        assert "your text is preserved" in field.value
+        # The misleading original footer (which talked about Confirm)
+        # is gone.
+        assert error_embed.footer.text is None
+        # Confirm button renamed for literalness — clicking it commits
+        # the original team, not the failed edit.
+        assert view.confirm.label == "Use original"
         # The view is re-attached so the buttons stay live.
         assert call["view"] is view
         # Failed text is stashed for the next Edit prefill.
@@ -322,6 +343,19 @@ class TestReplicaPreviewView:
         # Decision is still pending; the view hasn't stopped.
         assert view.decision is None
         assert not view.is_finished()
+
+    async def test_surface_edit_failure_truncates_long_error_in_title(self):
+        # Embed title caps at 256 chars. A parser error that quotes a
+        # very long offending input could blow past that — title
+        # gets truncated with an ellipsis so the edit_message call
+        # doesn't hit a 400 from Discord.
+        view = _make_view(invoker_id=42)
+        long_error = "x" * 500
+        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        await view._surface_edit_failure("paste", long_error, modal_interaction)
+        error_embed = modal_interaction.response.edit_message_calls[0]["embed"]
+        assert len(error_embed.title) <= 256
+        assert error_embed.title.endswith("…")
 
     async def test_edit_button_uses_pending_text_after_failure(self):
         # After a failed edit, the next Edit click pre-fills the modal

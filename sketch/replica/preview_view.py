@@ -237,27 +237,59 @@ class ReplicaPreviewView(discord.ui.View):
         error_message: str,
         modal_interaction: discord.Interaction,
     ) -> None:
-        """Report a parse failure by recoloring the embed and stashing text.
+        """Report a parse failure prominently and disambiguate Confirm.
 
         Stashes the user's failed text so the next Edit click pre-fills
         with it (Discord won't let us reopen the modal directly from a
         modal-submit interaction — only command / component / autocomplete
         responses can `send_modal`).
 
-        The error lives on the embed (color flipped to red, footer text
-        replaced with the parser error) rather than as a content prefix.
-        The embed sits directly above the action buttons, so the user
-        sees the error in their natural reading path; a content prefix
-        would push the user's attention up and off-screen when the
-        embed is tall (a 6-mon paste plus header + description gets
-        close to the preview's vertical budget on mobile).
+        Two UX moves that turn out to matter, both based on real-world
+        user testing:
+
+        1. The error needs to be IMPOSSIBLE to miss. Footer text is too
+           small; content prefixes scroll off-screen when the embed is
+           tall. The error goes into the embed *title* (largest text)
+           plus a *field* at the bottom of the description (right above
+           the buttons), and the embed color flips to red.
+        2. The Confirm button's label changes to "Use original". The
+           original button name is a footgun in the failed-edit state:
+           it does NOT commit the user's edit (the edit doesn't parse),
+           it commits the unedited OCR team. Renaming makes the action
+           literal so the user can't be surprised by the result.
+
+        Both changes are durable for the rest of the failed-edit state.
+        If the user later edits successfully or cancels, the view stops
+        before any of this matters.
         """
         self._pending_edit_text = submitted_text
+
         error_embed = self._preview_embed.copy()
         error_embed.color = discord.Color.red()
-        error_embed.set_footer(
-            text=f"⚠️ {error_message}  •  Click Edit to retry — your text is preserved."
+        # Title caps at 256 chars. Parser errors are typically <100, but
+        # a misformatted species line can quote the offending input and
+        # blow past that — truncate defensively.
+        title_text = f"⚠️ Couldn't parse — {error_message}"
+        if len(title_text) > 256:
+            title_text = title_text[:253] + "…"
+        error_embed.title = title_text
+        error_embed.add_field(
+            name="What now?",
+            value=(
+                "• **Edit** — retry (your text is preserved)\n"
+                "• **Use original** — upload the team above as-is "
+                "(your edit attempt is discarded)\n"
+                "• **Cancel** — discard everything"
+            ),
+            inline=False,
         )
+        # Original footer ("Confirm uploads to pokepast.es...") is
+        # misleading once Confirm is relabeled. The new field carries
+        # the accurate button explanations.
+        error_embed.remove_footer()
+
+        self.confirm.label = "Use original"
+
         await modal_interaction.response.edit_message(
             embed=error_embed,
             view=self,
