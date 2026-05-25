@@ -69,7 +69,7 @@ def register(
         url: str | None = None,
     ) -> None:
         trace_id_var.set(str(interaction.id))
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=True, ephemeral=True)
 
         sheets = await _resolve_guild_sheets(interaction, registry)
         if sheets is None:
@@ -85,7 +85,7 @@ def register(
             try:
                 url_target = canonicalize_pokepaste_url(url_raw)
             except ValidationError as e:
-                await interaction.followup.send(str(e))
+                await interaction.followup.send(str(e), ephemeral=True)
                 return
         logger.info(
             "search-teams invoked by user_id=%s guild_id=%s: format=%s "
@@ -100,7 +100,8 @@ def register(
 
         if not queries and not description_query and url_target is None:
             await interaction.followup.send(
-                "Provide at least one of `mon1`..`mon6`, `description`, or `url`."
+                "Provide at least one of `mon1`..`mon6`, `description`, or `url`.",
+                ephemeral=True,
             )
             return
 
@@ -109,7 +110,9 @@ def register(
                 dex = await sheets.get_dex()
             except Exception:
                 logger.exception("Failed to load DEX")
-                await interaction.followup.send(GENERIC_SHEET_READ_ERROR)
+                await interaction.followup.send(
+                    GENERIC_SHEET_READ_ERROR, ephemeral=True
+                )
                 return
 
         resolved_groups: list[list[str]] = []
@@ -122,7 +125,8 @@ def register(
                     else ""
                 )
                 await interaction.followup.send(
-                    f"Couldn't find Pokémon `{q}` in the DEX.{hint}"
+                    f"Couldn't find Pokémon `{q}` in the DEX.{hint}",
+                    ephemeral=True,
                 )
                 return
             resolved_groups.append(r.canonical_matches)
@@ -131,7 +135,7 @@ def register(
             snapshot = await sheets.get_search_snapshot(sheet_name)
         except Exception:
             logger.exception("Failed to read sheet")
-            await interaction.followup.send(GENERIC_SHEET_READ_ERROR)
+            await interaction.followup.send(GENERIC_SHEET_READ_ERROR, ephemeral=True)
             return
 
         # `desc_index.match` returns positional indices into `snapshot.rows`,
@@ -157,7 +161,8 @@ def register(
         query_label = " + ".join(label_parts)
         if not matches:
             await interaction.followup.send(
-                f"No teams found in *{fmt_name}* matching *{query_label}*."
+                f"No teams found in *{fmt_name}* matching *{query_label}*.",
+                ephemeral=True,
             )
             return
 
@@ -176,4 +181,4 @@ def register(
         if len(matches) > config.SEARCH_RESULT_LIMIT:
             remaining = len(matches) - config.SEARCH_RESULT_LIMIT
             embed.set_footer(text=f"+{remaining} more — narrow your search.")
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
