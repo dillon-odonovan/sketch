@@ -55,8 +55,8 @@ _STAT_DISPLAY = {
 # `allow_redirects=False` so we can capture the URL — letting aiohttp follow
 # it would land us on the rendered HTML page and waste bandwidth re-reading
 # the paste we just submitted.
-_POKEPASTE_CREATE_URL = "https://pokepast.es/create"
 _POKEPASTE_HOST = "https://pokepast.es"
+_POKEPASTE_CREATE_URL = f"{_POKEPASTE_HOST}/create"
 
 # CRLF line endings throughout the rendered paste. Pokemon Showdown's
 # clipboard export uses CRLF (authored for Windows clipboard interchange),

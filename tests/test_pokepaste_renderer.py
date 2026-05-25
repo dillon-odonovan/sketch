@@ -24,6 +24,12 @@ from sketch.replica.pokepaste_renderer import (
     render_showdown,
 )
 
+# CRLF separator the renderer emits. Kept local to the test rather than
+# importing the private `_LINE_END` from `pokepaste_renderer` so this
+# suite asserts the contract (the rendered output uses CRLF) rather
+# than testing implementation detail (the specific constant name).
+_CRLF = "\r\n"
+
 
 def _entry(
     *,
@@ -53,7 +59,7 @@ class TestRenderShowdown:
         # recognizes `\r\n\r\n` as the Pokemon separator (Showdown's
         # clipboard export uses CRLF, and pokepast.es matches that).
         team = TeamData(pokemon=[_entry()])
-        expected = "\r\n".join(
+        expected = _CRLF.join(
             [
                 "Floette-Eternal (F) @ Floettite",
                 "Ability: Flower Veil",
@@ -149,7 +155,7 @@ class TestRenderShowdown:
         # paste into one big block on render.
         team = TeamData(pokemon=[_entry() for _ in range(6)])
         rendered = render_showdown(team)
-        blocks = rendered.split("\r\n\r\n")
+        blocks = rendered.split(_CRLF * 2)
         assert len(blocks) == 6
 
     def test_no_trailing_newline(self):
