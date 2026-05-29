@@ -43,6 +43,7 @@ class TeamRow:
     url: str
     description: str
     species: list[str]
+    replica: str | None = None
 
 
 class TeamNotFoundError(Exception):
@@ -658,6 +659,7 @@ class SheetsClient:
         for idx, row in enumerate(rows):
             row = row + [""] * (13 - len(row))
             url = (row[0] or "").strip()
+            replica = (row[3] or "").strip() or None
             description = (row[6] or "").strip()
             species = [(c or "").strip() for c in row[7:13]]
             if not url:
@@ -670,6 +672,7 @@ class SheetsClient:
                     url=url,
                     description=description,
                     species=species,
+                    replica=replica,
                 )
             )
         return out

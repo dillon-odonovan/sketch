@@ -32,10 +32,10 @@ class SketchBot(discord.Client):
         firestore_client = firestore.Client()
         self._store = FirestoreGuildConfigStore(firestore_client)
         self._registry = SheetsClientRegistry(self._store)
-        # Replica cache reuses the same Firestore client/project. /replica
-        # depends on this; /add-team and /search-teams don't, so failures
-        # constructing this are still fatal at boot (we'd rather fail loudly
-        # than register a /replica handler that errors on every invocation).
+        # Replica cache reuses the same Firestore client/project. /add-team's
+        # OCR path depends on this; failures constructing it are fatal at boot
+        # (we'd rather fail loudly than register /add-team with a half-built
+        # cache that errors on every cold-OCR submission).
         self._replica_cache = FirestoreReplicaCacheStore(firestore_client)
         # VRPaste cache uses the same Firestore client. It backs the
         # /add-team URL-source branch for vrpastes.com submissions —

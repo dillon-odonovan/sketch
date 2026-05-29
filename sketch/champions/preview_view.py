@@ -220,7 +220,7 @@ class ReplicaPreviewView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker_id:
             await interaction.response.send_message(
-                "Only the user who ran `/replica` can confirm this preview.",
+                "Only the user who ran `/add-team` can confirm this preview.",
                 ephemeral=True,
             )
             return False
