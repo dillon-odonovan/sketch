@@ -163,12 +163,26 @@ async def _delete_and_announce(
             row = await sheets.delete_by_replica(inputs.sheet_name, inputs.replica)
     except TeamNotFoundError:
         key = f"`{target_url}`" if target_url is not None else f"`{inputs.replica}`"
+        logger.info(
+            "delete-team: no matching row for key=%s in sheet=%s guild_id=%s",
+            key,
+            inputs.sheet_name,
+            interaction.guild_id,
+        )
         await interaction.followup.send(
             f"No team matching {key} found in *{inputs.fmt_name}*.",
             ephemeral=True,
         )
         return
     except RowShiftedError:
+        logger.warning(
+            "delete-team: CAS guard fired for url=%s replica=%s "
+            "in sheet=%s guild_id=%s — row shifted by concurrent delete",
+            target_url,
+            inputs.replica,
+            inputs.sheet_name,
+            interaction.guild_id,
+        )
         await interaction.followup.send(
             "The sheet shifted under us before we could delete that row — "
             "please run the command again.",
