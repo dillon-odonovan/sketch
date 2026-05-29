@@ -1,10 +1,9 @@
-# CLAUDE.md
+---
+globs: "tests/**/*.py"
+description: Use unittest.mock for test doubles, not hand-rolled fakes
+---
 
-Project-level guidance for Claude Code sessions on this repository.
-
-## Testing
-
-### Use `unittest.mock` for test doubles — no hand-rolled fakes
+## Use `unittest.mock` for test doubles — no hand-rolled fakes
 
 Prefer `unittest.mock.MagicMock` and `AsyncMock` over hand-rolled dataclass stubs
 or fake classes. They eliminate boilerplate and make assertions explicit:
@@ -44,6 +43,6 @@ assert "expected text" in content
 assert kwargs["ephemeral"] is True
 ```
 
-**When to keep a custom stub:** Complex routing stubs with dict-keyed
-dispatch logic (e.g. `_RoutingService` in `test_sheets_client.py`) are
-fine to keep when a `MagicMock` equivalent would be harder to read.
+**When to keep a custom stub:** Complex routing stubs with dict-keyed dispatch logic
+(e.g. `_RoutingService` in `test_sheets_client.py`) are fine to keep when a
+`MagicMock` equivalent would be harder to read.
