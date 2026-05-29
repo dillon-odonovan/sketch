@@ -532,7 +532,9 @@ async def extract_team_from_screenshots(
             messages=[{"role": "user", "content": user_content}],
         )
     except anthropic.APIError as exc:
-        logger.warning("Anthropic API call failed during /replica extraction: %s", exc)
+        logger.warning(
+            "Anthropic API call failed during Replica OCR extraction: %s", exc
+        )
         raise ExtractionError(
             "Couldn't read these screenshots right now — please try again in a moment."
         ) from exc
