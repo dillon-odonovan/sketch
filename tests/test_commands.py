@@ -27,18 +27,24 @@ def _row(
     url: str,
     description: str,
     species: list[str],
+    replica: str | None = None,
 ) -> TeamRow:
     return TeamRow(
         row_number=row_number,
         url=url,
         description=description,
         species=species,
+        replica=replica,
     )
 
 
 @pytest.fixture
 def bank() -> list[TeamRow]:
-    """A small representative team bank used across filter tests."""
+    """A small representative team bank used across filter tests.
+
+    Two of the three rows carry a replica code; the third leaves replica
+    unset to exercise the "row has no replica" branch in the replica filter.
+    """
     return [
         _row(
             3,
@@ -52,6 +58,7 @@ def bank() -> list[TeamRow]:
                 "Incineroar",
                 "Tornadus",
             ],
+            replica="QBXXWXL05U",
         ),
         _row(
             4,
@@ -65,6 +72,7 @@ def bank() -> list[TeamRow]:
                 "Greninja",
                 "Heatran",
             ],
+            replica="ABCD123456",
         ),
         _row(
             5,
@@ -82,6 +90,7 @@ class TestNoFilters:
             resolved_groups=[],
             description_match_indices=None,
             url_target=None,
+            replica_target=None,
         )
         assert result == bank
 
@@ -91,6 +100,7 @@ class TestNoFilters:
             resolved_groups=[],
             description_match_indices=None,
             url_target=None,
+            replica_target=None,
         )
         assert result == []
 
@@ -102,6 +112,7 @@ class TestMonFilter:
             resolved_groups=[["Calyrex-Shadow"]],
             description_match_indices=None,
             url_target=None,
+            replica_target=None,
         )
         assert [r.row_number for r in result] == [3]
 
@@ -111,6 +122,7 @@ class TestMonFilter:
             resolved_groups=[["calyrex-shadow"]],
             description_match_indices=None,
             url_target=None,
+            replica_target=None,
         )
         assert [r.row_number for r in result] == [3]
 
@@ -122,6 +134,7 @@ class TestMonFilter:
             resolved_groups=[["Charizard", "Charizard-Mega-X", "Charizard-Mega-Y"]],
             description_match_indices=None,
             url_target=None,
+            replica_target=None,
         )
         assert sorted(r.row_number for r in result) == [4, 5]
 
@@ -137,6 +150,7 @@ class TestMonFilter:
             ],
             description_match_indices=None,
             url_target=None,
+            replica_target=None,
         )
         assert sorted(r.row_number for r in result) == [4, 5]
 
@@ -147,6 +161,7 @@ class TestMonFilter:
             resolved_groups=[["Calyrex-Shadow"], ["Charizard"]],
             description_match_indices=None,
             url_target=None,
+            replica_target=None,
         )
         assert result == []
 
@@ -167,6 +182,7 @@ class TestDescriptionFilter:
             resolved_groups=[],
             description_match_indices={0},
             url_target=None,
+            replica_target=None,
         )
         assert [r.row_number for r in result] == [3]
 
@@ -179,6 +195,7 @@ class TestDescriptionFilter:
             resolved_groups=[],
             description_match_indices=set(),
             url_target=None,
+            replica_target=None,
         )
         assert result == []
 
@@ -190,6 +207,7 @@ class TestDescriptionFilter:
             resolved_groups=[],
             description_match_indices=None,
             url_target=None,
+            replica_target=None,
         )
         assert [r.row_number for r in result] == [3, 4, 5]
 
@@ -201,6 +219,7 @@ class TestUrlFilter:
             resolved_groups=[],
             description_match_indices=None,
             url_target="https://pokepast.es/aaaa1111",
+            replica_target=None,
         )
         assert [r.row_number for r in result] == [3]
 
@@ -213,6 +232,7 @@ class TestUrlFilter:
             resolved_groups=[],
             description_match_indices=None,
             url_target="https://pokepast.es/cccc3333",
+            replica_target=None,
         )
         assert [r.row_number for r in result] == [5]
 
@@ -224,6 +244,7 @@ class TestUrlFilter:
             resolved_groups=[],
             description_match_indices=None,
             url_target="https://pokepast.es/AAAA1111",
+            replica_target=None,
         )
         assert result == []
 
@@ -240,8 +261,108 @@ class TestUrlFilter:
             resolved_groups=[],
             description_match_indices=None,
             url_target="https://pokepast.es/abcd1234",
+            replica_target=None,
         )
         assert [r.row_number for r in result] == [4]
+
+    def test_short_circuits_pokemon_and_description(self, bank):
+        # Pass a mon group and a description set that, together, would
+        # exclude row 4 — but row 4's URL is the target. URL is uniquely
+        # identifying, so mons and description must be ignored and row 4
+        # comes back.
+        result = _filter_team_rows(
+            bank,
+            resolved_groups=[["Calyrex-Shadow"]],
+            description_match_indices=set(),
+            url_target="https://pokepast.es/bbbb2222",
+            replica_target=None,
+        )
+        assert [r.row_number for r in result] == [4]
+
+
+class TestReplicaFilter:
+    def test_exact_match(self, bank):
+        # Row 3's replica is "QBXXWXL05U" — already uppercase.
+        result = _filter_team_rows(
+            bank,
+            resolved_groups=[],
+            description_match_indices=None,
+            url_target=None,
+            replica_target="QBXXWXL05U",
+        )
+        assert [r.row_number for r in result] == [3]
+
+    def test_stored_lowercase_match_via_upper(self, bank):
+        # Guard for rows written before consistent uppercasing was in place:
+        # the stored value is lowercased but the target (already normalized)
+        # is uppercase. The helper uppercases the stored side before compare.
+        rows = list(bank)
+        rows.append(
+            _row(
+                6,
+                "https://pokepast.es/dddd4444",
+                "lowercase-replica row",
+                ["Pikachu"] * 6,
+                replica="zzzz999999",
+            )
+        )
+        result = _filter_team_rows(
+            rows,
+            resolved_groups=[],
+            description_match_indices=None,
+            url_target=None,
+            replica_target="ZZZZ999999",
+        )
+        assert [r.row_number for r in result] == [6]
+
+    def test_no_match_returns_empty(self, bank):
+        # Well-formed 10-char code that isn't in the bank.
+        result = _filter_team_rows(
+            bank,
+            resolved_groups=[],
+            description_match_indices=None,
+            url_target=None,
+            replica_target="ZZZZZZZZZZ",
+        )
+        assert result == []
+
+    def test_row_without_replica_does_not_match(self, bank):
+        # Row 5 has replica=None. Filtering by any code must skip it
+        # without raising on the None.upper() that doesn't get reached.
+        result = _filter_team_rows(
+            bank,
+            resolved_groups=[],
+            description_match_indices=None,
+            url_target=None,
+            replica_target="QBXXWXL05U",
+        )
+        # Row 5 not in the result; only the row whose replica matches is.
+        assert 5 not in [r.row_number for r in result]
+
+    def test_short_circuits_pokemon_and_description(self, bank):
+        # Pass a mon group and an empty description set that would exclude
+        # row 3 — but row 3 owns the replica code. Replica is uniquely
+        # identifying, so mons and description must be ignored.
+        result = _filter_team_rows(
+            bank,
+            resolved_groups=[["Charizard"]],
+            description_match_indices=set(),
+            url_target=None,
+            replica_target="QBXXWXL05U",
+        )
+        assert [r.row_number for r in result] == [3]
+
+    def test_replica_takes_priority_over_url(self, bank):
+        # Replica points at row 3 (aaaa1111). URL points at row 4 (bbbb2222).
+        # Replica wins outright — only row 3 comes back.
+        result = _filter_team_rows(
+            bank,
+            resolved_groups=[],
+            description_match_indices=None,
+            url_target="https://pokepast.es/bbbb2222",
+            replica_target="QBXXWXL05U",
+        )
+        assert [r.row_number for r in result] == [3]
 
 
 class TestCombinedFilters:
@@ -254,36 +375,7 @@ class TestCombinedFilters:
             resolved_groups=[["Charizard", "Charizard-Mega-X", "Charizard-Mega-Y"]],
             description_match_indices={1},
             url_target=None,
-        )
-        assert [r.row_number for r in result] == [4]
-
-    def test_mon_and_url_AND_returns_one_when_both_match(self, bank):
-        result = _filter_team_rows(
-            bank,
-            resolved_groups=[["Tyranitar"]],
-            description_match_indices=None,
-            url_target="https://pokepast.es/bbbb2222",
-        )
-        assert [r.row_number for r in result] == [4]
-
-    def test_mon_and_url_AND_returns_empty_when_mon_absent_from_url_row(self, bank):
-        # Row 4 (bbbb2222) has Tyranitar but not Calyrex-Shadow.
-        result = _filter_team_rows(
-            bank,
-            resolved_groups=[["Calyrex-Shadow"]],
-            description_match_indices=None,
-            url_target="https://pokepast.es/bbbb2222",
-        )
-        assert result == []
-
-    def test_all_three_filters_AND(self, bank):
-        # alice's row is at position 1 (row_number=4) — ANDs with the
-        # Charizard mon group and the matching URL.
-        result = _filter_team_rows(
-            bank,
-            resolved_groups=[["Charizard", "Charizard-Mega-X", "Charizard-Mega-Y"]],
-            description_match_indices={1},
-            url_target="https://pokepast.es/bbbb2222",
+            replica_target=None,
         )
         assert [r.row_number for r in result] == [4]
 
@@ -319,6 +411,7 @@ class TestDescriptionPipeline:
             resolved_groups=[],
             description_match_indices=match_indices,
             url_target=None,
+            replica_target=None,
         )
         assert [r.row_number for r in result] == [8]
 
@@ -334,6 +427,7 @@ class TestDescriptionPipeline:
             resolved_groups=[],
             description_match_indices=match_indices,
             url_target=None,
+            replica_target=None,
         )
         assert [r.row_number for r in result] == [4]
 
