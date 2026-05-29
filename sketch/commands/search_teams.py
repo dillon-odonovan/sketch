@@ -131,12 +131,55 @@ def register(
             )
             return
 
-        # Replica and URL are uniquely identifying; when either is set,
-        # _filter_team_rows ignores mons and description, so we can skip
-        # DEX resolution entirely.
-        unique_id_filter = replica_target is not None or url_target is not None
+        # Unique-ID path: replica/URL are uniquely identifying — skip DEX
+        # loading and description indexing entirely and return early.
+        if replica_target is not None or url_target is not None:
+            try:
+                snapshot = await sheets.get_search_snapshot(sheet_name)
+            except Exception:
+                logger.exception("Failed to read sheet")
+                await interaction.followup.send(
+                    GENERIC_SHEET_READ_ERROR, ephemeral=True
+                )
+                return
+            matches = _filter_team_rows(
+                snapshot.rows,
+                resolved_groups=[],
+                description_match_indices=None,
+                url_target=url_target,
+                replica_target=replica_target,
+            )
+            query_label = (
+                f"replica:{replica_target}"
+                if replica_target is not None
+                else f"url:{url_target}"
+            )
+            if not matches:
+                await interaction.followup.send(
+                    f"No teams found in *{fmt_name}* matching *{query_label}*.",
+                    ephemeral=True,
+                )
+                return
+            embed = discord.Embed(
+                title=f"{len(matches)} team(s) in {fmt_name} matching {query_label}",
+                color=discord.Color.blue(),
+            )
+            for row in matches[: config.SEARCH_RESULT_LIMIT]:
+                title = (row.description or "(no description)")[:80]
+                species_line = ", ".join(row.species)
+                embed.add_field(
+                    name=title,
+                    value=f"{row.url}\n*{species_line}*",
+                    inline=False,
+                )
+            if len(matches) > config.SEARCH_RESULT_LIMIT:
+                remaining = len(matches) - config.SEARCH_RESULT_LIMIT
+                embed.set_footer(text=f"+{remaining} more — narrow your search.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
 
-        if queries and not unique_id_filter:
+        # Mons + description path.
+        if queries:
             try:
                 dex = await sheets.get_dex()
             except Exception:
@@ -147,21 +190,20 @@ def register(
                 return
 
         resolved_groups: list[list[str]] = []
-        if not unique_id_filter:
-            for q in queries:
-                r = dex.resolve(q)
-                if not r.canonical_matches:
-                    hint = (
-                        f" Did you mean: {', '.join(r.suggestions)}?"
-                        if r.suggestions
-                        else ""
-                    )
-                    await interaction.followup.send(
-                        f"Couldn't find Pokémon `{q}` in the DEX.{hint}",
-                        ephemeral=True,
-                    )
-                    return
-                resolved_groups.append(r.canonical_matches)
+        for q in queries:
+            r = dex.resolve(q)
+            if not r.canonical_matches:
+                hint = (
+                    f" Did you mean: {', '.join(r.suggestions)}?"
+                    if r.suggestions
+                    else ""
+                )
+                await interaction.followup.send(
+                    f"Couldn't find Pokémon `{q}` in the DEX.{hint}",
+                    ephemeral=True,
+                )
+                return
+            resolved_groups.append(r.canonical_matches)
 
         try:
             snapshot = await sheets.get_search_snapshot(sheet_name)
@@ -172,33 +214,24 @@ def register(
 
         # `desc_index.match` returns positional indices into `snapshot.rows`,
         # which `_filter_team_rows` enumerates 1:1. None = no filter applied;
-        # empty set = filter ran and matched nothing. Skipped entirely when
-        # a unique-ID filter is in play since the helper would ignore it.
+        # empty set = filter ran and matched nothing (caller still ANDs it in
+        # so the result is empty, which is what we want).
         description_match_indices: set[int] | None = (
-            snapshot.desc_index.match(description_query)
-            if description_query and not unique_id_filter
-            else None
+            snapshot.desc_index.match(description_query) if description_query else None
         )
 
         matches = _filter_team_rows(
             snapshot.rows,
             resolved_groups=resolved_groups,
             description_match_indices=description_match_indices,
-            url_target=url_target,
-            replica_target=replica_target,
+            url_target=None,
+            replica_target=None,
         )
 
-        # When a unique-ID filter dominates, omit the other params from the
-        # label — they didn't actually constrain the search.
-        if replica_target is not None:
-            query_label = f"replica:{replica_target}"
-        elif url_target is not None:
-            query_label = f"url:{url_target}"
-        else:
-            label_parts = list(queries)
-            if description_query:
-                label_parts.append(f'description:"{description_query}"')
-            query_label = " + ".join(label_parts)
+        label_parts = list(queries)
+        if description_query:
+            label_parts.append(f'description:"{description_query}"')
+        query_label = " + ".join(label_parts)
         if not matches:
             await interaction.followup.send(
                 f"No teams found in *{fmt_name}* matching *{query_label}*.",
