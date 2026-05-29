@@ -1,9 +1,11 @@
-"""`/search-teams` — query the bank by mon, description, and/or URL.
+"""`/search-teams` — query the bank by mon, description, URL, or replica code.
 
-Filters AND together. Description matching uses the tokenized
-DescriptionIndex (order-independent, per-token substring); mon matching
-uses the DexIndex's prefix-group rule (`Charizard` matches base + Mega-X
-+ Mega-Y; `Charizard-Mega-Y` matches only that form).
+Replica codes and Pokepaste URLs are uniquely identifying — when either
+is supplied, the description and mon filters are skipped (and replica
+wins if both unique IDs are supplied). Description matching uses the
+tokenized DescriptionIndex (order-independent, per-token substring); mon
+matching uses the DexIndex's prefix-group rule (`Charizard` matches base
++ Mega-X + Mega-Y; `Charizard-Mega-Y` matches only that form).
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import discord
 from discord import app_commands
 
 from sketch import config
+from sketch.champions.replica_validator import normalize_replica
 from sketch.commands._shared import (
     GENERIC_SHEET_READ_ERROR,
     _filter_team_rows,
@@ -37,7 +40,10 @@ def register(
 
     @tree.command(
         name="search-teams",
-        description="Find teams by Pokémon, description, and/or Pokepaste URL.",
+        description=(
+            "Find teams by Pokémon, description, Pokepaste URL, "
+            "or Champions replica code."
+        ),
     )
     @app_commands.describe(
         format="Format/regulation",
@@ -54,6 +60,10 @@ def register(
             "require an exact word match."
         ),
         url="Pokepaste URL — check whether this paste is already in the bank.",
+        replica=(
+            "Champions Team ID (10-char alphanumeric, e.g. QBXXWXL05U) — "
+            "check whether this replica is already in the bank."
+        ),
     )
     @app_commands.choices(format=_format_choices())
     async def search_teams(
@@ -67,6 +77,7 @@ def register(
         mon6: str | None = None,
         description: str | None = None,
         url: str | None = None,
+        replica: str | None = None,
     ) -> None:
         trace_id_var.set(str(interaction.id))
         await interaction.response.defer(thinking=True, ephemeral=True)
@@ -87,25 +98,45 @@ def register(
             except ValidationError as e:
                 await interaction.followup.send(str(e), ephemeral=True)
                 return
+        replica_raw = (replica or "").strip() or None
+        replica_target: str | None = None
+        if replica_raw is not None:
+            try:
+                replica_target = normalize_replica(replica_raw)
+            except ValidationError as e:
+                await interaction.followup.send(str(e), ephemeral=True)
+                return
         logger.info(
             "search-teams invoked by user_id=%s guild_id=%s: format=%s "
-            "queries=%s description=%r url=%r",
+            "queries=%s description=%r url=%r replica=%r",
             interaction.user.id,
             interaction.guild_id,
             fmt_name,
             queries,
             description_query,
             url_target,
+            replica_target,
         )
 
-        if not queries and not description_query and url_target is None:
+        if (
+            not queries
+            and not description_query
+            and url_target is None
+            and replica_target is None
+        ):
             await interaction.followup.send(
-                "Provide at least one of `mon1`..`mon6`, `description`, or `url`.",
+                "Provide at least one of `mon1`..`mon6`, `description`, "
+                "`url`, or `replica`.",
                 ephemeral=True,
             )
             return
 
-        if queries:
+        # Replica and URL are uniquely identifying; when either is set,
+        # _filter_team_rows ignores mons and description, so we can skip
+        # DEX resolution entirely.
+        unique_id_filter = replica_target is not None or url_target is not None
+
+        if queries and not unique_id_filter:
             try:
                 dex = await sheets.get_dex()
             except Exception:
@@ -116,20 +147,21 @@ def register(
                 return
 
         resolved_groups: list[list[str]] = []
-        for q in queries:
-            r = dex.resolve(q)
-            if not r.canonical_matches:
-                hint = (
-                    f" Did you mean: {', '.join(r.suggestions)}?"
-                    if r.suggestions
-                    else ""
-                )
-                await interaction.followup.send(
-                    f"Couldn't find Pokémon `{q}` in the DEX.{hint}",
-                    ephemeral=True,
-                )
-                return
-            resolved_groups.append(r.canonical_matches)
+        if not unique_id_filter:
+            for q in queries:
+                r = dex.resolve(q)
+                if not r.canonical_matches:
+                    hint = (
+                        f" Did you mean: {', '.join(r.suggestions)}?"
+                        if r.suggestions
+                        else ""
+                    )
+                    await interaction.followup.send(
+                        f"Couldn't find Pokémon `{q}` in the DEX.{hint}",
+                        ephemeral=True,
+                    )
+                    return
+                resolved_groups.append(r.canonical_matches)
 
         try:
             snapshot = await sheets.get_search_snapshot(sheet_name)
@@ -140,10 +172,12 @@ def register(
 
         # `desc_index.match` returns positional indices into `snapshot.rows`,
         # which `_filter_team_rows` enumerates 1:1. None = no filter applied;
-        # empty set = filter ran and matched nothing (caller still ANDs it in
-        # so the result is empty, which is what we want).
+        # empty set = filter ran and matched nothing. Skipped entirely when
+        # a unique-ID filter is in play since the helper would ignore it.
         description_match_indices: set[int] | None = (
-            snapshot.desc_index.match(description_query) if description_query else None
+            snapshot.desc_index.match(description_query)
+            if description_query and not unique_id_filter
+            else None
         )
 
         matches = _filter_team_rows(
@@ -151,14 +185,20 @@ def register(
             resolved_groups=resolved_groups,
             description_match_indices=description_match_indices,
             url_target=url_target,
+            replica_target=replica_target,
         )
 
-        label_parts = list(queries)
-        if description_query:
-            label_parts.append(f'description:"{description_query}"')
-        if url_target is not None:
-            label_parts.append(f"url:{url_target}")
-        query_label = " + ".join(label_parts)
+        # When a unique-ID filter dominates, omit the other params from the
+        # label — they didn't actually constrain the search.
+        if replica_target is not None:
+            query_label = f"replica:{replica_target}"
+        elif url_target is not None:
+            query_label = f"url:{url_target}"
+        else:
+            label_parts = list(queries)
+            if description_query:
+                label_parts.append(f'description:"{description_query}"')
+            query_label = " + ".join(label_parts)
         if not matches:
             await interaction.followup.send(
                 f"No teams found in *{fmt_name}* matching *{query_label}*.",

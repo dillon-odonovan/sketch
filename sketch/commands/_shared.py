@@ -76,8 +76,21 @@ def _filter_team_rows(
     resolved_groups: list[list[str]],
     description_match_indices: set[int] | None,
     url_target: str | None,
+    replica_target: str | None,
 ) -> list[TeamRow]:
-    """Apply `/search-teams` filters to `rows`. Filters AND together.
+    """Apply `/search-teams` filters to `rows`.
+
+    Replica codes and Pokepaste URLs are uniquely identifying — at most one
+    row can carry either. When either is supplied, the description and mon
+    filters add nothing, so the helper short-circuits:
+
+    - If `replica_target` is set: filter only by replica. URL, description,
+      and mon filters are ignored (replica wins outright when both unique
+      IDs are supplied — no need to AND two already-unique IDs).
+    - Else if `url_target` is set: filter only by URL.
+    - Else: AND the mon and description filters as before.
+
+    Parameters:
 
     - `resolved_groups`: each inner list is one user-supplied mon param after
       DEX resolution (e.g., "Charizard" → ["Charizard", "Charizard-Mega-X",
@@ -94,22 +107,33 @@ def _filter_team_rows(
       Stored URLs are canonicalized per-row for comparison; malformed stored
       URLs are treated as non-matching rather than raising (mirrors
       `SheetsClient.find_row_by_url`).
+    - `replica_target`: already-normalized (uppercase) Champions replica
+      code. None = no replica filter. Rows whose stored replica is missing
+      or doesn't equal the target after uppercasing are skipped.
     """
-    matches: list[TeamRow] = []
+    if replica_target is not None:
+        return [
+            row
+            for row in rows
+            if row.replica is not None and row.replica.upper() == replica_target
+        ]
+    if url_target is not None:
+        matches: list[TeamRow] = []
+        for row in rows:
+            try:
+                if canonicalize_pokepaste_url(row.url) == url_target:
+                    matches.append(row)
+            except ValidationError:
+                continue
+        return matches
+    matches = []
     for idx, row in enumerate(rows):
         species_lower = {s.lower() for s in row.species}
         mons_ok = all(
             any(m.lower() in species_lower for m in group) for group in resolved_groups
         )
         desc_ok = description_match_indices is None or idx in description_match_indices
-        if url_target is None:
-            url_ok = True
-        else:
-            try:
-                url_ok = canonicalize_pokepaste_url(row.url) == url_target
-            except ValidationError:
-                url_ok = False
-        if mons_ok and desc_ok and url_ok:
+        if mons_ok and desc_ok:
             matches.append(row)
     return matches
 
