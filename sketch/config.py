@@ -74,7 +74,7 @@ SEARCH_RESULT_LIMIT = 15
 # we ever observe that within-session bursts routinely span longer.
 SEARCH_CACHE_TTL_SECONDS = 300.0
 
-# --- /replica feature -------------------------------------------------------
+# --- Replica OCR (used by /add-team) ---------------------------------------
 
 # Top-level Firestore collection that maps a normalized Replica Code (10-char
 # uppercase alphanumeric) to the PokePaste URL we minted from its OCR'd team.
@@ -82,7 +82,7 @@ SEARCH_CACHE_TTL_SECONDS = 300.0
 # guild's OCR work benefits every other guild on the bot.
 REPLICA_CACHE_COLLECTION = "replica_codes"
 
-# Vision model for the /replica OCR pipeline. Sonnet 4.6 handles the Champions
+# Vision model for the Replica OCR pipeline. Sonnet 4.6 handles the Champions
 # share-screen UI well at ~5x lower cost than Opus; tool-use forces schema
 # conformance so we're not relying on the model's free-text JSON discipline.
 # Promote to claude-opus-4-7 if Confirm-rate telemetry shows accuracy issues.

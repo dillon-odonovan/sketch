@@ -1,4 +1,4 @@
-"""Tests for the /replica preview UI.
+"""Tests for the `/add-team` preview UI.
 
 The View object is testable without a real Discord gateway because its
 buttons are async methods we can call directly with a minimal interaction
