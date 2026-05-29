@@ -15,6 +15,13 @@ around 66 EVs across all six stats, max 32 per stat — so the schema caps at
 32 rather than the familiar 252. Tera type, IVs, and level don't appear on
 this share screen and aren't captured.
 
+Screenshots may be in any official Pokemon game language (Japanese, Korean,
+Chinese, Italian, Spanish, French, German, English, …). The model reads the
+localized UI text and translates every name to its canonical English
+Showdown / PokePaste form, so all downstream code (nature resolution,
+PokePaste rendering, code->URL caching) only ever sees English. Pages are
+identified by structure rather than the localized tab labels.
+
 This module sends both pages to Claude in a single multimodal call with
 tool-use forcing schema conformance, so the model can't return free-text
 JSON that needs regex fishing. The cross-page join (build + stats per slot)
@@ -150,7 +157,9 @@ _NATURE_SCHEMA: dict[str, Any] = {
             **_STAT_NAME_OR_NULL,
             "description": (
                 "In-game label of the stat marked with a red up arrow on "
-                "Page 2 (the nature-boosted stat). Use null if no arrow is "
+                "Page 2 (the nature-boosted stat). The on-screen label may be "
+                "localized — return the English enum value by official "
+                "translation or by fixed row position. Use null if no arrow is "
                 "visible (neutral nature)."
             ),
         },
@@ -158,7 +167,9 @@ _NATURE_SCHEMA: dict[str, Any] = {
             **_STAT_NAME_OR_NULL,
             "description": (
                 "In-game label of the stat marked with a blue down arrow on "
-                "Page 2 (the nature-reduced stat). Use null if no arrow is "
+                "Page 2 (the nature-reduced stat). The on-screen label may be "
+                "localized — return the English enum value by official "
+                "translation or by fixed row position. Use null if no arrow is "
                 "visible (neutral nature)."
             ),
         },
@@ -183,7 +194,8 @@ _POKEMON_SCHEMA: dict[str, Any] = {
             "description": (
                 "Pokemon species in canonical display form, e.g. 'Great Tusk', "
                 "'Calyrex-Shadow', 'Urshifu-Rapid-Strike'. Use the form Pokemon "
-                "Showdown / PokePaste expect."
+                "Showdown / PokePaste expect. The on-screen name may be localized "
+                "(any game language); output the canonical English name."
             ),
         },
         "gender": {
@@ -200,11 +212,18 @@ _POKEMON_SCHEMA: dict[str, Any] = {
         "item": {
             "type": ["string", "null"],
             "description": (
-                "Held item, e.g. 'Assault Vest'. Use null (not the string 'None') "
-                "when the Pokemon is holding nothing."
+                "Held item, e.g. 'Assault Vest'. May be localized; translate to "
+                "the official English item name. Use null (not the string 'None') "
+                "when the Pokemon is holding nothing — never invent an item."
             ),
         },
-        "ability": {"type": "string", "description": "e.g. 'Quark Drive'"},
+        "ability": {
+            "type": "string",
+            "description": (
+                "e.g. 'Quark Drive'. May be localized; output the official "
+                "English ability name."
+            ),
+        },
         "nature": _NATURE_SCHEMA,
         "evs": {
             **_EVS_SCHEMA,
@@ -220,7 +239,11 @@ _POKEMON_SCHEMA: dict[str, Any] = {
             "minItems": 1,
             "maxItems": 4,
             "items": {"type": "string"},
-            "description": "1 to 4 move names from Page 1, in display order.",
+            "description": (
+                "1 to 4 move names from Page 1, in display order. May be "
+                "localized; output official English move names. Output only the "
+                "moves actually shown — never pad to four."
+            ),
         },
     },
 }
@@ -254,7 +277,21 @@ _TEAM_TOOL_SCHEMA: dict[str, Any] = {
 _SYSTEM_PROMPT = """\
 You extract Pokemon teams from screenshots of the Pokemon Champions \
 "Replicate This Battle Team?" share screen. Each call gives you one or two \
-images covering the same team:
+images covering the same team.
+
+Language: the screenshots may be in ANY official Pokemon game language — \
+English, Japanese, Korean, Chinese (Simplified or Traditional), Italian, \
+Spanish, French, German, and others. Every piece of on-screen text (species, \
+abilities, items, moves, stat labels, and the tab labels) will be in that \
+language. Read the localized text and output the canonical **English** \
+Pokemon Showdown / PokePaste display form for every name, using the official \
+localized-to-English Pokemon name correspondences (these are 1:1 and \
+well-established per game language). Do not transliterate phonetically and do \
+not anglicize loosely — map to the exact official English name. For example, \
+the Japanese "こだわりスカーフ" / Korean "구애 스카프" is the official item \
+"Choice Scarf", not "Gooey Scarf" or any phonetic gloss.
+
+The two pages:
 
   Page 1 ("Moves & More" tab): a 2x3 grid of Pokemon cards. Each card shows \
 the species name, a gender icon (when applicable) and the Pokemon's 1-2 \
@@ -265,30 +302,44 @@ shows the six base stats (HP, Attack, Defense, Sp. Atk, Sp. Def, Speed) with \
 the EV invested in each, and on exactly two of the stats: a red up-arrow on \
 the nature-boosted stat and a blue down-arrow on the nature-reduced stat.
 
+Identify each page by its STRUCTURE, not by tab text — the tab labels are \
+localized and will not be in English:
+  - **Page 1** = the page whose cards each show an ability line, a held-item \
+line, and a list of up to 4 moves (each move has a type icon beside it). The \
+tab label for this page is localized (English: "Moves & More").
+  - **Page 2** = the page whose cards each show a six-row stat readout with a \
+small EV number per row, plus a red ↑ arrow on one stat and a blue ↓ arrow on \
+another. The tab label is localized (English: "Stats"). The six stat rows \
+always appear in the same fixed order — HP, Attack, Defense, Sp. Atk, Sp. \
+Def, Speed — even when their labels are written in another language.
+
 When the user provides one image, both pages may be stitched together in \
-any orientation (vertical, horizontal, or even reversed). Identify each \
-page by its content rather than by position:
-  - The page showing tab marker "Moves & More" — or four bulleted move \
-names per Pokemon, with an ability and item listed — is **Page 1**.
-  - The page showing tab marker "Stats" — or a six-row stat readout (HP, \
-Attack, Defense, Sp. Atk, Sp. Def, Speed) with red ↑ / blue ↓ arrows on \
-two of them — is **Page 2**.
-Cross-join by slot order: slot 1 on Page 1 is the same Pokemon as slot 1 \
-on Page 2, regardless of which side each page is on in the image.
+any orientation (vertical, horizontal, or even reversed) — identify each by \
+the structure above rather than by position. Cross-join by slot order: slot 1 \
+on Page 1 is the same Pokemon as slot 1 on Page 2, regardless of which side \
+each page is on in the image.
 
 Conventions for the output:
-  - Species, items, abilities, moves: use the canonical Showdown / PokePaste \
-display form. Examples: "Great Tusk" (not "great-tusk"), "Calyrex-Shadow" \
-(hyphenated forms), "Urshifu-Rapid-Strike", "Floettite" for the mega stone.
+  - Species, items, abilities, moves: read the localized on-screen text and \
+output the canonical English Showdown / PokePaste display form. Examples: \
+"Great Tusk" (not "great-tusk"), "Calyrex-Shadow" (hyphenated forms), \
+"Urshifu-Rapid-Strike", "Floettite" for the mega stone. When the screen is \
+non-English, translate via the official name mapping for that language rather \
+than guessing a similar-looking English name.
   - Gender: read the small icon next to the species name. "M" for the male \
 symbol (♂), "F" for the female symbol (♀), null for genderless species or \
 when no icon is shown.
   - Item: null when the Pokemon is holding nothing — never the string "None".
-  - Nature: return the in-game stat label next to each arrow as \
-{boosted_stat, reduced_stat}. Use exactly the labels "Attack", "Defense", \
-"Sp. Atk", "Sp. Def", or "Speed". If no arrows are visible (neutral nature), \
-return null for both. The host code resolves these into the canonical nature \
-name — do not attempt to name the nature yourself.
+  - Nature: the stat next to the red ↑ is the boosted stat, the stat next to \
+the blue ↓ is the reduced stat. Return them as {boosted_stat, reduced_stat} \
+using exactly the English enum labels "Attack", "Defense", "Sp. Atk", "Sp. \
+Def", or "Speed". The on-screen stat labels are localized — map each to its \
+English enum value by the official translation, or, if you cannot read it, by \
+its fixed row position (row 1 HP, row 2 Attack, row 3 Defense, row 4 Sp. Atk, \
+row 5 Sp. Def, row 6 Speed; HP can never carry a nature arrow). If no arrows \
+are visible (neutral nature), return null for both. The host code resolves \
+these into the canonical nature name — do not attempt to name the nature \
+yourself.
   - EVs: read the small numeric value shown next to each stat on Page 2. \
 Pokemon Champions caps EVs at 32 per stat with ~66 total — much smaller than \
 mainline Pokemon's 252/508 system. Use 0 for stats with no investment. The \
@@ -355,13 +406,31 @@ disagrees. When no visible signal disambiguates a form (e.g. battle-only \
 forms like Aegislash Blade or Cherrim Sunshine), output the baseline \
 species rather than guessing.
 
+Transcription discipline (critical):
+  - Transcribe ONLY what is visibly present on the cards. Never invent, \
+infer, or "complete" an item, ability, move, or Pokemon from what a \
+competitive set "usually" runs.
+  - If a Pokemon's item slot is empty, output null — do not add a Berry or \
+any other item that is not shown.
+  - Output only the moves actually printed on the card, in order. Never add a \
+move to reach four.
+  - Read the species from the sprite AND the localized name together; if they \
+conflict, trust the localized name. Do not substitute a different, more \
+"common" Pokemon.
+  - When you cannot read a name confidently, transcribe the localized text \
+faithfully and map it to its official English name — a faithful translation \
+always beats a confident guess at a different English name.
+  - Treat each screenshot independently; do not pattern-match it to a \
+well-known sample team.
+
 Champions roster note: the only Floette in Champions is the mega-capable \
 form, output as "Floette-Eternal" (never plain "Floette"). All other \
 species use the form name implied by the share-screen context.
 
 If a field is genuinely unreadable, prefer null over a guess for nullable \
-fields, and zero for EVs that don't show an investment number. The output \
-must conform to the `submit_team` tool's schema.\
+fields, and zero for EVs that don't show an investment number — never \
+substitute a guessed value. The output must conform to the `submit_team` \
+tool's schema.\
 """
 
 _TOOL_NAME = "submit_team"
@@ -508,6 +577,8 @@ async def extract_team_from_screenshots(
         )
         + " Cross-join by slot order, resolve the nature arrows into "
         "boosted_stat / reduced_stat, and call submit_team with the result."
+        " These screenshots may be in any language — read the localized text "
+        "and output canonical English Showdown names."
     )
     user_content.append({"type": "text", "text": instruction})
 
@@ -548,7 +619,8 @@ async def extract_team_from_screenshots(
         )
         raise ExtractionError(
             "Couldn't read these screenshots — please retake them with the full "
-            "Replica share screen visible and try again."
+            "Replica share screen visible and try again. Screenshots in any "
+            "in-game language are supported."
         )
 
     try:
@@ -561,5 +633,6 @@ async def extract_team_from_screenshots(
         )
         raise ExtractionError(
             "Couldn't read these screenshots — please retake them with the full "
-            "Replica share screen visible and try again."
+            "Replica share screen visible and try again. Screenshots in any "
+            "in-game language are supported."
         ) from exc
