@@ -38,6 +38,18 @@ async def validate_pokepaste_url(url: str) -> None:
         raise ValidationError(f"Could not fetch `{url}`: {exc}") from exc
 
 
+def is_pokepaste_url(url: str) -> bool:
+    """Cheap dispatch check: does `url` look like a Pokepaste URL?
+
+    Mirrors `sketch.vrpaste.validator.is_vrpaste_url` so callers can
+    route a user-supplied URL to the right source-specific handler with
+    an explicit if/elif chain instead of try/except control flow.
+    """
+    if not url:
+        return False
+    return _POKEPASTE_URL_RE.match(url.strip()) is not None
+
+
 def canonicalize_pokepaste_url(url: str) -> str:
     # The paste ID is case-sensitive — `pokepast.es/Abc` and `pokepast.es/abc`
     # are different pastes — so we lowercase only the scheme + host and leave

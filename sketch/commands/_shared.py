@@ -38,6 +38,9 @@ GENERIC_SHEET_READ_ERROR = (
 GENERIC_SHEET_WRITE_ERROR = (
     "Couldn't add the team right now — please try again in a moment."
 )
+GENERIC_SHEET_DELETE_ERROR = (
+    "Couldn't delete the team right now — please try again in a moment."
+)
 GENERIC_CACHE_READ_ERROR = (
     "Couldn't check the replica-code cache right now — please try again in a moment."
 )
@@ -114,22 +117,32 @@ def _filter_team_rows(
     return matches
 
 
-async def _broadcast_team_added(
+async def _broadcast_team_event(
     interaction: discord.Interaction,
     channel_id: int,
     *,
-    fmt_name: str,
+    title: str,
+    color: discord.Color,
     url: str,
     description: str,
+    species: list[str] | None = None,
 ) -> discord.Message | None:
-    """Post the public 'new team' embed to the configured channel.
+    """Send a public team-event embed to `channel_id`.
 
-    Returns the sent Message so it can be enriched with parsed species once
-    they're available, or None if the broadcast couldn't be sent. Never raises
-    into the caller — broadcast failures must not fail the user's command.
+    Shared plumbing behind `_broadcast_team_added` and
+    `_broadcast_team_removed`. Returns the sent Message so callers can
+    edit it later (e.g., `/add-team` enriches with species once the
+    AppsScript formula settles), or None if the broadcast couldn't be
+    sent. Never raises — broadcast failures must not fail the user's
+    command.
+
+    `species`, if provided and non-empty, is rendered as a "Pokémon"
+    field on the embed at send time — used by removed-team broadcasts,
+    which already have species in hand from the lookup read.
     """
     logger.info(
-        "Broadcasting team to channel_id=%s for guild_id=%s",
+        "Broadcasting team event %r to channel_id=%s for guild_id=%s",
+        title,
         channel_id,
         interaction.guild_id,
     )
@@ -145,15 +158,17 @@ async def _broadcast_team_added(
 
     user = interaction.user
     embed = discord.Embed(
-        title=f"New team added to {fmt_name}",
+        title=title,
         url=url,
         description=description,
-        color=discord.Color.green(),
+        color=color,
     )
     embed.set_author(
         name=user.display_name,
         icon_url=user.display_avatar.url,
     )
+    if species:
+        embed.add_field(name="Pokémon", value=", ".join(species), inline=False)
     try:
         return await channel.send(embed=embed)
     except (discord.Forbidden, discord.HTTPException, AttributeError):
@@ -164,6 +179,57 @@ async def _broadcast_team_added(
             exc_info=True,
         )
         return None
+
+
+async def _broadcast_team_added(
+    interaction: discord.Interaction,
+    channel_id: int,
+    *,
+    fmt_name: str,
+    url: str,
+    description: str,
+) -> discord.Message | None:
+    """Post the public 'new team' embed to the configured channel.
+
+    Returns the sent Message so it can be enriched with parsed species once
+    they're available (see `_enrich_broadcast_with_species`), or None if
+    the broadcast couldn't be sent.
+    """
+    return await _broadcast_team_event(
+        interaction,
+        channel_id,
+        title=f"New team added to {fmt_name}",
+        color=discord.Color.green(),
+        url=url,
+        description=description,
+    )
+
+
+async def _broadcast_team_removed(
+    interaction: discord.Interaction,
+    channel_id: int,
+    *,
+    fmt_name: str,
+    url: str,
+    description: str,
+    species: list[str],
+) -> discord.Message | None:
+    """Post the public 'team removed' embed to the configured channel.
+
+    Species are included up front (unlike `/add-team`, which patches them
+    in once the AppsScript formula resolves) because the lookup read on
+    the delete path already returns them. Pass an empty list when the
+    row was deleted before its species cells settled.
+    """
+    return await _broadcast_team_event(
+        interaction,
+        channel_id,
+        title=f"Team removed from {fmt_name}",
+        color=discord.Color.red(),
+        url=url,
+        description=description,
+        species=species,
+    )
 
 
 async def _enrich_broadcast_with_species(

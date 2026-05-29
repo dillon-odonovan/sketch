@@ -1,4 +1,7 @@
-from sketch.vrpaste.cache import InMemoryVRPasteCacheStore
+import pytest
+
+from sketch.pokepaste.validator import ValidationError
+from sketch.vrpaste.cache import InMemoryVRPasteCacheStore, lookup_pokepaste_url
 
 
 class TestInMemoryVRPasteCacheStore:
@@ -57,3 +60,27 @@ class TestInMemoryVRPasteCacheStore:
         store.create("ABC", "https://pokepast.es/upper", user_id=1, guild_id=1)
         assert store.get("abc").pokepaste_url == "https://pokepast.es/lower"
         assert store.get("ABC").pokepaste_url == "https://pokepast.es/upper"
+
+
+class TestLookupPokepasteUrl:
+    def test_cache_hit_returns_pokepaste_url(self):
+        store = InMemoryVRPasteCacheStore()
+        store.create(
+            "gxmfscC1",
+            "https://pokepast.es/minted",
+            user_id=1,
+            guild_id=2,
+        )
+        assert (
+            lookup_pokepaste_url("https://www.vrpastes.com/gxmfscC1", store)
+            == "https://pokepast.es/minted"
+        )
+
+    def test_cache_miss_returns_none(self):
+        store = InMemoryVRPasteCacheStore()
+        assert lookup_pokepaste_url("https://www.vrpastes.com/unknown", store) is None
+
+    def test_non_vrpaste_url_raises(self):
+        store = InMemoryVRPasteCacheStore()
+        with pytest.raises(ValidationError):
+            lookup_pokepaste_url("https://pokepast.es/abc", store)

@@ -28,6 +28,14 @@ _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 # handles both failure points.
 _API_RETRIES = 3
 
+# Column indices into a row read from `A{FIRST_DATA_ROW}:M`. One source of
+# truth so the per-column lookup methods and `search_rows` agree on layout.
+URL_COL = 0
+REPLICA_COL = 3
+DESCRIPTION_COL = 6
+SPECIES_COLS = slice(7, 13)
+_ROW_WIDTH = 13
+
 
 @dataclass
 class TeamRow:
@@ -326,26 +334,36 @@ class SheetsClient:
             return None
         return [str(c).strip() for c in cells]
 
-    async def find_row_by_url(self, sheet_name: str, url: str) -> TeamRow | None:
-        """Return the first existing row whose URL canonicalizes to `url`.
+    async def _find_row_by_column(
+        self,
+        sheet_name: str,
+        column: int,
+        target: str,
+        *,
+        normalize: Callable[[str], str],
+    ) -> TeamRow | None:
+        """Return the first row whose `column` cell matches `target` under `normalize`.
 
-        Reads only A:G (URL + description) — species columns are deliberately
-        skipped so this is safe to call against rows that were just written and
-        whose TEAMDATAFROMPASTE formula is still loading. The returned TeamRow
-        therefore always has `species=[]`; callers that need species must use
-        `search_rows` or `poll_species` instead.
+        Reads `A{FIRST_DATA_ROW}:M` so the returned `TeamRow` has species
+        populated when the cells are settled — empty list when the
+        TEAMDATAFROMPASTE formula is still loading. No "species populated"
+        filter: lookup-by-key must find just-added rows too, unlike
+        `search_rows` which deliberately skips them.
 
-        `url` does not need to be pre-canonicalized; both sides are normalized.
-        Raises ValidationError if `url` isn't a valid Pokepaste URL. Returns
-        None when the sheet has no matching row.
+        `normalize` is applied symmetrically to `target` and the cell value;
+        if it raises (malformed stored value), the row is skipped instead
+        of failing the whole scan.
         """
-        target = canonicalize_pokepaste_url(url)
+        try:
+            normalized_target = normalize(target)
+        except ValidationError:
+            return None
         resp = await self._run(
             self._service.spreadsheets()
             .values()
             .get(
                 spreadsheetId=self._spreadsheet_id,
-                range=f"{sheet_name}!A{config.FIRST_DATA_ROW}:G",
+                range=f"{sheet_name}!A{config.FIRST_DATA_ROW}:M",
                 valueRenderOption="FORMATTED_VALUE",
             )
             .execute,
@@ -353,27 +371,133 @@ class SheetsClient:
         )
         rows = resp.get("values", [])
         for idx, row in enumerate(rows):
-            # Sheets truncates trailing empty cells, so a row with data only
-            # through column D comes back as a 4-element list. Pad to length 7
-            # so row[6] (description) is always indexable.
-            row = row + [""] * (7 - len(row))
-            cell_url = (row[0] or "").strip()
-            if not cell_url:
+            # Sheets truncates trailing empty cells. Pad so every index
+            # into the canonical column layout is safe.
+            row = row + [""] * (_ROW_WIDTH - len(row))
+            cell = (row[column] or "").strip()
+            if not cell:
                 continue
             try:
-                if canonicalize_pokepaste_url(cell_url) != target:
+                if normalize(cell) != normalized_target:
                     continue
             except ValidationError:
-                # Malformed URL already in the sheet — skip rather than error.
                 continue
-            description = (row[6] or "").strip()
+            url = (row[URL_COL] or "").strip()
+            description = (row[DESCRIPTION_COL] or "").strip()
+            species_cells = row[SPECIES_COLS]
+            species = (
+                [(c or "").strip() for c in species_cells]
+                if all(c and c not in ("#N/A", "Loading...") for c in species_cells)
+                else []
+            )
             return TeamRow(
                 row_number=config.FIRST_DATA_ROW + idx,
-                url=cell_url,
+                url=url,
                 description=description,
-                species=[],
+                species=species,
             )
         return None
+
+    async def find_row_by_url(self, sheet_name: str, url: str) -> TeamRow | None:
+        """Return the first existing row whose URL canonicalizes to `url`.
+
+        `url` does not need to be pre-canonicalized; both sides are normalized.
+        Raises ValidationError if `url` isn't a valid Pokepaste URL. Returns
+        None when the sheet has no matching row.
+        """
+        return await self._find_row_by_column(
+            sheet_name, URL_COL, url, normalize=canonicalize_pokepaste_url
+        )
+
+    async def find_row_by_replica(
+        self, sheet_name: str, replica: str
+    ) -> TeamRow | None:
+        """Return the first existing row whose replica column matches `replica`.
+
+        Match is case-insensitive (both sides are uppercased). `replica` is
+        typically already-normalized via
+        `sketch.champions.replica_validator.normalize_replica` upstream;
+        re-normalizing here just makes the method safe to call with a raw
+        user-typed value too.
+        """
+        return await self._find_row_by_column(
+            sheet_name, REPLICA_COL, replica, normalize=str.upper
+        )
+
+    async def delete_row(
+        self,
+        sheet_name: str,
+        row_number: int,
+        *,
+        expected_url: str | None = None,
+        expected_replica: str | None = None,
+    ) -> bool:
+        """Delete `row_number` from `sheet_name`, returning True on success.
+
+        Compare-and-swap guard: when `expected_url` or `expected_replica` is
+        provided, re-reads the row at `row_number` and verifies the cell
+        matches before issuing the delete. Returns False without deleting if
+        the verification fails — the caller should surface a "the sheet
+        shifted under us, please retry" message. Closes the narrow window
+        where a concurrent /delete-team has already shifted rows up under
+        our cached row number.
+
+        Sheets' `deleteDimension` automatically shifts subsequent rows up.
+        """
+        if expected_url is not None or expected_replica is not None:
+            resp = await self._run(
+                self._service.spreadsheets()
+                .values()
+                .get(
+                    spreadsheetId=self._spreadsheet_id,
+                    range=f"{sheet_name}!A{row_number}:G{row_number}",
+                    valueRenderOption="FORMATTED_VALUE",
+                )
+                .execute,
+                num_retries=_API_RETRIES,
+            )
+            rows = resp.get("values", [])
+            if not rows:
+                return False
+            row = rows[0] + [""] * (7 - len(rows[0]))
+            if expected_url is not None:
+                cell_url = (row[URL_COL] or "").strip()
+                try:
+                    if not cell_url or canonicalize_pokepaste_url(
+                        cell_url
+                    ) != canonicalize_pokepaste_url(expected_url):
+                        return False
+                except ValidationError:
+                    return False
+            if expected_replica is not None:
+                cell_replica = (row[REPLICA_COL] or "").strip()
+                if cell_replica.upper() != expected_replica.upper():
+                    return False
+
+        sheet_id = await self._get_sheet_id(sheet_name)
+        await self._run(
+            self._service.spreadsheets()
+            .batchUpdate(
+                spreadsheetId=self._spreadsheet_id,
+                body={
+                    "requests": [
+                        {
+                            "deleteDimension": {
+                                "range": {
+                                    "sheetId": sheet_id,
+                                    "dimension": "ROWS",
+                                    "startIndex": row_number - 1,
+                                    "endIndex": row_number,
+                                }
+                            }
+                        }
+                    ]
+                },
+            )
+            .execute,
+            num_retries=_API_RETRIES,
+        )
+        return True
 
     async def get_search_snapshot(self, sheet_name: str) -> SearchSnapshot:
         """Return rows + a tokenized description index.
