@@ -20,7 +20,10 @@ Generate the squash-merge commit message for a pull request.
    - **Body**: one paragraph on *why* the change was made; optionally a second paragraph for non-obvious mechanics. No bullet lists, no exhaustive change inventory — those belong in the PR description.
    - **Footer**:
      ```
+     Closes #<issue number>
+
      Co-Authored-By: Claude $(Model) $(Version) <noreply@anthropic.com>
      ```
+     Include `Closes #<issue>` only if the PR is linked to a GitHub issue (check the PR body for "Closes", "Fixes", or "Resolves" references, or use `gh pr view` output). Omit it if there is no associated issue.
 
 3. **Output** the full message in a fenced code block so it can be copy-pasted into GitHub's "Squash and merge" dialog.
