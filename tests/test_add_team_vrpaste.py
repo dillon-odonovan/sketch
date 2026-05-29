@@ -169,7 +169,8 @@ class TestResolveViaVRPaste:
         assert result is None
         # The status edit should mention the password issue (the message
         # comes from VRPasteFetchError).
-        assert "password-protected" in interaction.edit_original_response.call_args.kwargs["content"]
+        edit_content = interaction.edit_original_response.call_args.kwargs["content"]
+        assert "password-protected" in edit_content
         # Nothing should land in the cache.
         assert cache.get("gxmfscC1") is None
 

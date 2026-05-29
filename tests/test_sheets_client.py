@@ -85,7 +85,9 @@ def _make_client(
 ) -> tuple[SheetsClient, MagicMock, MagicMock, _Clock]:
     svc = MagicMock()
     request = svc.spreadsheets.return_value.values.return_value.get.return_value
-    request.execute.return_value = response if response is not None else _SAMPLE_RESPONSE
+    request.execute.return_value = (
+        response if response is not None else _SAMPLE_RESPONSE
+    )
     clock = _Clock(start=start_time)
     client = SheetsClient(
         svc,
@@ -275,9 +277,8 @@ class TestListTabNames:
         # the bot's service account"). Wrapping or swallowing here would
         # collapse access-denied and not-found into the same generic.
         svc = MagicMock()
-        svc.spreadsheets.return_value.get.return_value.execute.side_effect = RuntimeError(
-            "403 Forbidden"
-        )
+        meta_execute = svc.spreadsheets.return_value.get.return_value.execute
+        meta_execute.side_effect = RuntimeError("403 Forbidden")
         client = SheetsClient(svc, "test-spreadsheet-id")
         with pytest.raises(RuntimeError, match="403"):
             await client.list_tab_names()
