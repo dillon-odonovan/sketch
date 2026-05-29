@@ -334,7 +334,7 @@ class TestDeleteAndAnnounce:
             target_url="https://pokepast.es/abc",
         )
         interaction.followup.send.assert_called_once()  # success ephemeral only
-        broadcast_channel.send.assert_not_called()  # channel is in client but not configured
+        broadcast_channel.send.assert_not_called()  # broadcast channel unset
 
     async def test_empty_species_omits_pokemon_field(self):
         interaction = _make_interaction()

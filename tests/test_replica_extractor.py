@@ -325,7 +325,8 @@ class TestExtractTeamFromScreenshots:
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         from sketch import config
 
-        assert client.messages.create.call_args.kwargs["model"] == config.REPLICA_OCR_MODEL
+        actual_model = client.messages.create.call_args.kwargs["model"]
+        assert actual_model == config.REPLICA_OCR_MODEL
 
     async def test_model_override_wins(self):
         client = _make_client(_team_message(_full_team_input()))
