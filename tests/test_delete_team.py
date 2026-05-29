@@ -8,114 +8,37 @@ standing up CommandTree / app_commands plumbing for the handler itself.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 from discord import app_commands
 
 from sketch.commands import delete_team as dt
 from sketch.commands._shared import GENERIC_SHEET_DELETE_ERROR
 from sketch.storage.guild_config import GuildConfig, StaticGuildConfigStore
-from sketch.storage.sheets_client import RowShiftedError, TeamNotFoundError, TeamRow
+from sketch.storage.sheets_client import (
+    RowShiftedError,
+    SheetsClient,
+    TeamNotFoundError,
+    TeamRow,
+)
 from sketch.vrpaste.cache import InMemoryVRPasteCacheStore
 
-# --- fakes ------------------------------------------------------------------
+
+def _make_interaction() -> MagicMock:
+    interaction = MagicMock()
+    interaction.user.id = 111
+    interaction.user.display_name = "tester"
+    interaction.user.display_avatar.url = "https://cdn.example/test.png"
+    interaction.guild_id = 222
+    interaction.followup.send = AsyncMock()
+    interaction.edit_original_response = AsyncMock()
+    return interaction
 
 
-@dataclass
-class _FakeUser:
-    id: int = 111
-    display_name: str = "tester"
-
-    @property
-    def display_avatar(self):
-        class _A:
-            url = "https://cdn.example/test.png"
-
-        return _A()
-
-
-@dataclass
-class _FakeFollowup:
-    sent: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
-
-    async def send(self, content: str, **kwargs: Any) -> None:
-        self.sent.append((content, kwargs))
-
-
-@dataclass
-class _FakeChannel:
-    id: int
-    sent: list[Any] = field(default_factory=list)
-
-    async def send(self, *, embed):
-        msg = _FakeMessage(embed=embed)
-        self.sent.append(msg)
-        return msg
-
-
-@dataclass
-class _FakeMessage:
-    embed: Any = None
-
-
-@dataclass
-class _FakeClient:
-    channels: dict[int, _FakeChannel] = field(default_factory=dict)
-
-    def get_channel(self, channel_id: int):
-        return self.channels.get(channel_id)
-
-
-@dataclass
-class _FakeInteraction:
-    user: _FakeUser = field(default_factory=_FakeUser)
-    guild_id: int | None = 222
-    edits: list[dict[str, Any]] = field(default_factory=list)
-    followup: _FakeFollowup = field(default_factory=_FakeFollowup)
-    client: _FakeClient = field(default_factory=_FakeClient)
-
-    async def edit_original_response(self, **kwargs: Any) -> None:
-        self.edits.append(kwargs)
-
-
-@dataclass
-class _FakeSheets:
-    """Stub SheetsClient — only the surface the handler touches.
-
-    `delete_by_url` and `delete_by_replica` return the configured TeamRow
-    on success, or raise the configured exception. Set `delete_raises` to
-    simulate TeamNotFoundError, RowShiftedError, or a transport failure.
-    """
-
-    delete_by_url_result: TeamRow | None = None
-    delete_by_replica_result: TeamRow | None = None
-    delete_raises: Exception | None = None
-
-    delete_by_url_calls: list[tuple[str, str]] = field(default_factory=list)
-    delete_by_replica_calls: list[tuple[str, str]] = field(default_factory=list)
-    invalidated: list[str] = field(default_factory=list)
-
-    async def delete_by_url(self, sheet_name: str, url: str) -> TeamRow:
-        self.delete_by_url_calls.append((sheet_name, url))
-        if self.delete_raises is not None:
-            raise self.delete_raises
-        assert (
-            self.delete_by_url_result is not None
-        ), "configure delete_by_url_result or delete_raises"
-        return self.delete_by_url_result
-
-    async def delete_by_replica(self, sheet_name: str, replica: str) -> TeamRow:
-        self.delete_by_replica_calls.append((sheet_name, replica))
-        if self.delete_raises is not None:
-            raise self.delete_raises
-        assert (
-            self.delete_by_replica_result is not None
-        ), "configure delete_by_replica_result or delete_raises"
-        return self.delete_by_replica_result
-
-    def invalidate_snapshot(self, sheet_name: str) -> None:
-        self.invalidated.append(sheet_name)
+def _make_channel(channel_id: int = 555) -> AsyncMock:
+    channel = AsyncMock()
+    channel.id = channel_id
+    return channel
 
 
 _DEFAULT_SPECIES = [
@@ -165,7 +88,7 @@ def _choice(value: str = "Reg M-A") -> app_commands.Choice[str]:
 
 class TestNormalizeInputs:
     async def test_requires_url_or_replica(self):
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         result = await dt._normalize_inputs(
             interaction,
             format_choice=_choice(),
@@ -173,13 +96,13 @@ class TestNormalizeInputs:
             replica=None,
         )
         assert result is None
-        assert len(interaction.followup.sent) == 1
-        content, kwargs = interaction.followup.sent[0]
+        interaction.followup.send.assert_called_once()
+        (content,), kwargs = interaction.followup.send.call_args
         assert "Pokepaste/VRPaste URL" in content
         assert kwargs["ephemeral"] is True
 
     async def test_normalizes_replica_to_upper(self):
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         result = await dt._normalize_inputs(
             interaction,
             format_choice=_choice(),
@@ -190,7 +113,7 @@ class TestNormalizeInputs:
         assert result.replica == "QBXXWXL05U"
 
     async def test_malformed_replica_returns_error(self):
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         result = await dt._normalize_inputs(
             interaction,
             format_choice=_choice(),
@@ -198,7 +121,7 @@ class TestNormalizeInputs:
             replica="too-short",
         )
         assert result is None
-        assert len(interaction.followup.sent) == 1
+        interaction.followup.send.assert_called_once()
 
 
 # --- _resolve_target_url ----------------------------------------------------
@@ -206,7 +129,7 @@ class TestNormalizeInputs:
 
 class TestResolveTargetUrl:
     async def test_pokepaste_url_canonicalizes(self):
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         cache = InMemoryVRPasteCacheStore()
         result = await dt._resolve_target_url(
             interaction,
@@ -216,7 +139,7 @@ class TestResolveTargetUrl:
         assert result == "https://pokepast.es/abc"
 
     async def test_vrpaste_cache_hit_returns_cached_url(self):
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         cache = InMemoryVRPasteCacheStore()
         cache.create(
             "gxmfscC1",
@@ -232,7 +155,7 @@ class TestResolveTargetUrl:
         assert result == "https://pokepast.es/from-cache"
 
     async def test_vrpaste_cache_miss_refuses(self):
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         cache = InMemoryVRPasteCacheStore()
         result = await dt._resolve_target_url(
             interaction,
@@ -240,13 +163,13 @@ class TestResolveTargetUrl:
             vrpaste_cache=cache,
         )
         assert result is None
-        assert len(interaction.followup.sent) == 1
-        content, _ = interaction.followup.sent[0]
+        interaction.followup.send.assert_called_once()
+        (content,), _ = interaction.followup.send.call_args
         assert "don't have a record" in content
         assert "unseen" in content
 
     async def test_unknown_url_shape_refuses(self):
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         cache = InMemoryVRPasteCacheStore()
         result = await dt._resolve_target_url(
             interaction,
@@ -254,8 +177,8 @@ class TestResolveTargetUrl:
             vrpaste_cache=cache,
         )
         assert result is None
-        assert len(interaction.followup.sent) == 1
-        content, _ = interaction.followup.sent[0]
+        interaction.followup.send.assert_called_once()
+        (content,), _ = interaction.followup.send.call_args
         assert "Pokepaste or VRPaste URL" in content
 
 
@@ -270,33 +193,35 @@ def _store_with_broadcast(channel_id: int | None = None) -> StaticGuildConfigSto
 
 class TestDeleteAndAnnounce:
     async def test_happy_path_url_with_broadcast(self):
-        interaction = _FakeInteraction()
-        broadcast_channel = _FakeChannel(id=555)
-        interaction.client.channels[555] = broadcast_channel
+        interaction = _make_interaction()
+        broadcast_channel = _make_channel(555)
+        interaction.client.get_channel.return_value = broadcast_channel
         row = _row(row_number=8)
-        sheets = _FakeSheets(delete_by_url_result=row)
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.delete_by_url.return_value = row
         store = _store_with_broadcast(555)
 
         await dt._delete_and_announce(
             interaction,
-            sheets,  # type: ignore[arg-type]
+            sheets,
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
             target_url="https://pokepast.es/abc",
         )
 
-        assert sheets.delete_by_url_calls == [
-            ("Regulation M-A", "https://pokepast.es/abc")
-        ]
-        assert sheets.delete_by_replica_calls == []
-        assert sheets.invalidated == ["Regulation M-A"]
-        assert len(interaction.followup.sent) == 1
-        success_content, _ = interaction.followup.sent[0]
+        sheets.delete_by_url.assert_called_once_with(
+            "Regulation M-A", "https://pokepast.es/abc"
+        )
+        sheets.delete_by_replica.assert_not_called()
+        sheets.invalidate_snapshot.assert_called_once_with("Regulation M-A")
+
+        interaction.followup.send.assert_called_once()
+        (success_content,), _ = interaction.followup.send.call_args
         assert "Removed row 8" in success_content
         assert "team desc" in success_content
 
-        assert len(broadcast_channel.sent) == 1
-        embed = broadcast_channel.sent[0].embed
+        broadcast_channel.send.assert_called_once()
+        embed = broadcast_channel.send.call_args.kwargs["embed"]
         assert embed.title == "Team removed from Reg M-A"
         assert embed.description == "team desc"
         species_field = next((f for f in embed.fields if f.name == "Pokémon"), None)
@@ -304,121 +229,129 @@ class TestDeleteAndAnnounce:
         assert "Charizard" in species_field.value
 
     async def test_happy_path_replica(self):
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         row = _row(row_number=9)
-        sheets = _FakeSheets(delete_by_replica_result=row)
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.delete_by_replica.return_value = row
         store = _store_with_broadcast(None)
 
         await dt._delete_and_announce(
             interaction,
-            sheets,  # type: ignore[arg-type]
+            sheets,
             store=store,
             inputs=_inputs(replica="QBXXWXL05U"),
             target_url=None,
         )
-        assert sheets.delete_by_replica_calls == [("Regulation M-A", "QBXXWXL05U")]
-        assert sheets.delete_by_url_calls == []
-        assert sheets.invalidated == ["Regulation M-A"]
-        assert len(interaction.followup.sent) == 1
-        assert "Removed row 9" in interaction.followup.sent[0][0]
+        sheets.delete_by_replica.assert_called_once_with("Regulation M-A", "QBXXWXL05U")
+        sheets.delete_by_url.assert_not_called()
+        sheets.invalidate_snapshot.assert_called_once_with("Regulation M-A")
+
+        interaction.followup.send.assert_called_once()
+        (content,), _ = interaction.followup.send.call_args
+        assert "Removed row 9" in content
 
     async def test_team_not_found_skips_broadcast(self):
-        interaction = _FakeInteraction()
-        broadcast_channel = _FakeChannel(id=555)
-        interaction.client.channels[555] = broadcast_channel
-        sheets = _FakeSheets(delete_raises=TeamNotFoundError("https://pokepast.es/abc"))
+        interaction = _make_interaction()
+        broadcast_channel = _make_channel(555)
+        interaction.client.get_channel.return_value = broadcast_channel
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.delete_by_url.side_effect = TeamNotFoundError("https://pokepast.es/abc")
         store = _store_with_broadcast(555)
 
         await dt._delete_and_announce(
             interaction,
-            sheets,  # type: ignore[arg-type]
+            sheets,
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
             target_url="https://pokepast.es/abc",
         )
-        assert sheets.invalidated == []
-        assert broadcast_channel.sent == []
-        assert len(interaction.followup.sent) == 1
-        content, kwargs = interaction.followup.sent[0]
+        sheets.invalidate_snapshot.assert_not_called()
+        broadcast_channel.send.assert_not_called()
+        interaction.followup.send.assert_called_once()
+        (content,), kwargs = interaction.followup.send.call_args
         assert "No team matching" in content
         assert "`https://pokepast.es/abc`" in content
         assert kwargs["ephemeral"] is True
 
     async def test_row_shifted_skips_broadcast(self):
-        interaction = _FakeInteraction()
-        broadcast_channel = _FakeChannel(id=555)
-        interaction.client.channels[555] = broadcast_channel
-        sheets = _FakeSheets(delete_raises=RowShiftedError(8))
+        interaction = _make_interaction()
+        broadcast_channel = _make_channel(555)
+        interaction.client.get_channel.return_value = broadcast_channel
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.delete_by_url.side_effect = RowShiftedError(8)
         store = _store_with_broadcast(555)
 
         await dt._delete_and_announce(
             interaction,
-            sheets,  # type: ignore[arg-type]
+            sheets,
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
             target_url="https://pokepast.es/abc",
         )
-        assert sheets.invalidated == []
-        assert broadcast_channel.sent == []
-        assert len(interaction.followup.sent) == 1
-        content, kwargs = interaction.followup.sent[0]
+        sheets.invalidate_snapshot.assert_not_called()
+        broadcast_channel.send.assert_not_called()
+        interaction.followup.send.assert_called_once()
+        (content,), kwargs = interaction.followup.send.call_args
         assert "sheet shifted" in content
         assert kwargs["ephemeral"] is True
 
     async def test_transport_error_sends_generic_delete_error(self):
-        interaction = _FakeInteraction()
-        broadcast_channel = _FakeChannel(id=555)
-        interaction.client.channels[555] = broadcast_channel
-        sheets = _FakeSheets(delete_raises=RuntimeError("503"))
+        interaction = _make_interaction()
+        broadcast_channel = _make_channel(555)
+        interaction.client.get_channel.return_value = broadcast_channel
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.delete_by_url.side_effect = RuntimeError("503")
         store = _store_with_broadcast(555)
 
         await dt._delete_and_announce(
             interaction,
-            sheets,  # type: ignore[arg-type]
+            sheets,
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
             target_url="https://pokepast.es/abc",
         )
-        assert sheets.invalidated == []
-        assert broadcast_channel.sent == []
-        assert len(interaction.followup.sent) == 1
-        content, kwargs = interaction.followup.sent[0]
+        sheets.invalidate_snapshot.assert_not_called()
+        broadcast_channel.send.assert_not_called()
+        interaction.followup.send.assert_called_once()
+        (content,), kwargs = interaction.followup.send.call_args
         assert content == GENERIC_SHEET_DELETE_ERROR
         assert kwargs["ephemeral"] is True
 
     async def test_no_broadcast_when_channel_unset(self):
-        interaction = _FakeInteraction()
-        broadcast_channel = _FakeChannel(id=555)
-        interaction.client.channels[555] = broadcast_channel
+        interaction = _make_interaction()
+        broadcast_channel = _make_channel(555)
+        interaction.client.get_channel.return_value = broadcast_channel
         row = _row()
-        sheets = _FakeSheets(delete_by_url_result=row)
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.delete_by_url.return_value = row
         store = _store_with_broadcast(None)  # no broadcast channel configured
 
         await dt._delete_and_announce(
             interaction,
-            sheets,  # type: ignore[arg-type]
+            sheets,
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
             target_url="https://pokepast.es/abc",
         )
-        assert len(interaction.followup.sent) == 1  # success ephemeral only
-        assert broadcast_channel.sent == []  # channel is in client but not configured
+        interaction.followup.send.assert_called_once()  # success ephemeral only
+        broadcast_channel.send.assert_not_called()  # channel is in client but not configured
 
     async def test_empty_species_omits_pokemon_field(self):
-        interaction = _FakeInteraction()
-        broadcast_channel = _FakeChannel(id=555)
-        interaction.client.channels[555] = broadcast_channel
-        sheets = _FakeSheets(delete_by_url_result=_row(species=[]))
+        interaction = _make_interaction()
+        broadcast_channel = _make_channel(555)
+        interaction.client.get_channel.return_value = broadcast_channel
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.delete_by_url.return_value = _row(species=[])
         store = _store_with_broadcast(555)
 
         await dt._delete_and_announce(
             interaction,
-            sheets,  # type: ignore[arg-type]
+            sheets,
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
             target_url="https://pokepast.es/abc",
         )
-        embed = broadcast_channel.sent[0].embed
+        embed = broadcast_channel.send.call_args.kwargs["embed"]
         assert all(f.name != "Pokémon" for f in embed.fields)
 
 
@@ -429,7 +362,7 @@ class TestBothSuppliedPrefersUrl:
     """When both `url` and `replica` are supplied, only delete_by_url is used."""
 
     async def test_url_wins_over_replica(self):
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         cache = InMemoryVRPasteCacheStore()
 
         # _resolve_target_url should return the URL, ignoring replica.
@@ -442,15 +375,16 @@ class TestBothSuppliedPrefersUrl:
 
         # _delete_and_announce should call delete_by_url, not delete_by_replica.
         row = _row()
-        sheets = _FakeSheets(delete_by_url_result=row)
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.delete_by_url.return_value = row
         store = _store_with_broadcast(None)
 
         await dt._delete_and_announce(
             interaction,
-            sheets,  # type: ignore[arg-type]
+            sheets,
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc", replica="QBXXWXL05U"),
             target_url=target_url,
         )
-        assert sheets.delete_by_url_calls != []
-        assert sheets.delete_by_replica_calls == []
+        sheets.delete_by_url.assert_called()
+        sheets.delete_by_replica.assert_not_called()
