@@ -16,7 +16,7 @@ from discord import app_commands
 from sketch.commands import delete_team as dt
 from sketch.commands._shared import GENERIC_SHEET_DELETE_ERROR
 from sketch.storage.guild_config import GuildConfig, StaticGuildConfigStore
-from sketch.storage.sheets_client import TeamRow
+from sketch.storage.sheets_client import RowShiftedError, TeamNotFoundError, TeamRow
 from sketch.vrpaste.cache import InMemoryVRPasteCacheStore
 
 # --- fakes ------------------------------------------------------------------
@@ -83,9 +83,9 @@ class _FakeInteraction:
 class _FakeSheets:
     """Stub SheetsClient — only the surface the handler touches.
 
-    `delete_by_url` and `delete_by_replica` each return the configured
-    `delete_result` TeamRow (found + deleted) or `None` (not found / CAS
-    miss). Set `delete_raises` to simulate a transport error.
+    `delete_by_url` and `delete_by_replica` return the configured TeamRow
+    on success, or raise the configured exception. Set `delete_raises` to
+    simulate TeamNotFoundError, RowShiftedError, or a transport failure.
     """
 
     delete_by_url_result: TeamRow | None = None
@@ -96,16 +96,22 @@ class _FakeSheets:
     delete_by_replica_calls: list[tuple[str, str]] = field(default_factory=list)
     invalidated: list[str] = field(default_factory=list)
 
-    async def delete_by_url(self, sheet_name: str, url: str) -> TeamRow | None:
+    async def delete_by_url(self, sheet_name: str, url: str) -> TeamRow:
         self.delete_by_url_calls.append((sheet_name, url))
         if self.delete_raises is not None:
             raise self.delete_raises
+        assert (
+            self.delete_by_url_result is not None
+        ), "configure delete_by_url_result or delete_raises"
         return self.delete_by_url_result
 
-    async def delete_by_replica(self, sheet_name: str, replica: str) -> TeamRow | None:
+    async def delete_by_replica(self, sheet_name: str, replica: str) -> TeamRow:
         self.delete_by_replica_calls.append((sheet_name, replica))
         if self.delete_raises is not None:
             raise self.delete_raises
+        assert (
+            self.delete_by_replica_result is not None
+        ), "configure delete_by_replica_result or delete_raises"
         return self.delete_by_replica_result
 
     def invalidate_snapshot(self, sheet_name: str) -> None:
@@ -316,12 +322,11 @@ class TestDeleteAndAnnounce:
         assert len(interaction.followup.sent) == 1
         assert "Removed row 9" in interaction.followup.sent[0][0]
 
-    async def test_not_found_or_cas_mismatch_skips_broadcast(self):
-        # delete_by_url returning None means "not found" or CAS guard fired.
+    async def test_team_not_found_skips_broadcast(self):
         interaction = _FakeInteraction()
         broadcast_channel = _FakeChannel(id=555)
         interaction.client.channels[555] = broadcast_channel
-        sheets = _FakeSheets(delete_by_url_result=None)
+        sheets = _FakeSheets(delete_raises=TeamNotFoundError("https://pokepast.es/abc"))
         store = _store_with_broadcast(555)
 
         await dt._delete_and_announce(
@@ -336,6 +341,28 @@ class TestDeleteAndAnnounce:
         assert len(interaction.followup.sent) == 1
         content, kwargs = interaction.followup.sent[0]
         assert "No team matching" in content
+        assert "`https://pokepast.es/abc`" in content
+        assert kwargs["ephemeral"] is True
+
+    async def test_row_shifted_skips_broadcast(self):
+        interaction = _FakeInteraction()
+        broadcast_channel = _FakeChannel(id=555)
+        interaction.client.channels[555] = broadcast_channel
+        sheets = _FakeSheets(delete_raises=RowShiftedError(8))
+        store = _store_with_broadcast(555)
+
+        await dt._delete_and_announce(
+            interaction,
+            sheets,  # type: ignore[arg-type]
+            store=store,
+            inputs=_inputs(url="https://pokepast.es/abc"),
+            target_url="https://pokepast.es/abc",
+        )
+        assert sheets.invalidated == []
+        assert broadcast_channel.sent == []
+        assert len(interaction.followup.sent) == 1
+        content, kwargs = interaction.followup.sent[0]
+        assert "sheet shifted" in content
         assert kwargs["ephemeral"] is True
 
     async def test_transport_error_sends_generic_delete_error(self):

@@ -33,7 +33,12 @@ from sketch.pokepaste.validator import (
     is_pokepaste_url,
 )
 from sketch.storage.guild_config import GuildConfigStore
-from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
+from sketch.storage.sheets_client import (
+    RowShiftedError,
+    SheetsClient,
+    SheetsClientRegistry,
+    TeamNotFoundError,
+)
 from sketch.vrpaste.cache import VRPasteCacheStore, lookup_pokepaste_url
 from sketch.vrpaste.validator import is_vrpaste_url
 
@@ -156,6 +161,20 @@ async def _delete_and_announce(
         else:
             assert inputs.replica is not None
             row = await sheets.delete_by_replica(inputs.sheet_name, inputs.replica)
+    except TeamNotFoundError:
+        key = f"`{target_url}`" if target_url is not None else f"`{inputs.replica}`"
+        await interaction.followup.send(
+            f"No team matching {key} found in *{inputs.fmt_name}*.",
+            ephemeral=True,
+        )
+        return
+    except RowShiftedError:
+        await interaction.followup.send(
+            "The sheet shifted under us before we could delete that row — "
+            "please run the command again.",
+            ephemeral=True,
+        )
+        return
     except Exception:
         logger.exception(
             "Failed to delete team in %s (url=%s replica=%s)",
@@ -164,16 +183,6 @@ async def _delete_and_announce(
             inputs.replica,
         )
         await interaction.followup.send(GENERIC_SHEET_DELETE_ERROR, ephemeral=True)
-        return
-
-    if row is None:
-        # Could be "not found" or a CAS mismatch (concurrent delete shifted rows).
-        key = f"`{target_url}`" if target_url is not None else f"`{inputs.replica}`"
-        await interaction.followup.send(
-            f"No team matching {key} found in *{inputs.fmt_name}*, or the "
-            "sheet shifted under us — please try again.",
-            ephemeral=True,
-        )
         return
 
     sheets.invalidate_snapshot(inputs.sheet_name)

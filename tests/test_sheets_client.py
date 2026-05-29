@@ -17,9 +17,11 @@ from sketch import config
 from sketch.search.text_search import DescriptionIndex
 from sketch.storage.guild_config import GuildConfig, StaticGuildConfigStore
 from sketch.storage.sheets_client import (
+    RowShiftedError,
     SearchSnapshot,
     SheetsClient,
     SheetsClientRegistry,
+    TeamNotFoundError,
     TeamRow,
 )
 
@@ -471,6 +473,8 @@ class _CannedRequest:
 
 _SHEET = "Reg M-A Sheet"
 _SCAN_RANGE = f"{_SHEET}!A{config.FIRST_DATA_ROW}:M"
+# Range used by delete_row's CAS guard read (A:G covers URL + replica cols).
+_CAS_RANGE = f"{_SHEET}!A{config.FIRST_DATA_ROW}:G{config.FIRST_DATA_ROW}"
 
 
 def _bank_row(
@@ -671,4 +675,90 @@ class TestDeleteRow:
             _SHEET, 5, expected_url="https://pokepast.es/abc"
         )
         assert deleted is False
+        assert svc.batch_update_bodies == []
+
+
+# -- delete_by_url / delete_by_replica ----------------------------------------
+
+
+def _cas_response(
+    url: str = "https://pokepast.es/aaaa1111",
+    replica: str = "QBXXWXL05U",
+    description: str = "desc",
+) -> dict:
+    """Fake guard-read response for delete_row's CAS check (A:G shape)."""
+    return {"values": [[url, "", "", replica, "", "", description]]}
+
+
+class TestDeleteBy:
+    async def test_delete_by_url_returns_deleted_row(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        svc.get_responses[_CAS_RANGE] = _cas_response()
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.delete_by_url(_SHEET, "https://pokepast.es/aaaa1111")
+
+        assert row.url == "https://pokepast.es/aaaa1111"
+        assert row.row_number == config.FIRST_DATA_ROW
+        assert len(svc.batch_update_bodies) == 1
+
+    async def test_delete_by_url_raises_team_not_found(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(TeamNotFoundError):
+            await client.delete_by_url(_SHEET, "https://pokepast.es/does-not-exist")
+
+        assert svc.batch_update_bodies == []
+
+    async def test_delete_by_url_raises_row_shifted(self):
+        # Lookup returns a row, but the CAS guard read at that row_number
+        # finds a different URL (concurrent delete shifted rows up).
+        svc = _RoutingService()
+        # Scan finds the row at FIRST_DATA_ROW.
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        # CAS read at that same row returns a *different* URL.
+        svc.get_responses[_CAS_RANGE] = _cas_response(
+            url="https://pokepast.es/shifted-in"
+        )
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(RowShiftedError):
+            await client.delete_by_url(_SHEET, "https://pokepast.es/aaaa1111")
+
+        assert svc.batch_update_bodies == []
+
+    async def test_delete_by_replica_returns_deleted_row(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        svc.get_responses[_CAS_RANGE] = _cas_response()
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.delete_by_replica(_SHEET, "QBXXWXL05U")
+
+        assert row.url == "https://pokepast.es/aaaa1111"
+        assert len(svc.batch_update_bodies) == 1
+
+    async def test_delete_by_replica_raises_team_not_found(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(TeamNotFoundError):
+            await client.delete_by_replica(_SHEET, "NOTINSHEET0")
+
+        assert svc.batch_update_bodies == []
+
+    async def test_delete_by_replica_raises_row_shifted(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        # CAS guard sees a different replica code at that row.
+        svc.get_responses[_CAS_RANGE] = _cas_response(replica="DIFFERENTT0")
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(RowShiftedError):
+            await client.delete_by_replica(_SHEET, "QBXXWXL05U")
+
         assert svc.batch_update_bodies == []

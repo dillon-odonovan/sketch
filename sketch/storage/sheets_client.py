@@ -45,6 +45,19 @@ class TeamRow:
     species: list[str]
 
 
+class TeamNotFoundError(Exception):
+    """Raised by delete_by_url / delete_by_replica when the key matches no row."""
+
+
+class RowShiftedError(Exception):
+    """Raised by delete_by_url / delete_by_replica when the CAS guard fires.
+
+    Indicates that the row was found but had shifted (due to a concurrent
+    delete) before the `deleteDimension` call could be issued. Callers
+    should ask the user to retry.
+    """
+
+
 @dataclass
 class SearchSnapshot:
     """One point-in-time fetch of a sheet plus the index built over it.
@@ -506,40 +519,52 @@ class SheetsClient:
         )
         return True
 
-    async def delete_by_url(self, sheet_name: str, url: str) -> TeamRow | None:
+    async def delete_by_url(self, sheet_name: str, url: str) -> TeamRow:
         """Find the row with `url` and delete it, returning the deleted TeamRow.
 
         Combines the lookup and the compare-and-swap delete so the command
-        handler doesn't need to orchestrate two separate calls. Returns the
-        `TeamRow` that was deleted on success (its data can be used for the
-        broadcast embed), or `None` when the row wasn't found, the CAS guard
-        caught a concurrent shift, or `url` isn't a valid Pokepaste URL.
+        handler has a single call per path. The returned `TeamRow` can be used
+        by the caller for the broadcast embed.
 
-        The same atomicity guarantees as `delete_row` apply: the guard re-reads
-        the row immediately before the `deleteDimension` call and aborts if the
-        cell no longer matches.
+        Raises:
+            TeamNotFoundError: no row in `sheet_name` matches `url`.
+            RowShiftedError: the row was found but shifted before the delete
+                could fire (concurrent /delete-team); caller should ask the
+                user to retry.
+            ValidationError: `url` isn't a valid Pokepaste URL.
+            Exception: any Sheets API transport failure propagates unchanged.
         """
         row = await self.find_row_by_url(sheet_name, url)
         if row is None:
-            return None
+            raise TeamNotFoundError(url)
         deleted = await self.delete_row(sheet_name, row.row_number, expected_url=url)
-        return row if deleted else None
+        if not deleted:
+            raise RowShiftedError(row.row_number)
+        return row
 
-    async def delete_by_replica(self, sheet_name: str, replica: str) -> TeamRow | None:
+    async def delete_by_replica(self, sheet_name: str, replica: str) -> TeamRow:
         """Find the row with `replica` and delete it, returning the deleted TeamRow.
 
         Same semantics as `delete_by_url`, keyed by the replica/team-ID column
         instead. Match is case-insensitive; `replica` is typically already
         normalized by the command handler via `normalize_replica`, but
         `find_row_by_replica` accepts raw input too.
+
+        Raises:
+            TeamNotFoundError: no row in `sheet_name` matches `replica`.
+            RowShiftedError: the row was found but shifted before the delete
+                could fire; caller should ask the user to retry.
+            Exception: any Sheets API transport failure propagates unchanged.
         """
         row = await self.find_row_by_replica(sheet_name, replica)
         if row is None:
-            return None
+            raise TeamNotFoundError(replica)
         deleted = await self.delete_row(
             sheet_name, row.row_number, expected_replica=replica
         )
-        return row if deleted else None
+        if not deleted:
+            raise RowShiftedError(row.row_number)
+        return row
 
     async def get_search_snapshot(self, sheet_name: str) -> SearchSnapshot:
         """Return rows + a tokenized description index.
