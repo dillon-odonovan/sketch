@@ -112,20 +112,23 @@ def _filter_team_rows(
       or doesn't equal the target after uppercasing are skipped.
     """
     if replica_target is not None:
-        return [
-            row
-            for row in rows
-            if row.replica is not None and row.replica.upper() == replica_target
-        ]
+        match = next(
+            (
+                row
+                for row in rows
+                if row.replica is not None and row.replica.upper() == replica_target
+            ),
+            None,
+        )
+        return [match] if match is not None else []
     if url_target is not None:
-        matches: list[TeamRow] = []
         for row in rows:
             try:
                 if canonicalize_pokepaste_url(row.url) == url_target:
-                    matches.append(row)
+                    return [row]
             except ValidationError:
                 continue
-        return matches
+        return []
     matches = []
     for idx, row in enumerate(rows):
         species_lower = {s.lower() for s in row.species}
