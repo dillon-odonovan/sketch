@@ -40,6 +40,7 @@ from google.api_core import exceptions as gax_exceptions
 from google.cloud import firestore
 
 from sketch import config
+from sketch.vrpaste.validator import extract_vrpaste_id
 
 logger = logging.getLogger(__name__)
 
@@ -257,3 +258,19 @@ def _parse_doc(doc_id: str, data: dict) -> VRPasteCacheEntry | None:
         created_by_user_id=created_by_user_id,
         created_by_guild_id=created_by_guild_id,
     )
+
+
+def lookup_pokepaste_url(url: str, cache: VRPasteCacheStore) -> str | None:
+    """Resolve a VRPaste URL to its cached Pokepaste URL, or None on miss.
+
+    Synchronous (mirrors `VRPasteCacheStore.get`); async callers wrap
+    with `asyncio.to_thread`. Raises `ValidationError` if `url` isn't a
+    VRPaste URL — the cache miss path is only for known-shape URLs.
+
+    The lookup-only primitive; doesn't fetch, mint, or cache.create on
+    miss. /add-team's resolver does the full fetch+mint dance and so
+    stays inlined there.
+    """
+    vrpaste_id = extract_vrpaste_id(url)
+    entry = cache.get(vrpaste_id)
+    return entry.pokepaste_url if entry is not None else None

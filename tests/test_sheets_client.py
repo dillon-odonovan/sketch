@@ -13,12 +13,15 @@ from unittest.mock import patch
 
 import pytest
 
+from sketch import config
 from sketch.search.text_search import DescriptionIndex
 from sketch.storage.guild_config import GuildConfig, StaticGuildConfigStore
 from sketch.storage.sheets_client import (
+    RowShiftedError,
     SearchSnapshot,
     SheetsClient,
     SheetsClientRegistry,
+    TeamNotFoundError,
     TeamRow,
 )
 
@@ -407,3 +410,355 @@ class TestSheetsClientRegistry:
         assert real is not None
         assert real._spreadsheet_id == "real"
         assert real is not probe
+
+
+# -- find_row_by_url / find_row_by_replica -----------------------------------
+
+
+class _RoutingService:
+    """Programmable Sheets service stub.
+
+    Routes each `values().get(range=...)` to a registered payload and records
+    `batchUpdate` bodies so delete-flow assertions can inspect them. Keeps
+    each test self-describing — the sample bank is built per-test rather
+    than reused across the file's other suites.
+    """
+
+    def __init__(self) -> None:
+        self.get_responses: dict[str, dict] = {}
+        self.metadata_response: dict = {
+            "sheets": [{"properties": {"title": "Reg M-A Sheet", "sheetId": 7}}]
+        }
+        self.batch_update_bodies: list[dict] = []
+        self.get_calls: list[dict] = []
+
+    def spreadsheets(self):
+        return _RoutingSpreadsheets(self)
+
+
+class _RoutingSpreadsheets:
+    def __init__(self, parent: _RoutingService) -> None:
+        self._parent = parent
+
+    def values(self):
+        return _RoutingValues(self._parent)
+
+    def get(self, **kwargs):
+        # Tab-id discovery: spreadsheets().get(fields="...sheetId...").
+        return _CannedRequest(self._parent.metadata_response)
+
+    def batchUpdate(self, *, spreadsheetId, body):
+        self._parent.batch_update_bodies.append(body)
+        return _CannedRequest({})
+
+
+class _RoutingValues:
+    def __init__(self, parent: _RoutingService) -> None:
+        self._parent = parent
+
+    def get(self, **kwargs):
+        self._parent.get_calls.append(kwargs)
+        rng = kwargs.get("range", "")
+        payload = self._parent.get_responses.get(rng, {"values": []})
+        return _CannedRequest(payload)
+
+
+class _CannedRequest:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def execute(self, num_retries: int = 0):
+        return self._payload
+
+
+_SHEET = "Reg M-A Sheet"
+_SCAN_RANGE = f"{_SHEET}!A{config.FIRST_DATA_ROW}:M"
+# Range used by delete_row's CAS guard read (A:G covers URL + replica cols).
+_CAS_RANGE = f"{_SHEET}!A{config.FIRST_DATA_ROW}:G{config.FIRST_DATA_ROW}"
+
+
+def _bank_row(
+    url: str = "https://pokepast.es/aaaa1111",
+    replica: str = "QBXXWXL05U",
+    description: str = "jsmithvgc — Calyrex-S balance",
+    species: list[str] | None = None,
+) -> list[str]:
+    species = species or [
+        "Calyrex-Shadow",
+        "Urshifu",
+        "Amoonguss",
+        "Rillaboom",
+        "Incineroar",
+        "Tornadus",
+    ]
+    return [url, "", "", replica, "Exact", "", description, *species]
+
+
+class TestFindRow:
+    async def test_find_row_by_url_returns_match_with_species(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.find_row_by_url(_SHEET, "https://pokepast.es/aaaa1111")
+
+        assert row is not None
+        assert row.row_number == config.FIRST_DATA_ROW
+        assert row.url == "https://pokepast.es/aaaa1111"
+        assert row.description == "jsmithvgc — Calyrex-S balance"
+        assert "Calyrex-Shadow" in row.species
+
+    async def test_find_row_by_url_skips_malformed_stored_url(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {
+            "values": [
+                _bank_row(url="not-a-pokepaste-url"),
+                _bank_row(),
+            ]
+        }
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.find_row_by_url(_SHEET, "https://pokepast.es/aaaa1111")
+
+        assert row is not None
+        assert row.row_number == config.FIRST_DATA_ROW + 1
+
+    async def test_find_row_by_url_returns_none_on_miss(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        client = SheetsClient(svc, "ssid")
+
+        assert await client.find_row_by_url(_SHEET, "https://pokepast.es/never") is None
+
+    async def test_find_row_by_replica_case_insensitive(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row(replica="QBXXWXL05U")]}
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.find_row_by_replica(_SHEET, "qbxxwxl05u")
+
+        assert row is not None
+        assert row.url == "https://pokepast.es/aaaa1111"
+        assert row.row_number == config.FIRST_DATA_ROW
+
+    async def test_find_row_by_replica_returns_none_on_miss(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        client = SheetsClient(svc, "ssid")
+
+        assert await client.find_row_by_replica(_SHEET, "DOESNOTEXST") is None
+
+    async def test_find_row_skips_blank_target_column(self):
+        # A row with no replica code should not match a replica lookup.
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {
+            "values": [
+                _bank_row(replica=""),
+                _bank_row(replica="HIT0000000"),
+            ]
+        }
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.find_row_by_replica(_SHEET, "HIT0000000")
+        assert row is not None
+        assert row.row_number == config.FIRST_DATA_ROW + 1
+
+    async def test_find_row_loading_species_returns_empty_list(self):
+        # Just-added row whose TEAMDATAFROMPASTE is still resolving.
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {
+            "values": [
+                _bank_row(species=["Loading...", "", "", "", "", ""]),
+            ]
+        }
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.find_row_by_url(_SHEET, "https://pokepast.es/aaaa1111")
+        assert row is not None
+        assert row.species == []
+
+
+# -- delete_row --------------------------------------------------------------
+
+
+class TestDeleteRow:
+    async def test_delete_with_no_guard_issues_batch_update(self):
+        svc = _RoutingService()
+        client = SheetsClient(svc, "ssid")
+
+        deleted = await client.delete_row(_SHEET, 5)
+        assert deleted is True
+        # No guard read should have been issued (only the tab-id meta read).
+        assert all(":" not in call.get("range", "") for call in svc.get_calls)
+        assert len(svc.batch_update_bodies) == 1
+        body = svc.batch_update_bodies[0]
+        request = body["requests"][0]["deleteDimension"]
+        assert request["range"]["sheetId"] == 7
+        assert request["range"]["dimension"] == "ROWS"
+        assert request["range"]["startIndex"] == 4
+        assert request["range"]["endIndex"] == 5
+
+    async def test_delete_with_expected_url_match_deletes(self):
+        svc = _RoutingService()
+        svc.get_responses[f"{_SHEET}!A5:G5"] = {
+            "values": [
+                ["https://pokepast.es/abc", "", "", "ZZZ0000000", "", "", "desc"]
+            ]
+        }
+        client = SheetsClient(svc, "ssid")
+
+        deleted = await client.delete_row(
+            _SHEET, 5, expected_url="https://pokepast.es/abc"
+        )
+        assert deleted is True
+        assert len(svc.batch_update_bodies) == 1
+
+    async def test_delete_with_expected_url_mismatch_does_not_delete(self):
+        svc = _RoutingService()
+        svc.get_responses[f"{_SHEET}!A5:G5"] = {
+            "values": [
+                [
+                    "https://pokepast.es/somethingelse",
+                    "",
+                    "",
+                    "ZZZ0000000",
+                    "",
+                    "",
+                    "desc",
+                ]
+            ]
+        }
+        client = SheetsClient(svc, "ssid")
+
+        deleted = await client.delete_row(
+            _SHEET, 5, expected_url="https://pokepast.es/abc"
+        )
+        assert deleted is False
+        assert svc.batch_update_bodies == []
+
+    async def test_delete_with_expected_replica_match_deletes(self):
+        svc = _RoutingService()
+        svc.get_responses[f"{_SHEET}!A5:G5"] = {
+            "values": [
+                ["https://pokepast.es/abc", "", "", "qbxxwxl05u", "", "", "desc"]
+            ]
+        }
+        client = SheetsClient(svc, "ssid")
+
+        # Uppercase the expected value the way the handler does.
+        deleted = await client.delete_row(_SHEET, 5, expected_replica="QBXXWXL05U")
+        assert deleted is True
+        assert len(svc.batch_update_bodies) == 1
+
+    async def test_delete_with_expected_replica_mismatch_does_not_delete(self):
+        svc = _RoutingService()
+        svc.get_responses[f"{_SHEET}!A5:G5"] = {
+            "values": [
+                ["https://pokepast.es/abc", "", "", "OTHER00000", "", "", "desc"]
+            ]
+        }
+        client = SheetsClient(svc, "ssid")
+
+        deleted = await client.delete_row(_SHEET, 5, expected_replica="QBXXWXL05U")
+        assert deleted is False
+        assert svc.batch_update_bodies == []
+
+    async def test_delete_with_expected_url_empty_row_does_not_delete(self):
+        # If the guard read returns nothing (row already gone), bail out
+        # rather than running a no-op delete that would shift unrelated
+        # rows up.
+        svc = _RoutingService()
+        svc.get_responses[f"{_SHEET}!A5:G5"] = {"values": []}
+        client = SheetsClient(svc, "ssid")
+
+        deleted = await client.delete_row(
+            _SHEET, 5, expected_url="https://pokepast.es/abc"
+        )
+        assert deleted is False
+        assert svc.batch_update_bodies == []
+
+
+# -- delete_by_url / delete_by_replica ----------------------------------------
+
+
+def _cas_response(
+    url: str = "https://pokepast.es/aaaa1111",
+    replica: str = "QBXXWXL05U",
+    description: str = "desc",
+) -> dict:
+    """Fake guard-read response for delete_row's CAS check (A:G shape)."""
+    return {"values": [[url, "", "", replica, "", "", description]]}
+
+
+class TestDeleteBy:
+    async def test_delete_by_url_returns_deleted_row(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        svc.get_responses[_CAS_RANGE] = _cas_response()
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.delete_by_url(_SHEET, "https://pokepast.es/aaaa1111")
+
+        assert row.url == "https://pokepast.es/aaaa1111"
+        assert row.row_number == config.FIRST_DATA_ROW
+        assert len(svc.batch_update_bodies) == 1
+
+    async def test_delete_by_url_raises_team_not_found(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(TeamNotFoundError):
+            await client.delete_by_url(_SHEET, "https://pokepast.es/does-not-exist")
+
+        assert svc.batch_update_bodies == []
+
+    async def test_delete_by_url_raises_row_shifted(self):
+        # Lookup returns a row, but the CAS guard read at that row_number
+        # finds a different URL (concurrent delete shifted rows up).
+        svc = _RoutingService()
+        # Scan finds the row at FIRST_DATA_ROW.
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        # CAS read at that same row returns a *different* URL.
+        svc.get_responses[_CAS_RANGE] = _cas_response(
+            url="https://pokepast.es/shifted-in"
+        )
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(RowShiftedError):
+            await client.delete_by_url(_SHEET, "https://pokepast.es/aaaa1111")
+
+        assert svc.batch_update_bodies == []
+
+    async def test_delete_by_replica_returns_deleted_row(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        svc.get_responses[_CAS_RANGE] = _cas_response()
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.delete_by_replica(_SHEET, "QBXXWXL05U")
+
+        assert row.url == "https://pokepast.es/aaaa1111"
+        assert len(svc.batch_update_bodies) == 1
+
+    async def test_delete_by_replica_raises_team_not_found(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(TeamNotFoundError):
+            await client.delete_by_replica(_SHEET, "NOTINSHEET0")
+
+        assert svc.batch_update_bodies == []
+
+    async def test_delete_by_replica_raises_row_shifted(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        # CAS guard sees a different replica code at that row.
+        svc.get_responses[_CAS_RANGE] = _cas_response(replica="DIFFERENTT0")
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(RowShiftedError):
+            await client.delete_by_replica(_SHEET, "QBXXWXL05U")
+
+        assert svc.batch_update_bodies == []
