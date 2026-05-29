@@ -1,10 +1,9 @@
 """End-to-end test for the `/delete-team` handler helpers.
 
 Drives the internals (`_normalize_inputs`, `_resolve_target_url`,
-`_locate_row`, `_delete_and_announce`) directly with a fake interaction
-and a stub SheetsClient. Mirrors the test_add_team_vrpaste.py pattern —
-avoids standing up CommandTree / app_commands plumbing for the handler
-itself.
+`_delete_and_announce`) directly with a fake interaction and a stub
+SheetsClient. Mirrors the test_add_team_vrpaste.py pattern — avoids
+standing up CommandTree / app_commands plumbing for the handler itself.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ from typing import Any
 from discord import app_commands
 
 from sketch.commands import delete_team as dt
+from sketch.commands._shared import GENERIC_SHEET_DELETE_ERROR
 from sketch.storage.guild_config import GuildConfig, StaticGuildConfigStore
 from sketch.storage.sheets_client import TeamRow
 from sketch.vrpaste.cache import InMemoryVRPasteCacheStore
@@ -81,38 +81,32 @@ class _FakeInteraction:
 
 @dataclass
 class _FakeSheets:
-    """Stub SheetsClient — only the surface the handler touches."""
+    """Stub SheetsClient — only the surface the handler touches.
 
-    find_url_result: TeamRow | None = None
-    find_replica_result: TeamRow | None = None
-    delete_result: bool = True
+    `delete_by_url` and `delete_by_replica` each return the configured
+    `delete_result` TeamRow (found + deleted) or `None` (not found / CAS
+    miss). Set `delete_raises` to simulate a transport error.
+    """
+
+    delete_by_url_result: TeamRow | None = None
+    delete_by_replica_result: TeamRow | None = None
     delete_raises: Exception | None = None
-    find_raises: Exception | None = None
 
-    find_url_calls: list[tuple[str, str]] = field(default_factory=list)
-    find_replica_calls: list[tuple[str, str]] = field(default_factory=list)
-    delete_calls: list[dict[str, Any]] = field(default_factory=list)
+    delete_by_url_calls: list[tuple[str, str]] = field(default_factory=list)
+    delete_by_replica_calls: list[tuple[str, str]] = field(default_factory=list)
     invalidated: list[str] = field(default_factory=list)
 
-    async def find_row_by_url(self, sheet_name: str, url: str):
-        self.find_url_calls.append((sheet_name, url))
-        if self.find_raises is not None:
-            raise self.find_raises
-        return self.find_url_result
-
-    async def find_row_by_replica(self, sheet_name: str, replica: str):
-        self.find_replica_calls.append((sheet_name, replica))
-        if self.find_raises is not None:
-            raise self.find_raises
-        return self.find_replica_result
-
-    async def delete_row(self, sheet_name: str, row_number: int, **kwargs):
-        self.delete_calls.append(
-            {"sheet_name": sheet_name, "row_number": row_number, **kwargs}
-        )
+    async def delete_by_url(self, sheet_name: str, url: str) -> TeamRow | None:
+        self.delete_by_url_calls.append((sheet_name, url))
         if self.delete_raises is not None:
             raise self.delete_raises
-        return self.delete_result
+        return self.delete_by_url_result
+
+    async def delete_by_replica(self, sheet_name: str, replica: str) -> TeamRow | None:
+        self.delete_by_replica_calls.append((sheet_name, replica))
+        if self.delete_raises is not None:
+            raise self.delete_raises
+        return self.delete_by_replica_result
 
     def invalidate_snapshot(self, sheet_name: str) -> None:
         self.invalidated.append(sheet_name)
@@ -259,66 +253,6 @@ class TestResolveTargetUrl:
         assert "Pokepaste or VRPaste URL" in content
 
 
-# --- _locate_row -----------------------------------------------------------
-
-
-class TestLocateRow:
-    async def test_uses_url_lookup_when_target_url_set(self):
-        interaction = _FakeInteraction()
-        sheets = _FakeSheets(find_url_result=_row(row_number=10))
-        row = await dt._locate_row(
-            interaction,
-            sheets,  # type: ignore[arg-type]
-            inputs=_inputs(url="https://pokepast.es/abc"),
-            target_url="https://pokepast.es/abc",
-        )
-        assert row is not None
-        assert row.row_number == 10
-        assert sheets.find_url_calls == [("Regulation M-A", "https://pokepast.es/abc")]
-        assert sheets.find_replica_calls == []
-
-    async def test_uses_replica_lookup_when_no_target_url(self):
-        interaction = _FakeInteraction()
-        sheets = _FakeSheets(find_replica_result=_row(row_number=11))
-        row = await dt._locate_row(
-            interaction,
-            sheets,  # type: ignore[arg-type]
-            inputs=_inputs(replica="QBXXWXL05U"),
-            target_url=None,
-        )
-        assert row is not None
-        assert row.row_number == 11
-        assert sheets.find_url_calls == []
-        assert sheets.find_replica_calls == [("Regulation M-A", "QBXXWXL05U")]
-
-    async def test_no_match_sends_ephemeral(self):
-        interaction = _FakeInteraction()
-        sheets = _FakeSheets(find_url_result=None)
-        row = await dt._locate_row(
-            interaction,
-            sheets,  # type: ignore[arg-type]
-            inputs=_inputs(url="https://pokepast.es/abc"),
-            target_url="https://pokepast.es/abc",
-        )
-        assert row is None
-        assert len(interaction.followup.sent) == 1
-        content, kwargs = interaction.followup.sent[0]
-        assert "No team matching" in content
-        assert kwargs["ephemeral"] is True
-
-    async def test_transport_error_surfaces_generic_message(self):
-        interaction = _FakeInteraction()
-        sheets = _FakeSheets(find_raises=RuntimeError("503"))
-        row = await dt._locate_row(
-            interaction,
-            sheets,  # type: ignore[arg-type]
-            inputs=_inputs(url="https://pokepast.es/abc"),
-            target_url="https://pokepast.es/abc",
-        )
-        assert row is None
-        assert len(interaction.followup.sent) == 1
-
-
 # --- _delete_and_announce --------------------------------------------------
 
 
@@ -329,31 +263,26 @@ def _store_with_broadcast(channel_id: int | None = None) -> StaticGuildConfigSto
 
 
 class TestDeleteAndAnnounce:
-    async def test_happy_path_with_broadcast(self):
+    async def test_happy_path_url_with_broadcast(self):
         interaction = _FakeInteraction()
         broadcast_channel = _FakeChannel(id=555)
         interaction.client.channels[555] = broadcast_channel
-        sheets = _FakeSheets()
-        store = _store_with_broadcast(555)
         row = _row(row_number=8)
+        sheets = _FakeSheets(delete_by_url_result=row)
+        store = _store_with_broadcast(555)
 
         await dt._delete_and_announce(
             interaction,
             sheets,  # type: ignore[arg-type]
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
-            row=row,
             target_url="https://pokepast.es/abc",
         )
 
-        assert sheets.delete_calls == [
-            {
-                "sheet_name": "Regulation M-A",
-                "row_number": 8,
-                "expected_url": "https://pokepast.es/abc",
-                "expected_replica": None,
-            }
+        assert sheets.delete_by_url_calls == [
+            ("Regulation M-A", "https://pokepast.es/abc")
         ]
+        assert sheets.delete_by_replica_calls == []
         assert sheets.invalidated == ["Regulation M-A"]
         assert len(interaction.followup.sent) == 1
         success_content, _ = interaction.followup.sent[0]
@@ -364,33 +293,35 @@ class TestDeleteAndAnnounce:
         embed = broadcast_channel.sent[0].embed
         assert embed.title == "Team removed from Reg M-A"
         assert embed.description == "team desc"
-        # Species rendered as a field on the embed.
         species_field = next((f for f in embed.fields if f.name == "Pokémon"), None)
         assert species_field is not None
         assert "Charizard" in species_field.value
 
-    async def test_replica_path_passes_expected_replica(self):
+    async def test_happy_path_replica(self):
         interaction = _FakeInteraction()
-        sheets = _FakeSheets()
-        store = _store_with_broadcast(None)
         row = _row(row_number=9)
+        sheets = _FakeSheets(delete_by_replica_result=row)
+        store = _store_with_broadcast(None)
 
         await dt._delete_and_announce(
             interaction,
             sheets,  # type: ignore[arg-type]
             store=store,
             inputs=_inputs(replica="QBXXWXL05U"),
-            row=row,
             target_url=None,
         )
-        assert sheets.delete_calls[0]["expected_replica"] == "QBXXWXL05U"
-        assert sheets.delete_calls[0]["expected_url"] is None
+        assert sheets.delete_by_replica_calls == [("Regulation M-A", "QBXXWXL05U")]
+        assert sheets.delete_by_url_calls == []
+        assert sheets.invalidated == ["Regulation M-A"]
+        assert len(interaction.followup.sent) == 1
+        assert "Removed row 9" in interaction.followup.sent[0][0]
 
-    async def test_compare_and_swap_mismatch_skips_broadcast(self):
+    async def test_not_found_or_cas_mismatch_skips_broadcast(self):
+        # delete_by_url returning None means "not found" or CAS guard fired.
         interaction = _FakeInteraction()
         broadcast_channel = _FakeChannel(id=555)
         interaction.client.channels[555] = broadcast_channel
-        sheets = _FakeSheets(delete_result=False)
+        sheets = _FakeSheets(delete_by_url_result=None)
         store = _store_with_broadcast(555)
 
         await dt._delete_and_announce(
@@ -398,17 +329,19 @@ class TestDeleteAndAnnounce:
             sheets,  # type: ignore[arg-type]
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
-            row=_row(),
             target_url="https://pokepast.es/abc",
         )
         assert sheets.invalidated == []
         assert broadcast_channel.sent == []
         assert len(interaction.followup.sent) == 1
-        content, _ = interaction.followup.sent[0]
-        assert "sheet shifted" in content
+        content, kwargs = interaction.followup.sent[0]
+        assert "No team matching" in content
+        assert kwargs["ephemeral"] is True
 
-    async def test_delete_error_surfaces_generic_message(self):
+    async def test_transport_error_sends_generic_delete_error(self):
         interaction = _FakeInteraction()
+        broadcast_channel = _FakeChannel(id=555)
+        interaction.client.channels[555] = broadcast_channel
         sheets = _FakeSheets(delete_raises=RuntimeError("503"))
         store = _store_with_broadcast(555)
 
@@ -417,42 +350,45 @@ class TestDeleteAndAnnounce:
             sheets,  # type: ignore[arg-type]
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
-            row=_row(),
             target_url="https://pokepast.es/abc",
         )
         assert sheets.invalidated == []
+        assert broadcast_channel.sent == []
         assert len(interaction.followup.sent) == 1
+        content, kwargs = interaction.followup.sent[0]
+        assert content == GENERIC_SHEET_DELETE_ERROR
+        assert kwargs["ephemeral"] is True
 
     async def test_no_broadcast_when_channel_unset(self):
         interaction = _FakeInteraction()
-        sheets = _FakeSheets()
-        store = _store_with_broadcast(None)
+        broadcast_channel = _FakeChannel(id=555)
+        interaction.client.channels[555] = broadcast_channel
+        row = _row()
+        sheets = _FakeSheets(delete_by_url_result=row)
+        store = _store_with_broadcast(None)  # no broadcast channel configured
 
         await dt._delete_and_announce(
             interaction,
             sheets,  # type: ignore[arg-type]
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
-            row=_row(),
             target_url="https://pokepast.es/abc",
         )
-        # Success message went through; no broadcast attempts.
-        assert len(interaction.followup.sent) == 1
+        assert len(interaction.followup.sent) == 1  # success ephemeral only
+        assert broadcast_channel.sent == []  # channel is in client but not configured
 
     async def test_empty_species_omits_pokemon_field(self):
         interaction = _FakeInteraction()
         broadcast_channel = _FakeChannel(id=555)
         interaction.client.channels[555] = broadcast_channel
-        sheets = _FakeSheets()
+        sheets = _FakeSheets(delete_by_url_result=_row(species=[]))
         store = _store_with_broadcast(555)
-        row = _row(species=[])
 
         await dt._delete_and_announce(
             interaction,
             sheets,  # type: ignore[arg-type]
             store=store,
             inputs=_inputs(url="https://pokepast.es/abc"),
-            row=row,
             target_url="https://pokepast.es/abc",
         )
         embed = broadcast_channel.sent[0].embed
@@ -463,14 +399,13 @@ class TestDeleteAndAnnounce:
 
 
 class TestBothSuppliedPrefersUrl:
-    """End-to-end check on _resolve_target_url + _locate_row that when both
-    `url` and `replica` are supplied, only the URL lookup is exercised."""
+    """When both `url` and `replica` are supplied, only delete_by_url is used."""
 
     async def test_url_wins_over_replica(self):
         interaction = _FakeInteraction()
         cache = InMemoryVRPasteCacheStore()
-        sheets = _FakeSheets(find_url_result=_row())
 
+        # _resolve_target_url should return the URL, ignoring replica.
         target_url = await dt._resolve_target_url(
             interaction,
             inputs=_inputs(url="https://pokepast.es/abc", replica="QBXXWXL05U"),
@@ -478,12 +413,17 @@ class TestBothSuppliedPrefersUrl:
         )
         assert target_url == "https://pokepast.es/abc"
 
-        row = await dt._locate_row(
+        # _delete_and_announce should call delete_by_url, not delete_by_replica.
+        row = _row()
+        sheets = _FakeSheets(delete_by_url_result=row)
+        store = _store_with_broadcast(None)
+
+        await dt._delete_and_announce(
             interaction,
             sheets,  # type: ignore[arg-type]
+            store=store,
             inputs=_inputs(url="https://pokepast.es/abc", replica="QBXXWXL05U"),
             target_url=target_url,
         )
-        assert row is not None
-        assert sheets.find_url_calls != []
-        assert sheets.find_replica_calls == []
+        assert sheets.delete_by_url_calls != []
+        assert sheets.delete_by_replica_calls == []

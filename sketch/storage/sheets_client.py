@@ -334,6 +334,20 @@ class SheetsClient:
             return None
         return [str(c).strip() for c in cells]
 
+    @staticmethod
+    def _parse_species_cells(cells: list[str]) -> list[str]:
+        """Return species from H–M cells, or [] if any cell is still loading.
+
+        Species columns are populated by the TEAMDATAFROMPASTE AppsScript
+        formula after a row is written. While the formula is running the cells
+        may be empty, "Loading...", or "#N/A". Treat all of those as "not ready"
+        and return an empty list so callers can distinguish "row found, species
+        loading" from "row not found".
+        """
+        if all(c and c not in ("#N/A", "Loading...") for c in cells):
+            return [(c or "").strip() for c in cells]
+        return []
+
     async def _find_row_by_column(
         self,
         sheet_name: str,
@@ -369,11 +383,10 @@ class SheetsClient:
             .execute,
             num_retries=_API_RETRIES,
         )
-        rows = resp.get("values", [])
-        for idx, row in enumerate(rows):
-            # Sheets truncates trailing empty cells. Pad so every index
-            # into the canonical column layout is safe.
-            row = row + [""] * (_ROW_WIDTH - len(row))
+        for idx, raw_row in enumerate(resp.get("values", [])):
+            # Sheets omits trailing empty cells. Pad to full width so every
+            # column-index constant (`URL_COL`, `REPLICA_COL`, etc.) is safe.
+            row = raw_row + [""] * (_ROW_WIDTH - len(raw_row))
             cell = (row[column] or "").strip()
             if not cell:
                 continue
@@ -382,19 +395,11 @@ class SheetsClient:
                     continue
             except ValidationError:
                 continue
-            url = (row[URL_COL] or "").strip()
-            description = (row[DESCRIPTION_COL] or "").strip()
-            species_cells = row[SPECIES_COLS]
-            species = (
-                [(c or "").strip() for c in species_cells]
-                if all(c and c not in ("#N/A", "Loading...") for c in species_cells)
-                else []
-            )
             return TeamRow(
                 row_number=config.FIRST_DATA_ROW + idx,
-                url=url,
-                description=description,
-                species=species,
+                url=(row[URL_COL] or "").strip(),
+                description=(row[DESCRIPTION_COL] or "").strip(),
+                species=self._parse_species_cells(row[SPECIES_COLS]),
             )
         return None
 
@@ -459,6 +464,8 @@ class SheetsClient:
             rows = resp.get("values", [])
             if not rows:
                 return False
+            # Pad to 7 columns (A–G) so URL_COL=0 and REPLICA_COL=3 are
+            # always safe, even when Sheets omits trailing empty cells.
             row = rows[0] + [""] * (7 - len(rows[0]))
             if expected_url is not None:
                 cell_url = (row[URL_COL] or "").strip()
@@ -471,7 +478,7 @@ class SheetsClient:
                     return False
             if expected_replica is not None:
                 cell_replica = (row[REPLICA_COL] or "").strip()
-                if cell_replica.upper() != expected_replica.upper():
+                if not cell_replica or cell_replica.upper() != expected_replica.upper():
                     return False
 
         sheet_id = await self._get_sheet_id(sheet_name)
@@ -498,6 +505,41 @@ class SheetsClient:
             num_retries=_API_RETRIES,
         )
         return True
+
+    async def delete_by_url(self, sheet_name: str, url: str) -> TeamRow | None:
+        """Find the row with `url` and delete it, returning the deleted TeamRow.
+
+        Combines the lookup and the compare-and-swap delete so the command
+        handler doesn't need to orchestrate two separate calls. Returns the
+        `TeamRow` that was deleted on success (its data can be used for the
+        broadcast embed), or `None` when the row wasn't found, the CAS guard
+        caught a concurrent shift, or `url` isn't a valid Pokepaste URL.
+
+        The same atomicity guarantees as `delete_row` apply: the guard re-reads
+        the row immediately before the `deleteDimension` call and aborts if the
+        cell no longer matches.
+        """
+        row = await self.find_row_by_url(sheet_name, url)
+        if row is None:
+            return None
+        deleted = await self.delete_row(sheet_name, row.row_number, expected_url=url)
+        return row if deleted else None
+
+    async def delete_by_replica(self, sheet_name: str, replica: str) -> TeamRow | None:
+        """Find the row with `replica` and delete it, returning the deleted TeamRow.
+
+        Same semantics as `delete_by_url`, keyed by the replica/team-ID column
+        instead. Match is case-insensitive; `replica` is typically already
+        normalized by the command handler via `normalize_replica`, but
+        `find_row_by_replica` accepts raw input too.
+        """
+        row = await self.find_row_by_replica(sheet_name, replica)
+        if row is None:
+            return None
+        deleted = await self.delete_row(
+            sheet_name, row.row_number, expected_replica=replica
+        )
+        return row if deleted else None
 
     async def get_search_snapshot(self, sheet_name: str) -> SearchSnapshot:
         """Return rows + a tokenized description index.

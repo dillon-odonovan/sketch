@@ -22,7 +22,6 @@ from sketch.champions.replica_validator import normalize_replica
 from sketch.commands._shared import (
     GENERIC_CACHE_READ_ERROR,
     GENERIC_SHEET_DELETE_ERROR,
-    GENERIC_SHEET_READ_ERROR,
     _broadcast_team_removed,
     _format_choices,
     _resolve_guild_sheets,
@@ -34,7 +33,7 @@ from sketch.pokepaste.validator import (
     is_pokepaste_url,
 )
 from sketch.storage.guild_config import GuildConfigStore
-from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry, TeamRow
+from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
 from sketch.vrpaste.cache import VRPasteCacheStore, lookup_pokepaste_url
 from sketch.vrpaste.validator import is_vrpaste_url
 
@@ -137,65 +136,42 @@ async def _resolve_target_url(
     return None
 
 
-async def _locate_row(
-    interaction: discord.Interaction,
-    sheets: SheetsClient,
-    *,
-    inputs: _DeleteTeamInputs,
-    target_url: str | None,
-) -> TeamRow | None:
-    try:
-        if target_url is not None:
-            row = await sheets.find_row_by_url(inputs.sheet_name, target_url)
-        else:
-            assert inputs.replica is not None
-            row = await sheets.find_row_by_replica(inputs.sheet_name, inputs.replica)
-    except Exception:
-        logger.exception(
-            "Failed to look up row for delete in %s (url=%s replica=%s)",
-            inputs.sheet_name,
-            target_url,
-            inputs.replica,
-        )
-        await interaction.followup.send(GENERIC_SHEET_READ_ERROR, ephemeral=True)
-        return None
-
-    if row is None:
-        key = f"`{target_url}`" if target_url is not None else f"`{inputs.replica}`"
-        await interaction.followup.send(
-            f"No team matching {key} found in *{inputs.fmt_name}*.",
-            ephemeral=True,
-        )
-    return row
-
-
 async def _delete_and_announce(
     interaction: discord.Interaction,
     sheets: SheetsClient,
     *,
     store: GuildConfigStore,
     inputs: _DeleteTeamInputs,
-    row: TeamRow,
     target_url: str | None,
 ) -> None:
+    """Look up the target row, delete it, and broadcast the removal.
+
+    Uses `SheetsClient.delete_by_url` or `delete_by_replica` so the lookup
+    and the compare-and-swap delete are a single call. Returns `None` (the
+    row didn't exist) or the deleted `TeamRow` (used for the broadcast embed).
+    """
     try:
-        deleted = await sheets.delete_row(
-            inputs.sheet_name,
-            row.row_number,
-            expected_url=target_url,
-            expected_replica=inputs.replica if target_url is None else None,
-        )
+        if target_url is not None:
+            row = await sheets.delete_by_url(inputs.sheet_name, target_url)
+        else:
+            assert inputs.replica is not None
+            row = await sheets.delete_by_replica(inputs.sheet_name, inputs.replica)
     except Exception:
         logger.exception(
-            "Failed to delete row %d from %s", row.row_number, inputs.sheet_name
+            "Failed to delete team in %s (url=%s replica=%s)",
+            inputs.sheet_name,
+            target_url,
+            inputs.replica,
         )
         await interaction.followup.send(GENERIC_SHEET_DELETE_ERROR, ephemeral=True)
         return
 
-    if not deleted:
+    if row is None:
+        # Could be "not found" or a CAS mismatch (concurrent delete shifted rows).
+        key = f"`{target_url}`" if target_url is not None else f"`{inputs.replica}`"
         await interaction.followup.send(
-            "The sheet shifted under us before we could delete that row — "
-            "please run the command again.",
+            f"No team matching {key} found in *{inputs.fmt_name}*, or the "
+            "sheet shifted under us — please try again.",
             ephemeral=True,
         )
         return
@@ -295,17 +271,10 @@ def register(
             if target_url is None:
                 return
 
-        row = await _locate_row(
-            interaction, sheets, inputs=inputs, target_url=target_url
-        )
-        if row is None:
-            return
-
         await _delete_and_announce(
             interaction,
             sheets,
             store=store,
             inputs=inputs,
-            row=row,
             target_url=target_url,
         )
