@@ -475,3 +475,22 @@ class TestSystemPromptMultilingualGuidance:
         assert "Liquidation" in _SYSTEM_PROMPT
         assert "Hammer Arm" in _SYSTEM_PROMPT
         assert "Frisk" in _SYSTEM_PROMPT
+
+    def test_examples_framed_as_non_exhaustive(self):
+        # Guard the anti-overfitting framing: the named examples must be
+        # presented as illustrative, not a closed list.
+        assert "not a closed list" in _SYSTEM_PROMPT.lower()
+
+    def test_guards_against_species_lookalike_substitution(self):
+        # The species name must win over a familiar-looking sprite — the
+        # Korean failure mode (newer species collapsed onto older look-alikes).
+        lowered = _SYSTEM_PROMPT.lower()
+        assert "look-alike" in lowered
+        assert "authoritative" in lowered
+
+    def test_has_duplicate_move_guard(self):
+        assert "same move twice" in _SYSTEM_PROMPT.lower()
+
+    def test_has_pre_submit_self_check(self):
+        lowered = _SYSTEM_PROMPT.lower()
+        assert "before you call submit_team" in lowered

@@ -291,8 +291,9 @@ not anglicize loosely — map to the exact official English name. For example, \
 the Japanese "こだわりスカーフ" / Korean "구애 스카프" is the official item \
 "Choice Scarf", not "Gooey Scarf" or any phonetic gloss.
 
-Translation pitfalls (these are the common failure modes — guard against \
-each):
+Translation pitfalls (illustrative failure modes seen across languages — \
+the examples are NOT a closed list; apply the principle, not just the named \
+cases):
   - Katakana loanwords. Many Japanese move/item names are katakana \
 renderings of English words that do NOT match the official English name. \
 Output the official name, never the phonetic reading. Example: the move \
@@ -314,8 +315,12 @@ and no katakana loanword to lean on. Example: Frisk ("おみとおし", literall
 distinct abilities; output the one whose hiragana is actually printed, even \
 if a different ability would be the more common competitive choice for that \
 species.
-  - When unsure, prefer the official name that an exact localized-name \
-lookup yields over any literal gloss; the localized→English mapping is 1:1.
+  - For EVERY species, ability, move, and item: resolve it by an exact \
+localized-name lookup to its official English name — never settle for a \
+literal gloss or phonetic reading. If the English name you land on is itself \
+a valid but DIFFERENT move / ability / species, treat that as a red flag \
+that you produced a look-alike instead of the official name, and re-derive \
+it. The localized→English mapping is 1:1.
 
 The two pages:
 
@@ -365,7 +370,8 @@ its fixed row position (row 1 HP, row 2 Attack, row 3 Defense, row 4 Sp. Atk, \
 row 5 Sp. Def, row 6 Speed; HP can never carry a nature arrow). If no arrows \
 are visible (neutral nature), return null for both. The host code resolves \
 these into the canonical nature name — do not attempt to name the nature \
-yourself.
+yourself. Read which row carries the red ↑ and which carries the blue ↓ \
+carefully: adjacent rows (e.g. Sp. Def vs Speed) are easy to confuse.
   - EVs: read the small numeric value shown next to each stat on Page 2. \
 Pokemon Champions caps EVs at 32 per stat with ~66 total — much smaller than \
 mainline Pokemon's 252/508 system. Use 0 for stats with no investment. The \
@@ -440,9 +446,23 @@ competitive set "usually" runs.
 any other item that is not shown.
   - Output only the moves actually printed on the card, in order. Never add a \
 move to reach four.
-  - Read the species from the sprite AND the localized name together; if they \
-conflict, trust the localized name. Do not substitute a different, more \
-"common" Pokemon.
+  - Species: the printed name is the authoritative signal. Read and \
+translate it, and trust it over the sprite when they seem to conflict. Do \
+NOT substitute a visually similar or better-known look-alike, and do not \
+collapse a newer species onto an older one that merely shares its typing or \
+silhouette — many competitively-used species are from recent generations \
+and their names must be read, not guessed from the sprite.
+  - Derive every field independently from what is printed for that Pokemon — \
+never back-fill an ability, move, or item from the species you think you \
+identified. If a printed ability or move reads as the signature of a \
+DIFFERENT species than the one you chose, that is a strong sign you misread \
+the species (more likely a newer species you should re-read than a familiar \
+one running an off-kit set): re-examine the name before committing.
+  - A Pokemon never lists the same move twice. A duplicate in your output \
+means you misread one slot — re-read that card.
+  - Do not default to the most common item. Defensive items and the \
+type-resist Berries share similar icons and localized names; read the \
+specific item printed rather than the popular guess.
   - When you cannot read a name confidently, transcribe the localized text \
 faithfully and map it to its official English name — a faithful translation \
 always beats a confident guess at a different English name.
@@ -452,6 +472,12 @@ well-known sample team.
 Champions roster note: the only Floette in Champions is the mega-capable \
 form, output as "Floette-Eternal" (never plain "Floette"). All other \
 species use the form name implied by the share-screen context.
+
+Before you call submit_team, re-verify each Pokemon against its card: the \
+species matches the printed name (not a look-alike); every ability and move \
+is the official English name (not a literal gloss or a look-alike); no move \
+is duplicated; and the item is the specific one shown. Correct any mismatch \
+first.
 
 If a field is genuinely unreadable, prefer null over a guess for nullable \
 fields, and zero for EVs that don't show an investment number — never \
