@@ -467,3 +467,11 @@ class TestSystemPromptMultilingualGuidance:
         lowered = _SYSTEM_PROMPT.lower()
         assert "never invent" in lowered
         assert "only what is visibly present" in lowered
+
+    def test_has_translation_pitfall_examples(self):
+        # Worked examples for the three observed failure modes: katakana
+        # loanword (Liquidation), word-order/look-alike collision (Hammer
+        # Arm), and read-the-kana vs guess-the-common-ability (Frisk).
+        assert "Liquidation" in _SYSTEM_PROMPT
+        assert "Hammer Arm" in _SYSTEM_PROMPT
+        assert "Frisk" in _SYSTEM_PROMPT

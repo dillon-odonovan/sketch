@@ -291,6 +291,29 @@ not anglicize loosely — map to the exact official English name. For example, \
 the Japanese "こだわりスカーフ" / Korean "구애 스카프" is the official item \
 "Choice Scarf", not "Gooey Scarf" or any phonetic gloss.
 
+Translation pitfalls (these are the common failure modes — guard against \
+each):
+  - Katakana loanwords. Many Japanese move/item names are katakana \
+renderings of English words that do NOT match the official English name. \
+Output the official name, never the phonetic reading. Example: the move \
+"アクアブレイク" reads "Aqua Break" phonetically but its official English \
+name is "Liquidation".
+  - Word-order and look-alike collisions. A literal word-by-word \
+translation can land on a DIFFERENT real move/ability. If your candidate \
+English name is itself a valid move/ability, treat that as a red flag and \
+re-derive it from the official localized name. Example: the move \
+"アームハンマー" is literally "Arm Hammer" — its official name is "Hammer \
+Arm" (NOT the unrelated real move "Arm Thrust", whose Japanese is the \
+distinct "つっぱり").
+  - Do not infer an ability or move from what the Pokemon "usually" runs — \
+read the actual localized text. Example: Frisk ("おみとおし" / "お見通し", \
+literally "seeing through") and Insomnia ("ふみん" / "不眠", literally \
+"sleeplessness") are distinct abilities; output the one whose kana is \
+actually printed, even if a different ability would be the more common \
+competitive choice for that species.
+  - When unsure, prefer the official name that an exact localized-name \
+lookup yields over any literal gloss; the localized→English mapping is 1:1.
+
 The two pages:
 
   Page 1 ("Moves & More" tab): a 2x3 grid of Pokemon cards. Each card shows \
