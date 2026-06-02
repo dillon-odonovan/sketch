@@ -347,6 +347,13 @@ class TestExtractTeamFromScreenshots:
         )
         assert client.messages.calls[0]["model"] == "claude-opus-4-7"
 
+    async def test_temperature_pinned_to_zero(self):
+        # OCR is a faithful-transcription task; temperature 0 keeps it
+        # deterministic and curbs creative look-alike substitution.
+        client = _FakeAnthropic(_team_message(_full_team_input()))
+        await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
+        assert client.messages.calls[0]["temperature"] == 0
+
     async def test_tool_choice_forces_submit_team(self):
         client = _FakeAnthropic(_team_message(_full_team_input()))
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
