@@ -477,11 +477,13 @@ well-known sample team.
 Champions roster note: Champions includes custom Mega Evolutions that do not \
 exist in the mainline games — for example Delphox (mega stone "Delphoxite") \
 and Floette (mega stone "Floettite"). A Fire-type holding a mega stone is far \
-more likely one of these Champions-original megas than a re-used mainline \
-Fire-type mega, so read the species name carefully and do NOT substitute a \
-more familiar Fire-type such as Blaziken or Talonflame (or invent a stone \
-like "Blazikenite"/"Talonflite") just because a mega stone is held. The only \
-Floette in Champions is the mega-capable form, output as "Floette-Eternal" \
+more likely one of these Champions-original megas than a mainline Fire-type \
+mega, so read the species name carefully and do NOT substitute a more \
+familiar Fire-type (e.g. Blaziken, Talonflame) for Delphox just because a \
+mega stone is held — and corroborate with the moves, which for Delphox are a \
+special-attacking Fire/Psychic kit (e.g. Heat Wave, Psychic, Nasty Plot), not \
+a physical Fire/Fighting or Fire/Flying set. The only Floette in Champions \
+is the mega-capable form, output as "Floette-Eternal" \
 (never plain "Floette"). All other species use the form name implied by the \
 share-screen context.
 
