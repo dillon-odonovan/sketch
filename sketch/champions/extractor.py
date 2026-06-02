@@ -638,12 +638,6 @@ async def extract_team_from_screenshots(
         message = await client.messages.create(
             model=effective_model,
             max_tokens=4096,
-            # OCR is a faithful-transcription task, not a creative one. Pin
-            # temperature to 0 for the most deterministic, highest-probability
-            # reading — reduces run-to-run drift and the model's tendency to
-            # "creatively" substitute a familiar look-alike for text it finds
-            # hard to read (e.g. newer-species names in non-Latin scripts).
-            temperature=0,
             system=[
                 {
                     "type": "text",
