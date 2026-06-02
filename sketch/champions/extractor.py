@@ -446,16 +446,17 @@ competitive set "usually" runs.
 any other item that is not shown.
   - Output only the moves actually printed on the card, in order. Never add a \
 move to reach four.
-  - Species: read the printed name as the primary signal and translate it, \
-but corroborate it against the type icons, ability, and moves — they must be \
-consistent. If the name you read implies a typing or kit that contradicts \
-the card (e.g. a Psychic move or Psychic type icon on a species you read as \
-Fire/Fighting), you most likely MISREAD the name: re-read it rather than \
-outputting a species the card's typing and moveset contradict. Do NOT \
-substitute a visually similar or better-known look-alike, and do not collapse \
-a newer species onto an older one merely because they share a silhouette or \
-typing — many competitively-used species are recent and their names must be \
-read carefully, not guessed.
+  - Species: read the printed name as the primary signal and translate it. \
+Use the type icons, ability, and moves only as a one-way CHECK on the name: \
+if they contradict the species you read (e.g. a Psychic move or Psychic type \
+icon on a species you read as a Fire/Flying or Fire/Fighting Pokemon), that \
+means you MISREAD the NAME — re-read the name. Never resolve such a \
+contradiction the other way by changing the ability, moves, or item to match \
+a guessed species; every field is read independently from what is printed \
+(see below). Do NOT substitute a visually similar or better-known look-alike, \
+and do not collapse a newer species onto an older one merely because they \
+share a silhouette or typing — many competitively-used species are recent and \
+their names must be read carefully, not guessed.
   - Derive every field independently from what is printed for that Pokemon — \
 never back-fill an ability, move, or item from the species you think you \
 identified. If a printed ability or move reads as the signature of a \
@@ -473,9 +474,16 @@ always beats a confident guess at a different English name.
   - Treat each screenshot independently; do not pattern-match it to a \
 well-known sample team.
 
-Champions roster note: the only Floette in Champions is the mega-capable \
-form, output as "Floette-Eternal" (never plain "Floette"). All other \
-species use the form name implied by the share-screen context.
+Champions roster note: Champions includes custom Mega Evolutions that do not \
+exist in the mainline games — for example Delphox (mega stone "Delphoxite") \
+and Floette (mega stone "Floettite"). A Fire-type holding a mega stone is far \
+more likely one of these Champions-original megas than a re-used mainline \
+Fire-type mega, so read the species name carefully and do NOT substitute a \
+more familiar Fire-type such as Blaziken or Talonflame (or invent a stone \
+like "Blazikenite"/"Talonflite") just because a mega stone is held. The only \
+Floette in Champions is the mega-capable form, output as "Floette-Eternal" \
+(never plain "Floette"). All other species use the form name implied by the \
+share-screen context.
 
 Before you call submit_team, re-verify each Pokemon against its card: the \
 species matches the printed name (not a look-alike); every ability and move \

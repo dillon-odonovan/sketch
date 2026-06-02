@@ -482,12 +482,20 @@ class TestSystemPromptMultilingualGuidance:
         assert "not a closed list" in _SYSTEM_PROMPT.lower()
 
     def test_guards_against_species_lookalike_substitution(self):
-        # The species name is the primary signal, corroborated by type/moves —
-        # the Korean failure mode (newer species collapsed onto older
-        # look-alikes, or a misread name overriding a contradicting moveset).
+        # The species name is the primary signal; type/moves are only a one-way
+        # check that triggers re-reading the NAME (not harmonizing other fields)
+        # — the Korean failure mode (newer species collapsed onto look-alikes).
         lowered = _SYSTEM_PROMPT.lower()
         assert "look-alike" in lowered
-        assert "corroborate" in lowered
+        assert "misread the name" in lowered
+
+    def test_guards_against_custom_mega_firetype_substitution(self):
+        # Champions has custom megas (Delphox/Delphoxite); the model must not
+        # swap in a familiar Fire-type mega (Blaziken/Talonflame) when a mega
+        # stone is held — the Delphox failure mode in non-Latin scripts.
+        lowered = _SYSTEM_PROMPT.lower()
+        assert "delphox" in lowered
+        assert "talonflame" in lowered or "blaziken" in lowered
 
     def test_has_duplicate_move_guard(self):
         assert "same move twice" in _SYSTEM_PROMPT.lower()
