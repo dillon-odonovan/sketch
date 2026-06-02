@@ -446,12 +446,16 @@ competitive set "usually" runs.
 any other item that is not shown.
   - Output only the moves actually printed on the card, in order. Never add a \
 move to reach four.
-  - Species: the printed name is the authoritative signal. Read and \
-translate it, and trust it over the sprite when they seem to conflict. Do \
-NOT substitute a visually similar or better-known look-alike, and do not \
-collapse a newer species onto an older one that merely shares its typing or \
-silhouette — many competitively-used species are from recent generations \
-and their names must be read, not guessed from the sprite.
+  - Species: read the printed name as the primary signal and translate it, \
+but corroborate it against the type icons, ability, and moves — they must be \
+consistent. If the name you read implies a typing or kit that contradicts \
+the card (e.g. a Psychic move or Psychic type icon on a species you read as \
+Fire/Fighting), you most likely MISREAD the name: re-read it rather than \
+outputting a species the card's typing and moveset contradict. Do NOT \
+substitute a visually similar or better-known look-alike, and do not collapse \
+a newer species onto an older one merely because they share a silhouette or \
+typing — many competitively-used species are recent and their names must be \
+read carefully, not guessed.
   - Derive every field independently from what is printed for that Pokemon — \
 never back-fill an ability, move, or item from the species you think you \
 identified. If a printed ability or move reads as the signature of a \

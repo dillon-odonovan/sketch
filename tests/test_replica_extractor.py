@@ -482,11 +482,12 @@ class TestSystemPromptMultilingualGuidance:
         assert "not a closed list" in _SYSTEM_PROMPT.lower()
 
     def test_guards_against_species_lookalike_substitution(self):
-        # The species name must win over a familiar-looking sprite — the
-        # Korean failure mode (newer species collapsed onto older look-alikes).
+        # The species name is the primary signal, corroborated by type/moves —
+        # the Korean failure mode (newer species collapsed onto older
+        # look-alikes, or a misread name overriding a contradicting moveset).
         lowered = _SYSTEM_PROMPT.lower()
         assert "look-alike" in lowered
-        assert "authoritative" in lowered
+        assert "corroborate" in lowered
 
     def test_has_duplicate_move_guard(self):
         assert "same move twice" in _SYSTEM_PROMPT.lower()
