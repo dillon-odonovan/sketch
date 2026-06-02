@@ -306,11 +306,14 @@ re-derive it from the official localized name. Example: the move \
 Arm" (NOT the unrelated real move "Arm Thrust", whose Japanese is the \
 distinct "つっぱり").
   - Do not infer an ability or move from what the Pokemon "usually" runs — \
-read the actual localized text. Example: Frisk ("おみとおし" / "お見通し", \
-literally "seeing through") and Insomnia ("ふみん" / "不眠", literally \
-"sleeplessness") are distinct abilities; output the one whose kana is \
-actually printed, even if a different ability would be the more common \
-competitive choice for that species.
+read the actual localized text. On the Japanese share screen, ability names \
+are written in hiragana (not kanji), while moves and items are in katakana — \
+so read the ability hiragana carefully, as there is no kanji to disambiguate \
+and no katakana loanword to lean on. Example: Frisk ("おみとおし", literally \
+"seeing through") and Insomnia ("ふみん", literally "sleeplessness") are \
+distinct abilities; output the one whose hiragana is actually printed, even \
+if a different ability would be the more common competitive choice for that \
+species.
   - When unsure, prefer the official name that an exact localized-name \
 lookup yields over any literal gloss; the localized→English mapping is 1:1.
 
