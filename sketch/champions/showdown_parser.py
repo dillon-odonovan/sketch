@@ -110,6 +110,30 @@ def parse_showdown(text: str, *, team_id: str | None = None) -> TeamData:
     return TeamData(pokemon=pokemon, team_id=team_id)
 
 
+def extract_species(text: str) -> list[str]:
+    """Pull just the species names out of a Showdown export, leniently.
+
+    Unlike `parse_showdown`, this never raises and never validates the
+    body of a block — it splits on the blank-line block separator and
+    reads the species off each block's first line via
+    `_SPECIES_HEADER_RE`, skipping any block whose header doesn't match.
+    That tolerance is deliberate: the input may be an arbitrary VGC paste
+    fetched from pokepast.es (`Level:` / `Tera Type:` lines, EVs above the
+    Champions cap) that the strict parser would reject, and the only
+    consumer is the replica cache's audit-only `species` field.
+    """
+    if not text or not text.strip():
+        return []
+    blocks = [b for b in (b.strip() for b in re.split(r"\r?\n\s*\r?\n", text)) if b]
+    species: list[str] = []
+    for block in blocks:
+        first_line = next((ln for ln in re.split(r"\r?\n", block) if ln.strip()), "")
+        m = _SPECIES_HEADER_RE.match(first_line.rstrip())
+        if m and (name := m.group("species").strip()):
+            species.append(name)
+    return species
+
+
 def _parse_block(block: str, slot: int) -> PokemonEntry:
     """Parse one Pokemon block (between blank-line separators)."""
     lines = [ln.rstrip() for ln in re.split(r"\r?\n", block) if ln.strip()]
