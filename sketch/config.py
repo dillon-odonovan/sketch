@@ -74,6 +74,13 @@ SEARCH_RESULT_LIMIT = 15
 # we ever observe that within-session bursts routinely span longer.
 SEARCH_CACHE_TTL_SECONDS = 300.0
 
+# --- OTS → CTS conversion (used by /convert-ots) --------------------------
+
+# Model for the EV-guess LLM fallback. Sonnet handles competitive team
+# knowledge well at reasonable cost; promote to opus if EV-guess quality is
+# unsatisfactory in practice.
+CONVERT_EV_MODEL = "claude-sonnet-4-6"
+
 # --- Replica OCR (used by /add-team) ---------------------------------------
 
 # Top-level Firestore collection that maps a normalized Replica Code (10-char

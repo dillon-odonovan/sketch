@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 
 from sketch.champions.extractor import _NATURE_MAP, _NEUTRAL_NATURE
-from sketch.team import STAT_KEYS, PokemonEntry, TeamData
+from sketch.team import CHAMPIONS_EV_MAX_PER_STAT, STAT_KEYS, PokemonEntry, TeamData
 
 
 class ShowdownParseError(Exception):
@@ -82,13 +82,24 @@ _NATURE_SUFFIX = " Nature"
 _EV_ENTRY_RE = re.compile(r"^(?P<value>\d+)\s+(?P<label>[A-Za-z]+)$")
 
 
-def parse_showdown(text: str, *, team_id: str | None = None) -> TeamData:
+def parse_showdown(
+    text: str,
+    *,
+    team_id: str | None = None,
+    max_ev_per_stat: int = CHAMPIONS_EV_MAX_PER_STAT,
+) -> TeamData:
     """Parse Showdown export text into a `TeamData`.
 
     Accepts LF or CRLF line endings. `team_id` is passed through to the
     returned `TeamData` since the Showdown format doesn't carry it — the
     caller (the /add-team Edit flow) preserves the value from the team
     that was OCR'd and Team-ID-validated before the preview was shown.
+
+    `max_ev_per_stat` bounds the accepted EV values. It defaults to the
+    Champions cap (`CHAMPIONS_EV_MAX_PER_STAT`); a caller parsing a paste
+    from a different EV regime (e.g. a mainline VGC format capped at 252)
+    can widen it. The bound is the contract's only format-specific knob —
+    everything else in the Showdown shape is regime-agnostic.
 
     Raises `ShowdownParseError` with a user-facing message on any
     structural or validation failure.
@@ -106,7 +117,10 @@ def parse_showdown(text: str, *, team_id: str | None = None) -> TeamData:
     if len(blocks) != 6:
         raise ShowdownParseError(f"Expected 6 Pokemon, got {len(blocks)}.")
 
-    pokemon = [_parse_block(block, slot) for slot, block in enumerate(blocks, start=1)]
+    pokemon = [
+        _parse_block(block, slot, max_ev_per_stat)
+        for slot, block in enumerate(blocks, start=1)
+    ]
     return TeamData(pokemon=pokemon, team_id=team_id)
 
 
@@ -136,7 +150,7 @@ def extract_species(text: str) -> list[str]:
     return species
 
 
-def _parse_block(block: str, slot: int) -> PokemonEntry:
+def _parse_block(block: str, slot: int, max_ev_per_stat: int) -> PokemonEntry:
     """Parse one Pokemon block (between blank-line separators)."""
     lines = [ln.rstrip() for ln in re.split(r"\r?\n", block) if ln.strip()]
     if not lines:
@@ -164,7 +178,7 @@ def _parse_block(block: str, slot: int) -> PokemonEntry:
         if (m := _ABILITY_RE.match(line)) and ability is None:
             ability = m.group("ability").strip()
         elif (m := _EVS_RE.match(line)) and evs is None:
-            evs = _parse_evs(m.group("body"), slot)
+            evs = _parse_evs(m.group("body"), slot, max_ev_per_stat)
         elif line.endswith(_NATURE_SUFFIX) and nature is None:
             nature = line[: -len(_NATURE_SUFFIX)].strip()
             if nature not in _VALID_NATURES:
@@ -245,12 +259,12 @@ def _parse_species_header(line: str, slot: int) -> tuple[str, str | None, str | 
     return species, gender, item
 
 
-def _parse_evs(body: str, slot: int) -> dict[str, int]:
+def _parse_evs(body: str, slot: int, max_ev_per_stat: int) -> dict[str, int]:
     """Parse the body of an `EVs:` line into a stat dict.
 
     Format: `32 HP / 32 Atk / 4 Spe`. Missing stats default to zero (so
     a paste with only nonzero stats listed still produces a full
-    six-key dict).
+    six-key dict). Values above `max_ev_per_stat` are rejected.
     """
     evs = {k: 0 for k in STAT_KEYS}
     parts = [p.strip() for p in body.split("/") if p.strip()]
@@ -271,10 +285,10 @@ def _parse_evs(body: str, slot: int) -> dict[str, int]:
                 f"Pokemon {slot}: unknown stat `{m.group('label')}`. "
                 f"Use HP / Atk / Def / SpA / SpD / Spe."
             )
-        if value < 0 or value > 32:
+        if value < 0 or value > max_ev_per_stat:
             raise ShowdownParseError(
-                f"Pokemon {slot}: EV value {value} out of range. Pokemon "
-                f"Champions caps EVs at 32 per stat."
+                f"Pokemon {slot}: EV value {value} out of range. This format "
+                f"caps EVs at {max_ev_per_stat} per stat."
             )
         evs[key] = value
     return evs

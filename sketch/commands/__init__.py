@@ -24,6 +24,7 @@ from sketch.commands._shared import (
 )
 from sketch.commands.add_team import register as _register_add_team
 from sketch.commands.admin import register as _register_admin
+from sketch.commands.convert_ots import register as _register_convert_ots
 from sketch.commands.delete_team import register as _register_delete_team
 from sketch.commands.help import register as _register_help
 from sketch.commands.search_teams import register as _register_search_teams
@@ -72,6 +73,7 @@ def setup_commands(
         vrpaste_cache=vrpaste_cache,
         anthropic_client=anthropic_client,
     )
+    _register_convert_ots(tree, registry, anthropic_client=anthropic_client)
     _register_delete_team(tree, store, registry, vrpaste_cache=vrpaste_cache)
     _register_search_teams(tree, registry)
     _register_help(tree)
