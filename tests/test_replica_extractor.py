@@ -421,9 +421,9 @@ class TestExtractTeamFromScreenshots:
     async def test_instruction_text_mentions_language(self):
         # The per-call user instruction reinforces, right next to the images,
         # that screenshots may be non-English and output must be English.
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
-        user_content = client.messages.calls[0]["messages"][0]["content"]
+        user_content = client.messages.create.call_args.kwargs["messages"][0]["content"]
         text_block = next(b for b in user_content if b.get("type") == "text")
         assert "language" in text_block["text"].lower()
 
