@@ -24,6 +24,7 @@ import anthropic
 import pytest
 
 from sketch.champions.extractor import (
+    _SYSTEM_PROMPT,
     ExtractionError,
     _resolve_nature,
     _sniff_media_type,
@@ -427,3 +428,69 @@ class TestExtractTeamFromScreenshots:
         client = _FakeAnthropic(_team_message(payload))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert team.pokemon[0].nature == "Serious"
+
+    async def test_instruction_text_mentions_language(self):
+        # The per-call user instruction reinforces, right next to the images,
+        # that screenshots may be non-English and output must be English.
+        client = _FakeAnthropic(_team_message(_full_team_input()))
+        await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
+        user_content = client.messages.calls[0]["messages"][0]["content"]
+        text_block = next(b for b in user_content if b.get("type") == "text")
+        assert "language" in text_block["text"].lower()
+
+
+class TestSystemPromptMultilingualGuidance:
+    """Real foreign-language OCR accuracy can't be tested here (the SDK is
+    mocked, no images, no network). What we can guard is that the system
+    prompt keeps the guidance that makes foreign-language screenshots work —
+    so a future edit can't silently drop it and regress issue #35.
+    """
+
+    def test_declares_multilingual_input(self):
+        lowered = _SYSTEM_PROMPT.lower()
+        assert "language" in lowered
+        # Names a few non-English languages so the model expects them.
+        assert "japanese" in lowered
+        assert "korean" in lowered
+
+    def test_requires_translation_to_canonical_english(self):
+        lowered = _SYSTEM_PROMPT.lower()
+        assert "canonical english" in lowered or "official english" in lowered
+        assert "translate" in lowered
+
+    def test_identifies_pages_by_structure_not_tab_text(self):
+        # Tab labels are localized, so page ID must lean on structure.
+        assert "STRUCTURE" in _SYSTEM_PROMPT
+        assert "localized" in _SYSTEM_PROMPT.lower()
+
+    def test_has_anti_hallucination_guardrails(self):
+        lowered = _SYSTEM_PROMPT.lower()
+        assert "never invent" in lowered
+        assert "only what is visibly present" in lowered
+
+    def test_has_translation_pitfall_examples(self):
+        # Worked examples for the three observed failure modes: katakana
+        # loanword (Liquidation), word-order/look-alike collision (Hammer
+        # Arm), and read-the-kana vs guess-the-common-ability (Frisk).
+        assert "Liquidation" in _SYSTEM_PROMPT
+        assert "Hammer Arm" in _SYSTEM_PROMPT
+        assert "Frisk" in _SYSTEM_PROMPT
+
+    def test_examples_framed_as_non_exhaustive(self):
+        # Guard the anti-overfitting framing: the named examples must be
+        # presented as illustrative, not a closed list.
+        assert "not a closed list" in _SYSTEM_PROMPT.lower()
+
+    def test_guards_against_species_lookalike_substitution(self):
+        # The species name is the signal; guard against collapsing a newer
+        # species onto an older look-alike (the non-Latin failure mode).
+        lowered = _SYSTEM_PROMPT.lower()
+        assert "look-alike" in lowered
+        assert "newer species" in lowered
+
+    def test_has_duplicate_move_guard(self):
+        assert "same move twice" in _SYSTEM_PROMPT.lower()
+
+    def test_has_pre_submit_self_check(self):
+        lowered = _SYSTEM_PROMPT.lower()
+        assert "before you call submit_team" in lowered

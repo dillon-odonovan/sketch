@@ -82,11 +82,16 @@ SEARCH_CACHE_TTL_SECONDS = 300.0
 # guild's OCR work benefits every other guild on the bot.
 REPLICA_CACHE_COLLECTION = "replica_codes"
 
-# Vision model for the Replica OCR pipeline. Sonnet 4.6 handles the Champions
-# share-screen UI well at ~5x lower cost than Opus; tool-use forces schema
-# conformance so we're not relying on the model's free-text JSON discipline.
-# Promote to claude-opus-4-7 if Confirm-rate telemetry shows accuracy issues.
-REPLICA_OCR_MODEL = "claude-sonnet-4-6"
+# Vision model for the Replica OCR pipeline. Defaults to Opus 4.8: the share
+# screen may be in any game language (Japanese, Korean, Chinese, …) and the
+# model must translate every name to canonical English, which is far more
+# error-prone than English-only OCR — the frontier model's accuracy gap is
+# worth it here since OCR runs once per code globally (cached) behind a human
+# Confirm gate, so per-call cost is heavily amortized. Tool-use forces schema
+# conformance regardless. Override via the REPLICA_OCR_MODEL env var to pin a
+# snapshot or downgrade to claude-sonnet-4-6 for cost if accuracy telemetry
+# stays clean.
+REPLICA_OCR_MODEL = _optional("REPLICA_OCR_MODEL") or "claude-opus-4-8"
 
 # --- VRPaste source --------------------------------------------------------
 
