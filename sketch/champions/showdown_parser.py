@@ -115,22 +115,24 @@ def extract_species(text: str) -> list[str]:
 
     Unlike `parse_showdown`, this never raises and never validates the
     body of a block — it splits on the blank-line block separator and
-    reads the species off each block's first line via
-    `_SPECIES_HEADER_RE`, skipping any block whose header doesn't match.
-    That tolerance is deliberate: the input may be an arbitrary VGC paste
-    fetched from pokepast.es (`Level:` / `Tera Type:` lines, EVs above the
-    Champions cap) that the strict parser would reject, and the only
-    consumer is the replica cache's audit-only `species` field.
+    extracts the species via `_parse_species_header`, skipping any block
+    whose header doesn't match. That tolerance is deliberate: the input
+    may be an arbitrary VGC paste fetched from pokepast.es (`Level:` /
+    `Tera Type:` lines, EVs above the Champions cap) that the strict
+    parser would reject, and the only consumer is the replica cache's
+    audit-only `species` field.
     """
     if not text or not text.strip():
         return []
     blocks = [b for b in (b.strip() for b in re.split(r"\r?\n\s*\r?\n", text)) if b]
     species: list[str] = []
-    for block in blocks:
+    for slot, block in enumerate(blocks, start=1):
         first_line = next((ln for ln in re.split(r"\r?\n", block) if ln.strip()), "")
-        m = _SPECIES_HEADER_RE.match(first_line.rstrip())
-        if m and (name := m.group("species").strip()):
-            species.append(name)
+        try:
+            name, _, _ = _parse_species_header(first_line.rstrip(), slot)
+        except ShowdownParseError:
+            continue
+        species.append(name)
     return species
 
 

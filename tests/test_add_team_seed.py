@@ -3,18 +3,17 @@
   - `_seed_replica_cache_from_pokepaste_url`: seed the global Replica
     Cache from a resolved Pokepaste URL, existence-checked and
     best-effort.
-  - `_check_replica_already_in_sheet`: reject a duplicate Team ID before
-    any resolution / OCR work.
+  - `_check_replica_already_in_sheet`: reject a duplicate Team ID; now
+    called from inside `_commit_team_row` alongside the URL dedup check.
 
-Both helpers are driven directly with a minimal fake interaction rather
-than the full slash-command handler.
+Helpers are driven directly with a minimal fake interaction and
+AsyncMock/MagicMock per the project's unittest.mock convention.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 from aioresponses import aioresponses
 
@@ -27,7 +26,7 @@ from sketch.commands.add_team import (
     _check_replica_already_in_sheet,
     _seed_replica_cache_from_pokepaste_url,
 )
-from sketch.storage.sheets_client import TeamRow
+from sketch.storage.sheets_client import SheetsClient, TeamRow
 
 _RAW_BODY = (
     "Miraidon @ Choice Specs\r\n"
@@ -42,19 +41,12 @@ _RAW_BODY = (
 )
 
 
-@dataclass
-class _FakeUser:
-    id: int = 111
-
-
-@dataclass
-class _FakeInteraction:
-    user: _FakeUser = field(default_factory=_FakeUser)
-    guild_id: int | None = 222
-    edits: list[dict[str, Any]] = field(default_factory=list)
-
-    async def edit_original_response(self, **kwargs: Any) -> None:
-        self.edits.append(kwargs)
+def _make_interaction() -> MagicMock:
+    interaction = MagicMock()
+    interaction.user.id = 111
+    interaction.guild_id = 222
+    interaction.edit_original_response = AsyncMock()
+    return interaction
 
 
 def _inputs(*, replica: str | None = "QBXXWXL05U") -> _AddTeamInputs:
@@ -70,27 +62,10 @@ def _inputs(*, replica: str | None = "QBXXWXL05U") -> _AddTeamInputs:
     )
 
 
-class _FakeSheets:
-    """Stub exposing only `find_row_by_replica`."""
-
-    def __init__(self, row: TeamRow | None = None, *, error: bool = False) -> None:
-        self._row = row
-        self._error = error
-        self.calls: list[tuple[str, str]] = []
-
-    async def find_row_by_replica(
-        self, sheet_name: str, replica: str
-    ) -> TeamRow | None:
-        self.calls.append((sheet_name, replica))
-        if self._error:
-            raise RuntimeError("boom")
-        return self._row
-
-
 class TestSeedReplicaCacheFromUrl:
     async def test_seeds_full_entry_when_absent(self):
         cache = InMemoryReplicaCacheStore()
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
 
         with aioresponses() as mock:
             mock.get("https://pokepast.es/abc123/raw", status=200, body=_RAW_BODY)
@@ -119,7 +94,7 @@ class TestSeedReplicaCacheFromUrl:
             created_by_guild_id=888,
         )
         cache = InMemoryReplicaCacheStore({"QBXXWXL05U": existing})
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
 
         # No HTTP mocks: a fetch would raise inside aioresponses, but the
         # existence check must short-circuit before any network call.
@@ -136,7 +111,7 @@ class TestSeedReplicaCacheFromUrl:
 
     async def test_fetch_failure_is_swallowed_and_writes_nothing(self):
         cache = InMemoryReplicaCacheStore()
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
 
         with aioresponses() as mock:
             mock.get("https://pokepast.es/abc123/raw", status=404, body="nope")
@@ -152,20 +127,23 @@ class TestSeedReplicaCacheFromUrl:
 
 class TestCheckReplicaAlreadyInSheet:
     async def test_returns_false_when_no_replica(self):
-        sheets = _FakeSheets()
-        interaction = _FakeInteraction()
+        sheets = AsyncMock(spec=SheetsClient)
+        interaction = _make_interaction()
         handled = await _check_replica_already_in_sheet(
             interaction, sheets, _inputs(replica=None)
         )
         assert handled is False
-        assert sheets.calls == []  # no lookup without a code
+        sheets.find_row_by_replica.assert_not_called()
 
     async def test_returns_false_when_code_absent_from_sheet(self):
-        sheets = _FakeSheets(row=None)
-        interaction = _FakeInteraction()
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.find_row_by_replica.return_value = None
+        interaction = _make_interaction()
         handled = await _check_replica_already_in_sheet(interaction, sheets, _inputs())
         assert handled is False
-        assert sheets.calls == [("Reg M-A Sheet", "QBXXWXL05U")]
+        sheets.find_row_by_replica.assert_called_once_with(
+            "Reg M-A Sheet", "QBXXWXL05U"
+        )
 
     async def test_rejects_duplicate_code_with_message(self):
         row = TeamRow(
@@ -175,20 +153,21 @@ class TestCheckReplicaAlreadyInSheet:
             species=["Miraidon"],
             replica="QBXXWXL05U",
         )
-        sheets = _FakeSheets(row=row)
-        interaction = _FakeInteraction()
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.find_row_by_replica.return_value = row
+        interaction = _make_interaction()
         handled = await _check_replica_already_in_sheet(interaction, sheets, _inputs())
         assert handled is True
-        assert len(interaction.edits) == 1
-        content = interaction.edits[0]["content"]
+        interaction.edit_original_response.assert_called_once()
+        content = interaction.edit_original_response.call_args.kwargs["content"]
         assert "QBXXWXL05U" in content
         assert "row 7" in content
         assert "Miraidon balance" in content
 
     async def test_read_error_is_handled(self):
-        sheets = _FakeSheets(error=True)
-        interaction = _FakeInteraction()
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.find_row_by_replica.side_effect = RuntimeError("boom")
+        interaction = _make_interaction()
         handled = await _check_replica_already_in_sheet(interaction, sheets, _inputs())
-        # True so the caller stops; user was told via an edit.
         assert handled is True
-        assert len(interaction.edits) == 1
+        interaction.edit_original_response.assert_called_once()

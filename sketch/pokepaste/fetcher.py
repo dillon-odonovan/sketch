@@ -32,7 +32,7 @@ class PokepasteFetchError(Exception):
     """
 
 
-async def fetch_pokepaste_text(url: str) -> str:
+async def fetch_pokepaste_raw(url: str) -> str:
     """Return the raw Showdown export text for a Pokepaste `url`.
 
     Canonicalizes `url` (so trailing-slash / scheme variants converge),

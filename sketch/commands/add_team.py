@@ -55,7 +55,7 @@ from sketch.commands._shared import (
     _resolve_guild_sheets,
 )
 from sketch.logging_setup import trace_id_var
-from sketch.pokepaste.fetcher import PokepasteFetchError, fetch_pokepaste_text
+from sketch.pokepaste.fetcher import PokepasteFetchError, fetch_pokepaste_raw
 from sketch.pokepaste.renderer import (
     PokepasteUploadError,
     post_to_pokepaste,
@@ -147,18 +147,14 @@ async def _check_replica_already_in_sheet(
     sheets: SheetsClient,
     inputs: _AddTeamInputs,
 ) -> bool:
-    """Reject the add when this Team ID already has a row in the sheet.
+    """Return True and respond to the user when this Team ID already has a row.
 
     A Champions Team ID identifies one physical team, so a second row for
     the same code in this guild's sheet is a duplicate even when the
-    supplied Pokepaste URL differs (an exact paste vs a recreation). The
-    URL-keyed dedup in `_commit_team_row` can't catch that case, so we
-    check the replica column directly.
+    supplied Pokepaste URL differs (an exact paste vs a recreation).
 
-    Run before URL resolution so a duplicate is caught before any network
-    fetch, VRPaste call, or — most importantly — any Claude OCR. Returns
-    True when it has already responded to the user (duplicate found or
-    read error) and the caller should stop; False to proceed.
+    Returns True when it has already responded to the user (duplicate
+    found or read error) and the caller should stop; False to proceed.
     """
     if inputs.replica is None:
         return False
@@ -582,9 +578,7 @@ async def _seed_replica_cache_from_pokepaste_url(
     replica-only add hits the full-cache branch and reuses the URL.
 
     Checks the cache first and only writes when the code isn't already
-    present (skips the /raw fetch and the write for known codes). The
-    transactional `create` is a race-safety backstop for a concurrent
-    writer between the get and the create.
+    present (skips the /raw fetch and the write for known codes).
 
     Best-effort throughout (mirrors `_attach_url_to_cache`): any fetch,
     parse, or cache failure is logged and swallowed — seeding must never
@@ -601,7 +595,7 @@ async def _seed_replica_cache_from_pokepaste_url(
             )
             return
 
-        paste_text = await fetch_pokepaste_text(pokepaste_url)
+        paste_text = await fetch_pokepaste_raw(pokepaste_url)
         entry = ReplicaCacheEntry(
             paste_text=paste_text,
             pokepaste_url=canonicalize_pokepaste_url(pokepaste_url),
@@ -785,7 +779,14 @@ async def _commit_team_row(
     Shared by both the URL path and the post-OCR path — once
     `_resolve_canonical_url` settles on a URL, every other step is
     identical to the historical /add-team flow.
+
+    Dedup checks both Team ID (replica column) and Pokepaste URL so that
+    a second row for the same physical team is rejected regardless of
+    which identifier was supplied.
     """
+    if await _check_replica_already_in_sheet(interaction, sheets, inputs):
+        return
+
     try:
         existing = await sheets.find_row_by_url(
             inputs.sheet_name, canonical_url_for_dedup
@@ -971,10 +972,6 @@ def register(
             page2=page2,
         )
         if inputs is None:
-            return
-
-        # Reject a duplicate Team ID before any URL fetch / OCR work.
-        if await _check_replica_already_in_sheet(interaction, sheets, inputs):
             return
 
         logger.info(

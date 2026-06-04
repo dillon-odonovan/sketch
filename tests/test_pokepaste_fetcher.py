@@ -1,4 +1,4 @@
-"""Tests for `sketch.pokepaste.fetcher.fetch_pokepaste_text`.
+"""Tests for `sketch.pokepaste.fetcher.fetch_pokepaste_raw`.
 
 Network is mocked via `aioresponses`. The fetcher canonicalizes the URL
 and reads the `<paste-url>/raw` view, preserving CRLF line endings (which
@@ -8,7 +8,7 @@ the renderer requires for re-minting).
 import pytest
 from aioresponses import aioresponses
 
-from sketch.pokepaste.fetcher import PokepasteFetchError, fetch_pokepaste_text
+from sketch.pokepaste.fetcher import PokepasteFetchError, fetch_pokepaste_raw
 
 _RAW_BODY = (
     "Garganacl @ Sitrus Berry\r\n"
@@ -26,7 +26,7 @@ _RAW_BODY = (
 async def test_fetch_returns_raw_text_with_crlf_preserved():
     with aioresponses() as mock:
         mock.get("https://pokepast.es/abc123/raw", status=200, body=_RAW_BODY)
-        text = await fetch_pokepaste_text("https://pokepast.es/abc123")
+        text = await fetch_pokepaste_raw("https://pokepast.es/abc123")
     assert text == _RAW_BODY
     assert "\r\n" in text
 
@@ -37,7 +37,7 @@ async def test_fetch_canonicalizes_before_appending_raw():
     # no-trailing-slash form before `/raw` is appended.
     with aioresponses() as mock:
         mock.get("https://pokepast.es/abc123/raw", status=200, body=_RAW_BODY)
-        text = await fetch_pokepaste_text("http://pokepast.es/abc123/")
+        text = await fetch_pokepaste_raw("http://pokepast.es/abc123/")
     assert text == _RAW_BODY
 
 
@@ -46,4 +46,4 @@ async def test_fetch_non_200_raises():
     with aioresponses() as mock:
         mock.get("https://pokepast.es/missing/raw", status=404, body="not found")
         with pytest.raises(PokepasteFetchError):
-            await fetch_pokepaste_text("https://pokepast.es/missing")
+            await fetch_pokepaste_raw("https://pokepast.es/missing")
