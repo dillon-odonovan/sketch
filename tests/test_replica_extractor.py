@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import anthropic
 import pytest
@@ -32,7 +33,7 @@ from sketch.champions.extractor import (
 )
 from sketch.team import PokemonEntry, TeamData
 
-# --- Fakes for the Anthropic SDK -------------------------------------------
+# --- Test data fixtures for Anthropic SDK response shapes -------------------
 
 
 @dataclass
@@ -54,27 +55,13 @@ class _FakeMessage:
     stop_reason: str = "tool_use"
 
 
-class _FakeAsyncMessages:
-    def __init__(self, response: _FakeMessage | Exception) -> None:
-        self._response = response
-        self.calls: list[dict] = []
-
-    async def create(self, **kwargs: Any) -> _FakeMessage:
-        self.calls.append(kwargs)
-        if isinstance(self._response, Exception):
-            raise self._response
-        return self._response
-
-
-class _FakeAnthropic:
-    """Just enough of `anthropic.AsyncAnthropic` to drive the extractor.
-
-    The extractor only touches `client.messages.create`, so we don't need
-    to stub the rest of the SDK surface.
-    """
-
-    def __init__(self, response: _FakeMessage | Exception) -> None:
-        self.messages = _FakeAsyncMessages(response)
+def _make_client(response: _FakeMessage | Exception) -> MagicMock:
+    client = MagicMock()
+    if isinstance(response, Exception):
+        client.messages.create = AsyncMock(side_effect=response)
+    else:
+        client.messages.create = AsyncMock(return_value=response)
+    return client
 
 
 # --- Sample tool-use payloads ----------------------------------------------
@@ -277,7 +264,7 @@ class TestResolveNature:
 
 class TestExtractTeamFromScreenshots:
     async def test_returns_team_data_on_well_formed_tool_use(self):
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert isinstance(team, TeamData)
         assert len(team.pokemon) == 6
@@ -297,27 +284,27 @@ class TestExtractTeamFromScreenshots:
         }
 
     async def test_captures_team_id(self):
-        client = _FakeAnthropic(_team_message(_full_team_input("QBXXWXL05U")))
+        client = _make_client(_team_message(_full_team_input("QBXXWXL05U")))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert team.team_id == "QBXXWXL05U"
 
     async def test_team_id_uppercased(self):
         # Model might return lowercase; we canonicalize so the equality
         # check against the user's submitted code is case-insensitive.
-        client = _FakeAnthropic(_team_message(_full_team_input("qbxxwxl05u")))
+        client = _make_client(_team_message(_full_team_input("qbxxwxl05u")))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert team.team_id == "QBXXWXL05U"
 
     async def test_team_id_none_when_model_returns_null(self):
-        client = _FakeAnthropic(_team_message(_full_team_input(team_id=None)))
+        client = _make_client(_team_message(_full_team_input(team_id=None)))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert team.team_id is None
 
     async def test_two_images_sent_when_page2_provided(self):
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
-        assert len(client.messages.calls) == 1
-        user_content = client.messages.calls[0]["messages"][0]["content"]
+        client.messages.create.assert_called_once()
+        user_content = client.messages.create.call_args.kwargs["messages"][0]["content"]
         image_blocks = [b for b in user_content if b.get("type") == "image"]
         assert len(image_blocks) == 2
 
@@ -325,39 +312,41 @@ class TestExtractTeamFromScreenshots:
         # Stitched-image submissions: user uploads one image containing
         # both pages. Extractor should send just that one to the model
         # and the prompt's instruction text adjusts to match.
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         await extract_team_from_screenshots(client, _TINY_PNG, None)
-        user_content = client.messages.calls[0]["messages"][0]["content"]
+        call = client.messages.create.call_args.kwargs
+        user_content = call["messages"][0]["content"]
         image_blocks = [b for b in user_content if b.get("type") == "image"]
         assert len(image_blocks) == 1
         text_block = next(b for b in user_content if b.get("type") == "text")
         assert "stitched" in text_block["text"]
 
     async def test_uses_configured_model_by_default(self):
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         from sketch import config
 
-        assert client.messages.calls[0]["model"] == config.REPLICA_OCR_MODEL
+        actual_model = client.messages.create.call_args.kwargs["model"]
+        assert actual_model == config.REPLICA_OCR_MODEL
 
     async def test_model_override_wins(self):
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         await extract_team_from_screenshots(
             client, _TINY_PNG, _TINY_PNG, model="claude-opus-4-7"
         )
-        assert client.messages.calls[0]["model"] == "claude-opus-4-7"
+        assert client.messages.create.call_args.kwargs["model"] == "claude-opus-4-7"
 
     async def test_tool_choice_forces_submit_team(self):
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
-        call = client.messages.calls[0]
+        call = client.messages.create.call_args.kwargs
         assert call["tool_choice"] == {"type": "tool", "name": "submit_team"}
         assert [t["name"] for t in call["tools"]] == ["submit_team"]
 
     async def test_system_prompt_is_cacheable(self):
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
-        system = client.messages.calls[0]["system"]
+        system = client.messages.create.call_args.kwargs["system"]
         assert isinstance(system, list) and len(system) == 1
         assert system[0]["cache_control"] == {"type": "ephemeral"}
 
@@ -365,7 +354,7 @@ class TestExtractTeamFromScreenshots:
         # Model returned a text-only response (which would be a bug given
         # tool_choice=submit_team, but we treat it as failure mode rather
         # than crashing).
-        client = _FakeAnthropic(
+        client = _make_client(
             _FakeMessage(
                 content=[_FakeTextBlock(type="text", text="I'm not sure.")],
                 stop_reason="end_turn",
@@ -377,12 +366,12 @@ class TestExtractTeamFromScreenshots:
     async def test_wrong_pokemon_count_raises_extraction_error(self):
         bad = _full_team_input()
         bad["pokemon"] = bad["pokemon"][:5]
-        client = _FakeAnthropic(_team_message(bad))
+        client = _make_client(_team_message(bad))
         with pytest.raises(ExtractionError, match="Expected 6 Pokemon"):
             await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
 
     async def test_anthropic_api_error_raises_extraction_error(self):
-        client = _FakeAnthropic(
+        client = _make_client(
             anthropic.APIError(
                 "boom",
                 request=None,  # type: ignore[arg-type]
@@ -393,26 +382,26 @@ class TestExtractTeamFromScreenshots:
             await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
 
     async def test_non_image_bytes_raises_extraction_error(self):
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         with pytest.raises(ExtractionError, match="Unrecognized image"):
             await extract_team_from_screenshots(client, b"plain text", _TINY_PNG)
 
     async def test_item_null_passes_through_as_none(self):
         payload = _full_team_input()
         payload["pokemon"][0]["item"] = None
-        client = _FakeAnthropic(_team_message(payload))
+        client = _make_client(_team_message(payload))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert team.pokemon[0].item is None
 
     async def test_gender_null_passes_through_as_none(self):
         payload = _full_team_input()
         payload["pokemon"][0]["gender"] = None
-        client = _FakeAnthropic(_team_message(payload))
+        client = _make_client(_team_message(payload))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert team.pokemon[0].gender is None
 
     async def test_isinstance_pokemon_entry(self):
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert all(isinstance(p, PokemonEntry) for p in team.pokemon)
 
@@ -425,16 +414,16 @@ class TestExtractTeamFromScreenshots:
             "boosted_stat": None,
             "reduced_stat": None,
         }
-        client = _FakeAnthropic(_team_message(payload))
+        client = _make_client(_team_message(payload))
         team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
         assert team.pokemon[0].nature == "Serious"
 
     async def test_instruction_text_mentions_language(self):
         # The per-call user instruction reinforces, right next to the images,
         # that screenshots may be non-English and output must be English.
-        client = _FakeAnthropic(_team_message(_full_team_input()))
+        client = _make_client(_team_message(_full_team_input()))
         await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
-        user_content = client.messages.calls[0]["messages"][0]["content"]
+        user_content = client.messages.create.call_args.kwargs["messages"][0]["content"]
         text_block = next(b for b in user_content if b.get("type") == "text")
         assert "language" in text_block["text"].lower()
 

@@ -11,8 +11,7 @@ double. We're verifying:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 from sketch.champions.preview_view import (
     EditTeamModal,
@@ -50,60 +49,15 @@ def _team() -> TeamData:
     )
 
 
-# --- Fakes for discord.Interaction -----------------------------------------
-
-
-@dataclass
-class _FakeUser:
-    id: int
-
-
-@dataclass
-class _FakeResponse:
-    """Minimal Interaction.response stub.
-
-    `defer()` and `send_message()` are exercised by the View buttons
-    (Confirm / Cancel defer; the invoker gate uses send_message).
-    `send_modal()` is exercised by the Edit button. `edit_message()`
-    is exercised by both the Edit success path (re-render with the
-    edited team) and the Edit failure path (push the disabled-Confirm
-    state). We record what gets called so each test can assert the
-    right code path fired.
-    """
-
-    defer_calls: int = 0
-    send_message_calls: list[dict] = field(default_factory=list)
-    send_modal_calls: list[Any] = field(default_factory=list)
-    edit_message_calls: list[dict] = field(default_factory=list)
-
-    async def defer(self) -> None:
-        self.defer_calls += 1
-
-    async def send_message(self, content: str, **kwargs: Any) -> None:
-        self.send_message_calls.append({"content": content, **kwargs})
-
-    async def send_modal(self, modal: Any) -> None:
-        self.send_modal_calls.append(modal)
-
-    async def edit_message(self, **kwargs: Any) -> None:
-        self.edit_message_calls.append(kwargs)
-
-
-@dataclass
-class _FakeFollowup:
-    """Minimal Interaction.followup stub.
-
-    Used by the Edit failure path: after the modal-submit `response`
-    edits the preview (to push the disabled-Confirm state), the
-    parser error goes out as a `followup.send(ephemeral=True, ...)`
-    so the user gets a visible notification without taking another
-    interaction slot on the parent message.
-    """
-
-    send_calls: list[dict] = field(default_factory=list)
-
-    async def send(self, content: str | None = None, **kwargs: Any) -> None:
-        self.send_calls.append({"content": content, **kwargs})
+def _make_interaction(user_id: int = 42) -> MagicMock:
+    interaction = MagicMock()
+    interaction.user.id = user_id
+    interaction.response.defer = AsyncMock()
+    interaction.response.send_message = AsyncMock()
+    interaction.response.send_modal = AsyncMock()
+    interaction.response.edit_message = AsyncMock()
+    interaction.followup.send = AsyncMock()
+    return interaction
 
 
 def _make_view(
@@ -126,13 +80,6 @@ def _make_view(
         fmt_name="Reg M-A",
         timeout=300,
     )
-
-
-@dataclass
-class _FakeInteraction:
-    user: _FakeUser
-    response: _FakeResponse = field(default_factory=_FakeResponse)
-    followup: _FakeFollowup = field(default_factory=_FakeFollowup)
 
 
 class TestTeamToEmbed:
@@ -233,46 +180,46 @@ class TestReplicaPreviewView:
 
     async def test_invoker_can_pass_check(self):
         view = _make_view(invoker_id=42)
-        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        interaction = _make_interaction(user_id=42)
         assert await view.interaction_check(interaction) is True
-        assert interaction.response.send_message_calls == []
+        interaction.response.send_message.assert_not_called()
 
     async def test_other_user_blocked_with_refusal(self):
         view = _make_view(invoker_id=42)
-        interaction = _FakeInteraction(user=_FakeUser(id=99))
+        interaction = _make_interaction(user_id=99)
         assert await view.interaction_check(interaction) is False
         # The refusal goes out as an ephemeral message — the user who
         # clicked sees it, but the channel doesn't get spammed.
-        assert len(interaction.response.send_message_calls) == 1
-        call = interaction.response.send_message_calls[0]
-        assert call["ephemeral"] is True
-        assert "Only the user" in call["content"]
+        interaction.response.send_message.assert_called_once()
+        (content,), kwargs = interaction.response.send_message.call_args
+        assert kwargs["ephemeral"] is True
+        assert "Only the user" in content
 
     async def test_confirm_sets_decision_true_and_defers(self):
         view = _make_view(invoker_id=42)
-        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        interaction = _make_interaction(user_id=42)
         # `view.confirm.callback` is discord.py's `_ItemCallback` wrapper —
         # it implicitly binds `self=view` and takes only the interaction.
         await view.confirm.callback(interaction)
         assert view.decision is True
-        assert interaction.response.defer_calls == 1
+        interaction.response.defer.assert_called_once()
 
     async def test_cancel_sets_decision_false_and_defers(self):
         view = _make_view(invoker_id=42)
-        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        interaction = _make_interaction(user_id=42)
         await view.cancel.callback(interaction)
         assert view.decision is False
-        assert interaction.response.defer_calls == 1
+        interaction.response.defer.assert_called_once()
 
     async def test_edit_button_opens_modal_with_current_paste(self):
         # The Edit button feeds the view's current team into the modal's
         # prefill — re-clicking Edit after an iteration should reflect
         # the most-recently-applied team, not the original OCR.
         view = _make_view(invoker_id=42)
-        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        interaction = _make_interaction(user_id=42)
         await view.edit.callback(interaction)
-        assert len(interaction.response.send_modal_calls) == 1
-        modal = interaction.response.send_modal_calls[0]
+        interaction.response.send_modal.assert_called_once()
+        (modal,), _ = interaction.response.send_modal.call_args
         assert isinstance(modal, EditTeamModal)
         # Prefill is the canonical Showdown render of the current team.
         assert modal.paste_input.default == render_showdown(view.team)
@@ -293,7 +240,7 @@ class TestReplicaPreviewView:
             pokemon=[_entry("Urshifu-Rapid-Strike")] + view.team.pokemon[1:],
             team_id=view.team.team_id,
         )
-        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        modal_interaction = _make_interaction(user_id=42)
         await view._apply_edited_team(edited, modal_interaction)
         # Team replaced, pending cleared, Confirm re-enabled.
         assert view.team is edited
@@ -303,8 +250,8 @@ class TestReplicaPreviewView:
         assert view.decision is None
         assert not view.is_finished()
         # Preview embed re-rendered with the updated team.
-        assert len(modal_interaction.response.edit_message_calls) == 1
-        call = modal_interaction.response.edit_message_calls[0]
+        modal_interaction.response.edit_message.assert_called_once()
+        call = modal_interaction.response.edit_message.call_args.kwargs
         # The embed reflects the edited team — content unchanged.
         assert "content" not in call
         # The first mon's new species should appear in the rendered embed.
@@ -321,10 +268,10 @@ class TestReplicaPreviewView:
             pokemon=[_entry("Urshifu-Rapid-Strike")] + view.team.pokemon[1:],
             team_id=view.team.team_id,
         )
-        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        modal_interaction = _make_interaction(user_id=42)
         await view._apply_edited_team(edited, modal_interaction)
         # User then clicks Confirm.
-        confirm_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        confirm_interaction = _make_interaction(user_id=42)
         await view.confirm.callback(confirm_interaction)
         # Decision is True, view is stopped, and view.team is the
         # edited version — the command handler will mint with this.
@@ -343,7 +290,7 @@ class TestReplicaPreviewView:
         original_team = view.team
         assert view.confirm.disabled is False  # baseline
         submitted = "deliberately broken paste"
-        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        modal_interaction = _make_interaction(user_id=42)
         await view._surface_edit_failure(
             submitted, "Expected 6 Pokemon, got 5.", modal_interaction
         )
@@ -355,7 +302,7 @@ class TestReplicaPreviewView:
         # The Confirm-disable guard.
         assert view.confirm.disabled is True
         # No new modal opened (the HTTP 400 bug we already fixed).
-        assert modal_interaction.response.send_modal_calls == []
+        modal_interaction.response.send_modal.assert_not_called()
 
     async def test_surface_edit_failure_pushes_disabled_state_and_followup_error(self):
         # The disabled-Confirm state is pushed to the message via
@@ -364,7 +311,7 @@ class TestReplicaPreviewView:
         # `followup.send(ephemeral=True, ...)` — a separate ephemeral
         # message the user can read and dismiss.
         view = _make_view(invoker_id=42)
-        modal_interaction = _FakeInteraction(user=_FakeUser(id=42))
+        modal_interaction = _make_interaction(user_id=42)
         await view._surface_edit_failure(
             "broken", "Expected 6 Pokemon, got 5.", modal_interaction
         )
@@ -372,22 +319,22 @@ class TestReplicaPreviewView:
         # carries the disabled Confirm). Content / embed not touched —
         # the preview still shows the original team, which Confirm
         # can no longer commit anyway.
-        assert len(modal_interaction.response.edit_message_calls) == 1
-        edit_call = modal_interaction.response.edit_message_calls[0]
+        modal_interaction.response.edit_message.assert_called_once()
+        edit_call = modal_interaction.response.edit_message.call_args.kwargs
         assert edit_call["view"] is view
         assert "content" not in edit_call
         assert "embed" not in edit_call
         # Error delivered via followup (so it appears as a separate
         # message bubble for the user). The footgun-escape hint is
         # included so users who actually want the original have a path.
-        assert len(modal_interaction.followup.send_calls) == 1
-        followup = modal_interaction.followup.send_calls[0]
-        assert followup["ephemeral"] is True
-        assert "Couldn't parse" in followup["content"]
-        assert "Expected 6 Pokemon, got 5." in followup["content"]
-        assert "your text is preserved" in followup["content"]
-        assert "Cancel" in followup["content"]
-        assert "re-run" in followup["content"]
+        modal_interaction.followup.send.assert_called_once()
+        followup_kw = modal_interaction.followup.send.call_args.kwargs
+        assert followup_kw["ephemeral"] is True
+        assert "Couldn't parse" in followup_kw["content"]
+        assert "Expected 6 Pokemon, got 5." in followup_kw["content"]
+        assert "your text is preserved" in followup_kw["content"]
+        assert "Cancel" in followup_kw["content"]
+        assert "re-run" in followup_kw["content"]
 
     async def test_edit_button_uses_pending_text_after_failure(self):
         # After a failed edit, the next Edit click pre-fills the modal
@@ -396,10 +343,10 @@ class TestReplicaPreviewView:
         # their work.
         view = _make_view(invoker_id=42)
         view._pending_edit_text = "user's in-progress edit"
-        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        interaction = _make_interaction(user_id=42)
         await view.edit.callback(interaction)
-        assert len(interaction.response.send_modal_calls) == 1
-        modal = interaction.response.send_modal_calls[0]
+        interaction.response.send_modal.assert_called_once()
+        (modal,), _ = interaction.response.send_modal.call_args
         assert modal.paste_input.default == "user's in-progress edit"
 
     async def test_cancel_clears_pending_edit_text(self):
@@ -408,7 +355,7 @@ class TestReplicaPreviewView:
         # anyway, but makes the state transitions predictable.
         view = _make_view(invoker_id=42)
         view._pending_edit_text = "doesn't matter"
-        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        interaction = _make_interaction(user_id=42)
         await view.cancel.callback(interaction)
         assert view._pending_edit_text is None
         assert view.decision is False
@@ -441,7 +388,7 @@ class TestEditTeamModal:
         # gateway round-trip.
         modal.paste_input._value = render_showdown(original)  # type: ignore[attr-defined]
 
-        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        interaction = _make_interaction(user_id=42)
         await modal.on_submit(interaction)
 
         assert len(successes) == 1
@@ -482,7 +429,7 @@ class TestEditTeamModal:
         )
         modal.paste_input._value = broken_paste  # type: ignore[attr-defined]
 
-        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        interaction = _make_interaction(user_id=42)
         await modal.on_submit(interaction)
 
         assert successes == []
@@ -496,10 +443,10 @@ class TestEditTeamModal:
         # in response to a modal-submit interaction (HTTP 400, valid
         # response types {4, 5, 6, 7, 10, 12}), so the modal must
         # hand the interaction off rather than responding directly.
-        assert interaction.response.send_modal_calls == []
-        assert interaction.response.edit_message_calls == []
-        assert interaction.response.send_message_calls == []
-        assert interaction.response.defer_calls == 0
+        interaction.response.send_modal.assert_not_called()
+        interaction.response.edit_message.assert_not_called()
+        interaction.response.send_message.assert_not_called()
+        interaction.response.defer.assert_not_called()
 
     async def test_submit_with_nature_error_mentions_serious(self):
         # The nature error must explicitly tell the user to use "Serious"
@@ -523,7 +470,7 @@ class TestEditTeamModal:
         )
         modal.paste_input._value = paste  # type: ignore[attr-defined]
 
-        interaction = _FakeInteraction(user=_FakeUser(id=42))
+        interaction = _make_interaction(user_id=42)
         await modal.on_submit(interaction)
 
         assert len(failures) == 1

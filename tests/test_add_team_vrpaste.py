@@ -9,8 +9,7 @@ enough to verify the happy-path routing — fetch → render → mint → cache
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aioresponses import aioresponses
@@ -36,30 +35,13 @@ _SAMPLE_PAYLOAD = {
 }
 
 
-@dataclass
-class _FakeUser:
-    id: int = 111
-
-
-@dataclass
-class _FakeFollowup:
-    sent: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
-
-    async def send(self, content: str, **kwargs: Any) -> None:
-        self.sent.append((content, kwargs))
-
-
-@dataclass
-class _FakeInteraction:
-    """Minimal interaction double — only the surface `_resolve_via_vrpaste` touches."""
-
-    user: _FakeUser = field(default_factory=_FakeUser)
-    guild_id: int | None = 222
-    edits: list[dict[str, Any]] = field(default_factory=list)
-    followup: _FakeFollowup = field(default_factory=_FakeFollowup)
-
-    async def edit_original_response(self, **kwargs: Any) -> None:
-        self.edits.append(kwargs)
+def _make_interaction() -> MagicMock:
+    interaction = MagicMock()
+    interaction.user.id = 111
+    interaction.guild_id = 222
+    interaction.followup.send = AsyncMock()
+    interaction.edit_original_response = AsyncMock()
+    return interaction
 
 
 def _inputs(url: str = "https://www.vrpastes.com/gxmfscC1") -> _AddTeamInputs:
@@ -82,7 +64,7 @@ def _backend_url(vrpaste_id: str) -> str:
 class TestResolveViaVRPaste:
     async def test_cache_miss_fetches_mints_and_caches(self):
         cache = InMemoryVRPasteCacheStore()
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
 
         with aioresponses() as mock:
             mock.get(_backend_url("gxmfscC1"), payload=_SAMPLE_PAYLOAD)
@@ -118,7 +100,7 @@ class TestResolveViaVRPaste:
             user_id=111,
             guild_id=222,
         )
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
 
         # aioresponses with no registered mocks raises on any unexpected call,
         # which is exactly what we want — a cache hit must not touch the network.
@@ -159,7 +141,7 @@ class TestResolveViaVRPaste:
         # tests/test_vrpaste_cache.py::test_create_is_fail_if_exists_returns_winner.
         # This test just confirms the resolver doesn't bypass the cache
         # entry when present.
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         with aioresponses():
             result = await _resolve_via_vrpaste(
                 interaction,
@@ -173,7 +155,7 @@ class TestResolveViaVRPaste:
 
     async def test_password_protected_paste_surfaces_user_error(self):
         cache = InMemoryVRPasteCacheStore()
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
         payload = {**_SAMPLE_PAYLOAD, "hasPassword": True}
 
         with aioresponses() as mock:
@@ -187,14 +169,14 @@ class TestResolveViaVRPaste:
         assert result is None
         # The status edit should mention the password issue (the message
         # comes from VRPasteFetchError).
-        last_edit = interaction.edits[-1]
-        assert "password-protected" in last_edit["content"]
+        edit_content = interaction.edit_original_response.call_args.kwargs["content"]
+        assert "password-protected" in edit_content
         # Nothing should land in the cache.
         assert cache.get("gxmfscC1") is None
 
     async def test_malformed_vrpaste_url_returns_validation_error(self):
         cache = InMemoryVRPasteCacheStore()
-        interaction = _FakeInteraction()
+        interaction = _make_interaction()
 
         # No HTTP mocks registered — extract_vrpaste_id raises before any
         # network call when the URL doesn't match the VRPaste regex.
@@ -206,8 +188,8 @@ class TestResolveViaVRPaste:
             )
 
         assert result is None
-        assert len(interaction.followup.sent) == 1
-        content, kwargs = interaction.followup.sent[0]
+        interaction.followup.send.assert_called_once()
+        (content,), kwargs = interaction.followup.send.call_args
         assert "VRPaste URL" in content
         assert kwargs.get("ephemeral") is True
 
