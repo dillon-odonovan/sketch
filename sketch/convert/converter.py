@@ -37,17 +37,26 @@ _ZERO_EVS = {k: 0 for k in STAT_KEYS}
 
 
 @dataclass(frozen=True)
+class SlotSource:
+    """Where one slot's EV spread came from.
+
+    `label` is the coarse provenance — "kept" (already trained), "bank"
+    (lifted from a bank team), or "estimated" (LLM fallback). `url` is the
+    Pokepaste URL of the bank team the spread was lifted from, or None for
+    estimated/kept slots.
+    """
+
+    label: str
+    url: str | None = None
+
+
+@dataclass(frozen=True)
 class ConvertResult:
-    """The finished CTS team plus per-slot provenance labels."""
+    """The finished CTS team plus per-slot provenance."""
 
     team: TeamData
-    # One label per Pokemon slot (same order as `team.pokemon`).
-    # Values: "kept", "bank", or "estimated".
-    sources: list[str]
-    # Pokepaste URL of the bank team the spread was lifted from, or None
-    # when the spread was estimated by the LLM or the mon was already
-    # trained. Parallel to `sources`.
-    source_urls: list[str | None]
+    # One `SlotSource` per Pokemon slot, in `team.pokemon` order.
+    sources: list[SlotSource]
 
 
 async def convert_ots_to_cts(
@@ -139,22 +148,19 @@ async def convert_ots_to_cts(
 
     # Build the trained team.
     new_pokemon = []
-    sources: list[str] = []
-    source_urls: list[str | None] = []
+    sources: list[SlotSource] = []
 
     for slot, (mon, choice) in enumerate(
         zip(ots.pokemon, choices, strict=False), start=1
     ):
         if choice is not None:
             new_pokemon.append(dataclasses.replace(mon, evs=choice.evs))
-            sources.append(choice.source)
-            source_urls.append(choice.source_url)
+            sources.append(SlotSource(label=choice.source, url=choice.source_url))
         else:
             evs = guessed.get(slot, _ZERO_EVS.copy())
             logger.info("EV guess for %s (slot %d): %s", mon.species, slot, evs)
             new_pokemon.append(dataclasses.replace(mon, evs=evs))
-            sources.append("estimated")
-            source_urls.append(None)
+            sources.append(SlotSource(label="estimated"))
 
     trained = dataclasses.replace(ots, pokemon=new_pokemon)
-    return ConvertResult(team=trained, sources=sources, source_urls=source_urls)
+    return ConvertResult(team=trained, sources=sources)

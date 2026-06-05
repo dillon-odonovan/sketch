@@ -106,14 +106,14 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         llm_spreads += [{"slot": i, "evs": _zero_evs()} for i in range(2, 7)]
         result = await self._run(llm_spreads=llm_spreads)
         self.assertEqual(result.team.pokemon[0].evs, guessed)
-        self.assertEqual(result.sources[0], "estimated")
+        self.assertEqual(result.sources[0].label, "estimated")
 
     async def test_pre_trained_mon_left_untouched(self) -> None:
         trained = _evs(hp=32, def_=16)
         ots = _ots(_mon("Pikachu", evs=trained), *[_mon(s) for s in _FILLERS])
         result = await self._run(ots=ots, llm_spreads=_all_llm_spreads())
         self.assertEqual(result.team.pokemon[0].evs, trained)
-        self.assertEqual(result.sources[0], "kept")
+        self.assertEqual(result.sources[0].label, "kept")
 
     async def test_non_ev_fields_preserved(self) -> None:
         target = _mon(
@@ -132,10 +132,9 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trained.nature, target.nature)
         self.assertEqual(trained.moves, target.moves)
 
-    async def test_sources_and_urls_length_equals_team_size(self) -> None:
+    async def test_sources_length_equals_team_size(self) -> None:
         result = await self._run(llm_spreads=_all_llm_spreads())
         self.assertEqual(len(result.sources), 6)
-        self.assertEqual(len(result.source_urls), 6)
 
     async def test_unsupported_format_raises(self) -> None:
         sheets = AsyncMock()
@@ -189,11 +188,11 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
             ots=ots, bank_teams=[bank_team], llm_spreads=llm_spreads
         )
         self.assertEqual(result.team.pokemon[0].evs, bank_spread)
-        self.assertEqual(result.sources[0], "bank")
-        self.assertEqual(result.source_urls[0], "https://pokepast.es/test")
+        self.assertEqual(result.sources[0].label, "bank")
+        self.assertEqual(result.sources[0].url, "https://pokepast.es/test")
         self.assertEqual(result.team.pokemon[1].evs, llm_spread)
-        self.assertEqual(result.sources[1], "estimated")
-        self.assertIsNone(result.source_urls[1])
+        self.assertEqual(result.sources[1].label, "estimated")
+        self.assertIsNone(result.sources[1].url)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from sketch.commands.convert_ots import _source_summary
-from sketch.convert.converter import ConvertResult
+from sketch.convert.converter import ConvertResult, SlotSource
 from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
 
@@ -34,7 +34,11 @@ def _result(
     sp = species or [f"Mon{i}" for i in range(n)]
     urls = source_urls or [None] * n
     team = TeamData(pokemon=[_mon(s) for s in sp])
-    return ConvertResult(team=team, sources=sources, source_urls=urls), sp
+    slot_sources = [
+        SlotSource(label=label, url=url)
+        for label, url in zip(sources, urls, strict=True)
+    ]
+    return ConvertResult(team=team, sources=slot_sources), sp
 
 
 class TestSourceSummary(unittest.TestCase):

@@ -31,7 +31,6 @@ from sketch.logging_setup import trace_id_var
 from sketch.pokepaste.validator import (
     ValidationError,
     canonicalize_pokepaste_url,
-    is_pokepaste_url,
 )
 from sketch.storage.guild_config import GuildConfigStore
 from sketch.storage.sheets_client import (
@@ -40,8 +39,12 @@ from sketch.storage.sheets_client import (
     SheetsClientRegistry,
     TeamNotFoundError,
 )
+from sketch.teamsource import (
+    TeamUrlKind,
+    classify_team_url,
+    unsupported_team_url_message,
+)
 from sketch.vrpaste.cache import VRPasteCacheStore, lookup_pokepaste_url
-from sketch.vrpaste.validator import is_vrpaste_url
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +109,8 @@ async def _resolve_target_url(
     """
     assert inputs.url is not None
 
-    if is_vrpaste_url(inputs.url):
+    kind = classify_team_url(inputs.url)
+    if kind is TeamUrlKind.VRPASTE:
         try:
             resolved = await asyncio.to_thread(
                 lookup_pokepaste_url, inputs.url, vrpaste_cache
@@ -132,19 +136,13 @@ async def _resolve_target_url(
             return None
         return resolved
 
-    if is_pokepaste_url(inputs.url):
-        try:
-            return canonicalize_pokepaste_url(inputs.url)
-        except ValidationError as e:
-            await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
-            return None
+    if kind is TeamUrlKind.POKEPASTE:
+        # is_pokepaste_url and canonicalize share one regex, so this
+        # won't raise once the URL is classified as a Pokepaste.
+        return canonicalize_pokepaste_url(inputs.url)
 
     await interaction.followup.send(
-        _with_trace(
-            f"`{inputs.url}` doesn't look like a Pokepaste or VRPaste URL. "
-            "Expected something like `https://pokepast.es/abc123` or "
-            "`https://www.vrpastes.com/abc123`."
-        ),
+        _with_trace(unsupported_team_url_message(inputs.url)),
         ephemeral=True,
     )
     return None

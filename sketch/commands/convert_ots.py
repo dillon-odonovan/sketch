@@ -35,17 +35,17 @@ from sketch.convert.converter import ConvertResult, convert_ots_to_cts
 from sketch.convert.ev_model import UnsupportedFormatError
 from sketch.convert.llm_guess import EvGuessError
 from sketch.logging_setup import trace_id_var
-from sketch.pokepaste.fetcher import PokepasteFetchError, fetch_pokepaste_raw
+from sketch.pokepaste.fetcher import PokepasteFetchError
 from sketch.pokepaste.renderer import (
     PokepasteUploadError,
     post_to_pokepaste,
     render_showdown,
 )
-from sketch.pokepaste.validator import ValidationError, is_pokepaste_url
+from sketch.pokepaste.validator import ValidationError
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
 from sketch.team import TeamData
-from sketch.vrpaste.fetcher import VRPasteFetchError, fetch_vrpaste
-from sketch.vrpaste.validator import is_vrpaste_url
+from sketch.teamsource import fetch_team_from_url
+from sketch.vrpaste.fetcher import VRPasteFetchError
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +71,10 @@ def _source_summary(
         ...
     """
     sources = result.sources
-    source_urls = result.source_urls
 
-    from_bank = sources.count("bank")
-    estimated = sources.count("estimated")
-    kept = sources.count("kept")
+    from_bank = sum(1 for s in sources if s.label == "bank")
+    estimated = sum(1 for s in sources if s.label == "estimated")
+    kept = sum(1 for s in sources if s.label == "kept")
 
     parts: list[str] = []
     if from_bank:
@@ -90,11 +89,11 @@ def _source_summary(
     headline = f"Trained {total} mons ({detail})."
 
     lines = [headline]
-    for name, src, url in zip(ots_pokemon_names, sources, source_urls, strict=False):
-        if src == "bank" and url:
+    for name, src in zip(ots_pokemon_names, sources, strict=False):
+        if src.label == "bank" and src.url:
             # Full URL so Discord renders it as a clickable hyperlink.
-            lines.append(f"• {name} — {url}")
-        elif src == "estimated":
+            lines.append(f"• {name} — {src.url}")
+        elif src.label == "estimated":
             lines.append(f"• {name} — estimated")
         # "kept" mons are not listed to keep the reply concise.
 
@@ -236,38 +235,18 @@ def register(
             if sheets is None:
                 return
 
-            if is_vrpaste_url(url):
-                try:
-                    ots: TeamData = await fetch_vrpaste(url)
-                except VRPasteFetchError as exc:
-                    await interaction.followup.send(
-                        _with_trace(str(exc)), ephemeral=True
-                    )
-                    return
-            elif is_pokepaste_url(url):
-                try:
-                    ots_text = await fetch_pokepaste_raw(url)
-                except (PokepasteFetchError, ValidationError) as exc:
-                    await interaction.followup.send(
-                        _with_trace(str(exc)), ephemeral=True
-                    )
-                    return
-                try:
-                    ots = parse_showdown(ots_text)
-                except ShowdownParseError as exc:
-                    await interaction.followup.send(
-                        _with_trace(str(exc)), ephemeral=True
-                    )
-                    return
-            else:
-                await interaction.followup.send(
-                    _with_trace(
-                        f"`{url}` doesn't look like a Pokepaste or VRPaste URL. "
-                        "Expected something like `https://pokepast.es/abc123` "
-                        "or `https://www.vrpastes.com/abc123`."
-                    ),
-                    ephemeral=True,
-                )
+            # `fetch_team_from_url` classifies the URL and returns a parsed
+            # TeamData (or raises UnsupportedTeamUrlError, a ValidationError
+            # subclass, for an unrecognized URL).
+            try:
+                ots = await fetch_team_from_url(url)
+            except (
+                VRPasteFetchError,
+                PokepasteFetchError,
+                ValidationError,
+                ShowdownParseError,
+            ) as exc:
+                await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
                 return
 
             logger.info(

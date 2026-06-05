@@ -36,13 +36,21 @@ class EvGuessError(Exception):
 def _system_prompt(fmt_name: str, ev_model: EvModel) -> str:
     max_s = ev_model.max_per_stat
     max_t = ev_model.max_total
-    total_note = (
-        f"The total across all stats is approximately {max_t} "
-        f"(e.g. {max_s}/{max_s}/0/0/0/0 = {max_s * 2} total is fine; "
-        f"{max_s}/{max_s}/{max_s}/0/0/0 = {max_s * 3} exceeds the budget). "
-        if max_t is not None
-        else ""
-    )
+    if max_t is not None:
+        # Remainder after maxing two stats — the third stat in the
+        # canonical sparse spread (e.g. 2/32/32 = 66 for Champions).
+        third = max_t - 2 * max_s
+        budget_note = (
+            f"The six values must sum to exactly {max_t} — this is a hard, "
+            f"fixed budget, not an approximation. Use all of it; do not leave "
+            f"points unspent. Spreads are sparse: invest in only 2–3 stats and "
+            f"leave the rest at 0. A common, sensible default when nothing more "
+            f"specific is implied is two stats at {max_s} plus the remaining "
+            f"{third} on a third (e.g. {third} HP / {max_s} Atk / {max_s} Spe = "
+            f"{max_t}). "
+        )
+    else:
+        budget_note = "Spreads are sparse: invest in 2–3 stats, rest at 0. "
     return (
         "You are a competitive Pokemon team builder assigning EV spreads for "
         f"the VGC / doubles (bring-6, pick-4) format {fmt_name}. You are given "
@@ -51,14 +59,11 @@ def _system_prompt(fmt_name: str, ev_model: EvModel) -> str:
         "spread for each Pokemon, consistent with its nature (invest in the "
         "stats the nature and moves imply — e.g. a physical attacker with a "
         f"+Spe nature wants Attack and Speed).\n\n"
-        f"This format uses '{ev_model.label}'. Each stat accepts exactly "
-        f"0 to {max_s} Stat Points **inclusive** — {max_s} is a valid and "
-        f"common value (not 31, not 33, but exactly {max_s} when fully "
-        f"investing a stat). {total_note}"
-        f"Spreads are sparse: invest in 2–3 stats, leave the rest at 0. "
-        f"Typical examples: '{max_s} HP / {max_s} Spe', or "
-        f"'{max_s} Atk / {max_s} Spe', or '{max_s} HP / {max_s} Def / "
-        f"{max_s - 4} SpD'. "
+        f"This format uses '{ev_model.label}'. Each stat takes an integer from "
+        f"0 to {max_s} inclusive — {max_s} is the hard per-stat cap and the "
+        f"normal value for a fully-invested stat (not 31, not 33, exactly "
+        f"{max_s}). "
+        f"{budget_note}"
         "Call submit_spreads with one entry per Pokemon slot."
     )
 
