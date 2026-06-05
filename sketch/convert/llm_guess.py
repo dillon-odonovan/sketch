@@ -34,6 +34,27 @@ class EvGuessError(Exception):
 
 
 def _system_prompt(fmt_name: str, ev_model: EvModel) -> str:
+    max_s = ev_model.max_per_stat
+    max_t = ev_model.max_total
+    if max_t is not None:
+        # Remainder after maxing two stats — the third stat in the
+        # canonical default spread (e.g. 2/32/32 = 66 for Champions). The
+        # per-stat cap plus the exact-total budget already force a sparse
+        # spread, so we don't tell the model how many stats to invest in.
+        third = max_t - 2 * max_s
+        budget_note = (
+            f"The six values must sum to exactly {max_t} — a hard, fixed "
+            f"budget, not an approximation; spend all of it. Distribute it the "
+            f"way a strong VGC player would for this Pokemon's role and moves; "
+            f"when nothing more specific is implied, two stats at {max_s} plus "
+            f"the remaining {third} on a third (e.g. {third} HP / {max_s} Atk / "
+            f"{max_s} Spe = {max_t}) is a sensible default. "
+        )
+    else:
+        budget_note = (
+            "Distribute EVs the way a strong VGC player would for this "
+            "Pokemon's role and moves. "
+        )
     return (
         "You are a competitive Pokemon team builder assigning EV spreads for "
         f"the VGC / doubles (bring-6, pick-4) format {fmt_name}. You are given "
@@ -41,43 +62,56 @@ def _system_prompt(fmt_name: str, ev_model: EvModel) -> str:
         "its EVs are unknown. Return a plausible, competitively sensible EV "
         "spread for each Pokemon, consistent with its nature (invest in the "
         "stats the nature and moves imply — e.g. a physical attacker with a "
-        "+Spe nature wants Attack and Speed).\n\n"
-        f"This format uses '{ev_model.label}': EVs are capped at "
-        f"{ev_model.max_per_stat} per stat and spreads are sparse (only a few "
-        "stats invested, not every stat maxed). Call submit_spreads with one "
-        "entry per Pokemon, keyed by the slot number you were given."
+        f"+Spe nature wants Attack and Speed).\n\n"
+        f"This format uses '{ev_model.label}'. Each stat takes an integer from "
+        f"0 to {max_s} inclusive. "
+        f"{budget_note}"
+        "Call submit_spreads with one entry per Pokemon slot."
     )
 
 
-_TOOLS: list[dict[str, Any]] = [
-    {
-        "name": _TOOL_NAME,
-        "description": "Submit the assigned EV spreads, one per Pokemon slot.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "spreads": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "slot": {"type": "integer"},
-                            "evs": {
-                                "type": "object",
-                                "properties": {
-                                    k: {"type": "integer"} for k in STAT_KEYS
-                                },
-                                "required": list(STAT_KEYS),
-                            },
-                        },
-                        "required": ["slot", "evs"],
-                    },
-                }
-            },
-            "required": ["spreads"],
-        },
+def _make_tools(ev_model: EvModel) -> list[dict[str, Any]]:
+    """Build the submit_spreads tool schema with explicit per-stat bounds.
+
+    Encoding minimum=0/maximum=max_per_stat directly in the JSON Schema
+    anchors the model's value range so it doesn't guess that the bound is
+    exclusive (e.g. treat 32 as off-limits when the cap is 32).
+    """
+    stat_schema = {
+        k: {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": ev_model.max_per_stat,
+        }
+        for k in STAT_KEYS
     }
-]
+    return [
+        {
+            "name": _TOOL_NAME,
+            "description": "Submit the assigned EV spreads, one per Pokemon slot.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "spreads": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "slot": {"type": "integer"},
+                                "evs": {
+                                    "type": "object",
+                                    "properties": stat_schema,
+                                    "required": list(STAT_KEYS),
+                                },
+                            },
+                            "required": ["slot", "evs"],
+                        },
+                    }
+                },
+                "required": ["spreads"],
+            },
+        }
+    ]
 
 
 def _describe(slot: int, p: PokemonEntry) -> str:
@@ -126,6 +160,8 @@ async def guess_ev_spreads(
         f"submit_spreads with one entry per slot:\n\n{listing}"
     )
 
+    tools = _make_tools(ev_model)
+
     try:
         message = await client.messages.create(
             model=model,
@@ -137,7 +173,7 @@ async def guess_ev_spreads(
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
-            tools=_TOOLS,
+            tools=tools,
             tool_choice={"type": "tool", "name": _TOOL_NAME},
             messages=[{"role": "user", "content": instruction}],
         )
@@ -162,10 +198,40 @@ async def guess_ev_spreads(
     return _parse_spreads(tool_input, ev_model)
 
 
+def _trim_to_budget(evs: dict[str, int], max_total: int) -> dict[str, int]:
+    """Reduce EVs until total <= max_total by trimming smaller stats first.
+
+    Trimming the smallest investments first preserves the larger ones,
+    which are more likely to be intentional (e.g. a 32 Spe investment
+    matters more than a 4 HP investment). This avoids the rounding error
+    of proportional scaling, which can produce totals below the budget
+    (e.g. int(32 * 66/67) = 31, leaving 1 point on the table).
+    """
+    result = dict(evs)
+    excess = sum(result.values()) - max_total
+    if excess <= 0:
+        return result
+    # Sort ascending so we trim the smallest stats first.
+    for key in sorted(result, key=lambda k: result[k]):
+        if excess <= 0:
+            break
+        cut = min(result[key], excess)
+        result[key] -= cut
+        excess -= cut
+    return result
+
+
 def _parse_spreads(
     tool_input: dict[str, Any], ev_model: EvModel
 ) -> dict[int, dict[str, int]]:
-    """Pull `{slot: evs}` out of the tool input, clamping defensively."""
+    """Pull ``{slot: evs}`` out of the tool input, clamping defensively.
+
+    Unlike bank spreads (which come from real teams the game already
+    constrains), LLM output can exceed the format's total budget — e.g.
+    the model might invest every stat at 32. Per-stat clamping runs first;
+    if the result still exceeds ``ev_model.max_total``, the excess is
+    trimmed from the smallest stats first (see `_trim_to_budget`).
+    """
     out: dict[int, dict[str, int]] = {}
     for item in tool_input.get("spreads", []) or []:
         if not isinstance(item, dict):
@@ -175,11 +241,13 @@ def _parse_spreads(
         except (KeyError, TypeError, ValueError):
             continue
         raw = item.get("evs") or {}
-        evs = {
+        evs: dict[str, int] = {
             k: max(0, min(int(raw.get(k, 0) or 0), ev_model.max_per_stat))
             if isinstance(raw, dict)
             else 0
             for k in STAT_KEYS
         }
+        if ev_model.max_total is not None:
+            evs = _trim_to_budget(evs, ev_model.max_total)
         out[slot] = evs
     return out

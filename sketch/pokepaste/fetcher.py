@@ -18,7 +18,9 @@ import logging
 
 import aiohttp
 
+from sketch.champions.showdown_parser import parse_showdown
 from sketch.pokepaste.validator import canonicalize_pokepaste_url
+from sketch.team import TeamData
 
 logger = logging.getLogger(__name__)
 
@@ -59,3 +61,17 @@ async def fetch_pokepaste_raw(url: str) -> str:
     except aiohttp.ClientError as exc:
         logger.warning("Pokepaste /raw transport error for %s: %s", raw_url, exc)
         raise PokepasteFetchError(f"Could not fetch `{raw_url}`: {exc}") from exc
+
+
+async def fetch_pokepaste(url: str) -> TeamData:
+    """Resolve a Pokepaste `url` into a parsed `TeamData`.
+
+    The URL→`TeamData` counterpart to `sketch.vrpaste.fetcher.fetch_vrpaste`:
+    fetches the raw Showdown export via `fetch_pokepaste_raw` and parses it
+    with `parse_showdown`. Callers that need the raw text (the replica-cache
+    seed in `/add-team`, the bank loader) use `fetch_pokepaste_raw` directly.
+
+    Raises `PokepasteFetchError` (fetch), `ValidationError` (URL shape), or
+    `ShowdownParseError` (parse).
+    """
+    return parse_showdown(await fetch_pokepaste_raw(url))

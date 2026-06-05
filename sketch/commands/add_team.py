@@ -70,12 +70,16 @@ from sketch.pokepaste.validator import (
 from sketch.storage.guild_config import GuildConfigStore
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
 from sketch.team import TeamData
+from sketch.teamsource import (
+    TeamUrlSource,
+    classify_team_url,
+    unsupported_team_url_message,
+)
 from sketch.vrpaste.cache import VRPasteCacheStore
 from sketch.vrpaste.fetcher import VRPasteFetchError, fetch_vrpaste
 from sketch.vrpaste.validator import (
     canonicalize_vrpaste_url,
     extract_vrpaste_id,
-    is_vrpaste_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -221,25 +225,22 @@ async def _resolve_canonical_url(
     Pokepaste form for `find_row_by_url` comparison.
     """
     if inputs.url is not None:
-        if is_vrpaste_url(inputs.url):
+        kind = classify_team_url(inputs.url)
+        if kind is TeamUrlSource.VRPASTE:
             return await _resolve_via_vrpaste(
                 interaction,
                 inputs=inputs,
                 vrpaste_cache=vrpaste_cache,
             )
-        try:
-            canonical_url_for_dedup = canonicalize_pokepaste_url(inputs.url)
-        except ValidationError:
-            await interaction.followup.send(
-                _with_trace(
-                    f"`{inputs.url}` doesn't look like a Pokepaste or VRPaste URL. "
-                    "Expected something like `https://pokepast.es/abc123` or "
-                    "`https://www.vrpastes.com/abc123`."
-                ),
-                ephemeral=True,
-            )
-            return None
-        return inputs.url, canonical_url_for_dedup, False
+        if kind is TeamUrlSource.POKEPASTE:
+            # is_pokepaste_url and canonicalize share one regex, so this
+            # won't raise once the URL is classified as a Pokepaste.
+            return inputs.url, canonicalize_pokepaste_url(inputs.url), False
+        await interaction.followup.send(
+            _with_trace(unsupported_team_url_message(inputs.url)),
+            ephemeral=True,
+        )
+        return None
 
     # Replica-only path. `inputs.replica` is non-None by `_normalize_inputs`.
     assert inputs.replica is not None
