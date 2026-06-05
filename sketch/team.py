@@ -17,6 +17,14 @@ from dataclasses import dataclass
 
 STAT_KEYS = ("hp", "atk", "def", "spa", "spd", "spe")
 
+# Per-stat EV cap for Pokemon Champions formats (Reg M-A, M-B, …). Mainline
+# VGC formats cap at 252; that difference is what the format-driven `EvModel`
+# in `sketch.convert.ev_model` exists to express. This constant is the single
+# source of truth for the Champions bound — `showdown_parser` defaults its EV
+# validation to it, and `EvModel.CHAMPIONS` reuses it — and lives here in the
+# dependency-free lingua-franca module so neither importer creates a cycle.
+CHAMPIONS_EV_MAX_PER_STAT = 32
+
 
 @dataclass(frozen=True)
 class PokemonEntry:

@@ -19,7 +19,11 @@ from __future__ import annotations
 
 import pytest
 
-from sketch.champions.showdown_parser import ShowdownParseError, parse_showdown
+from sketch.champions.showdown_parser import (
+    ShowdownParseError,
+    extract_species,
+    parse_showdown,
+)
 from sketch.pokepaste.renderer import render_showdown
 from sketch.team import PokemonEntry, TeamData
 
@@ -331,3 +335,55 @@ class TestErrorCases:
         broken = _FULL_PASTE.replace("Floette-Eternal (F)", "Floette-Eternal (F", 1)
         with pytest.raises(ShowdownParseError, match="malformed"):
             parse_showdown(broken)
+
+
+class TestExtractSpecies:
+    """`extract_species` is the lenient, never-raising counterpart to
+    `parse_showdown`: it pulls species off each block header and tolerates
+    any body (including non-Champions VGC pastes the strict parser
+    rejects), since its only consumer is an audit-only cache field."""
+
+    def test_extracts_all_six_from_full_paste(self):
+        species = extract_species(_FULL_PASTE)
+        assert len(species) == 6
+        # Gender + item suffixes are stripped from the header.
+        assert species[0] == "Floette-Eternal"
+        assert species[1] == "Aerodactyl"
+
+    def test_tolerates_standard_vgc_paste(self):
+        # `Level:` / `Tera Type:` lines and EVs above the Champions cap
+        # would make `parse_showdown` raise — `extract_species` ignores
+        # the body entirely and still returns the species.
+        paste = (
+            "Garganacl @ Sitrus Berry\r\n"
+            "Ability: Purifying Salt\r\n"
+            "Level: 50\r\n"
+            "Tera Type: Poison\r\n"
+            "EVs: 196 HP / 76 Def / 236 SpD\r\n"
+            "Careful Nature\r\n"
+            "- Salt Cure\r\n\r\n"
+            "Volcarona @ Leftovers\r\n"
+            "Ability: Flame Body\r\n"
+            "Level: 50\r\n"
+            "EVs: 244 HP / 212 Def / 52 Spe\r\n"
+            "Bold Nature\r\n"
+            "- Quiver Dance"
+        )
+        assert extract_species(paste) == ["Garganacl", "Volcarona"]
+
+    def test_accepts_lf_line_endings(self):
+        paste = "Incineroar @ Safety Goggles\nAbility: Intimidate\n- Fake Out"
+        assert extract_species(paste) == ["Incineroar"]
+
+    def test_empty_input_returns_empty_list(self):
+        assert extract_species("") == []
+        assert extract_species("   \n  ") == []
+
+    def test_skips_block_with_malformed_header(self):
+        # A block whose first line can't be a species header (unmatched
+        # paren) is silently skipped; the valid block still comes through.
+        paste = (
+            "Floette-Eternal (F\nAbility: Flower Veil\r\n\r\n"
+            "Miraidon\nAbility: Hadron Engine"
+        )
+        assert extract_species(paste) == ["Miraidon"]
