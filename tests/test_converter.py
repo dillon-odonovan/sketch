@@ -9,6 +9,7 @@ from sketch.convert import converter as converter_mod
 from sketch.convert.bank import BankTeam
 from sketch.convert.ev_model import UnsupportedFormatError
 from sketch.convert.llm_guess import EvGuessError
+from sketch.search.dex import DexIndex
 from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
 # ---------------------------------------------------------------------------
@@ -194,6 +195,90 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.team.pokemon[1].evs, llm_spread)
         self.assertEqual(result.slots[1].source.label, "estimated")
         self.assertIsNone(result.slots[1].source.url)
+
+
+_FORM_DEX = DexIndex(
+    [
+        "Charizard",
+        "Charizard-Mega-Y",
+        "Pikachu",
+        "Snorlax",
+        "Gengar",
+        "Blastoise",
+        "Venusaur",
+    ]
+)
+
+_FILLERS_SPECIES = ["Pikachu", "Snorlax", "Gengar", "Blastoise", "Venusaur"]
+
+
+class TestFormNormalizationInConverter(unittest.IsolatedAsyncioTestCase):
+    """Converter integrates form normalization via sheets.get_dex."""
+
+    async def _run(
+        self,
+        ots: TeamData,
+        *,
+        bank_teams: list | None = None,
+        llm_spreads: list[dict] | None = None,
+        get_dex: AsyncMock | None = None,
+    ) -> converter_mod.ConvertResult:
+        sheets = AsyncMock()
+        sheets.get_dex = get_dex or AsyncMock(return_value=_FORM_DEX)
+        with patch(
+            "sketch.convert.converter.load_bank_teams",
+            new=AsyncMock(return_value=bank_teams or []),
+        ):
+            return await converter_mod.convert_ots_to_cts(
+                ots,
+                sheets=sheets,
+                sheet_name="Regulation M-A",
+                fmt_name="Reg M-A",
+                anthropic_client=_make_anthropic_client(llm_spreads),
+            )
+
+    async def test_premega_ots_matches_resolved_bank_team(self) -> None:
+        bank_spread = _evs(spa=32, spe=32)
+        ots = _ots(
+            _mon("Charizard", ability="Solar Power", item="Charizardite Y"),
+            *[_mon(s) for s in _FILLERS_SPECIES],
+        )
+        bank_team = BankTeam(
+            url="https://pokepast.es/test",
+            team=TeamData(
+                pokemon=[
+                    _mon(
+                        "Charizard-Mega-Y",
+                        ability="Solar Power",
+                        item="Charizardite Y",
+                        evs=bank_spread,
+                    ),
+                    *[_mon(s) for s in _FILLERS_SPECIES],
+                ]
+            ),
+        )
+        result = await self._run(
+            ots,
+            bank_teams=[bank_team],
+            llm_spreads=_all_llm_spreads(),
+        )
+        self.assertEqual(result.team.pokemon[0].species, "Charizard-Mega-Y")
+        self.assertEqual(result.team.pokemon[0].evs, bank_spread)
+        self.assertEqual(result.slots[0].source.label, "bank")
+
+    async def test_dex_failure_skips_normalization(self) -> None:
+        ots = _ots(
+            _mon("Charizard", ability="Solar Power", item="Charizardite Y"),
+            *[_mon(s) for s in _FILLERS_SPECIES],
+        )
+        result = await self._run(
+            ots,
+            get_dex=AsyncMock(side_effect=RuntimeError("dex down")),
+            llm_spreads=_all_llm_spreads(),
+        )
+        # Normalization skipped: species stays as parsed; falls through to LLM.
+        self.assertEqual(result.team.pokemon[0].species, "Charizard")
+        self.assertEqual(result.slots[0].source.label, "estimated")
 
 
 if __name__ == "__main__":

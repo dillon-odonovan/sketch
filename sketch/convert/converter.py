@@ -28,6 +28,7 @@ from sketch.convert.bank import BankTeam, load_bank_teams
 from sketch.convert.ev_matcher import EvChoice, choose_evs
 from sketch.convert.ev_model import EvModel, ev_model_for_format
 from sketch.convert.llm_guess import guess_ev_spreads
+from sketch.convert.normalize import normalize_team
 from sketch.storage.sheets_client import SheetsClient
 from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
@@ -112,6 +113,16 @@ async def convert_ots_to_cts(
     # Model name for the Anthropic API call in the LLM-guess fallback.
     llm_model = model or config.CONVERT_EV_MODEL
     ev_model: EvModel = ev_model_for_format(fmt_name)
+
+    # Resolve pre-form species (e.g. `Charizard` + `Charizardite Y` →
+    # `Charizard-Mega-Y`) so they align with the bank's resolved forms.
+    # Best-effort: a DEX read failure leaves species as-parsed rather than
+    # failing the conversion (mirrors `load_bank_teams`).
+    try:
+        dex = await sheets.get_dex()
+        ots = normalize_team(ots, dex)
+    except Exception:
+        logger.warning("DEX load failed; skipping form normalization", exc_info=True)
 
     ots_species = {p.species.lower() for p in ots.pokemon}
 
