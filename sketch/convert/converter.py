@@ -29,7 +29,7 @@ from sketch.convert.ev_matcher import EvChoice, choose_evs
 from sketch.convert.ev_model import EvModel, ev_model_for_format
 from sketch.convert.llm_guess import guess_ev_spreads
 from sketch.storage.sheets_client import SheetsClient
-from sketch.team import STAT_KEYS, TeamData
+from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +51,25 @@ class SlotSource:
 
 
 @dataclass(frozen=True)
-class ConvertResult:
-    """The finished CTS team plus per-slot provenance."""
+class ConvertedSlot:
+    """One trained Pokemon paired with where its EV spread came from."""
 
-    team: TeamData
-    # One `SlotSource` per Pokemon slot, in `team.pokemon` order.
-    sources: list[SlotSource]
+    pokemon: PokemonEntry
+    source: SlotSource
+
+
+@dataclass(frozen=True)
+class ConvertResult:
+    """The finished CTS conversion: one `ConvertedSlot` per Pokemon."""
+
+    slots: list[ConvertedSlot]
+    # Non-Pokemon metadata carried over from the OTS team (e.g. team_id).
+    team_id: str | None = None
+
+    @property
+    def team(self) -> TeamData:
+        """The trained team assembled from the per-slot Pokemon."""
+        return TeamData(pokemon=[s.pokemon for s in self.slots], team_id=self.team_id)
 
 
 async def convert_ots_to_cts(
@@ -146,21 +159,21 @@ async def convert_ots_to_cts(
             model=llm_model,
         )
 
-    # Build the trained team.
-    new_pokemon = []
-    sources: list[SlotSource] = []
+    # Build the trained team: each slot pairs the EV-filled Pokemon with
+    # the provenance of its spread.
+    slots: list[ConvertedSlot] = []
 
     for slot, (mon, choice) in enumerate(
         zip(ots.pokemon, choices, strict=False), start=1
     ):
         if choice is not None:
-            new_pokemon.append(dataclasses.replace(mon, evs=choice.evs))
-            sources.append(SlotSource(label=choice.source, url=choice.source_url))
+            source = SlotSource(label=choice.source, url=choice.source_url)
+            trained_mon = dataclasses.replace(mon, evs=choice.evs)
         else:
             evs = guessed.get(slot, _ZERO_EVS.copy())
             logger.info("EV guess for %s (slot %d): %s", mon.species, slot, evs)
-            new_pokemon.append(dataclasses.replace(mon, evs=evs))
-            sources.append(SlotSource(label="estimated"))
+            source = SlotSource(label="estimated")
+            trained_mon = dataclasses.replace(mon, evs=evs)
+        slots.append(ConvertedSlot(pokemon=trained_mon, source=source))
 
-    trained = dataclasses.replace(ots, pokemon=new_pokemon)
-    return ConvertResult(team=trained, sources=sources)
+    return ConvertResult(slots=slots, team_id=ots.team_id)

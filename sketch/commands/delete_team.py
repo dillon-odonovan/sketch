@@ -40,7 +40,7 @@ from sketch.storage.sheets_client import (
     TeamNotFoundError,
 )
 from sketch.teamsource import (
-    TeamUrlKind,
+    TeamUrlSource,
     classify_team_url,
     unsupported_team_url_message,
 )
@@ -110,7 +110,7 @@ async def _resolve_target_url(
     assert inputs.url is not None
 
     kind = classify_team_url(inputs.url)
-    if kind is TeamUrlKind.VRPASTE:
+    if kind is TeamUrlSource.VRPASTE:
         try:
             resolved = await asyncio.to_thread(
                 lookup_pokepaste_url, inputs.url, vrpaste_cache
@@ -136,7 +136,7 @@ async def _resolve_target_url(
             return None
         return resolved
 
-    if kind is TeamUrlKind.POKEPASTE:
+    if kind is TeamUrlSource.POKEPASTE:
         # is_pokepaste_url and canonicalize share one regex, so this
         # won't raise once the URL is classified as a Pokepaste.
         return canonicalize_pokepaste_url(inputs.url)

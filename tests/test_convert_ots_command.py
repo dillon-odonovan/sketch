@@ -5,8 +5,8 @@ from __future__ import annotations
 import unittest
 
 from sketch.commands.convert_ots import _source_summary
-from sketch.convert.converter import ConvertResult, SlotSource
-from sketch.team import STAT_KEYS, PokemonEntry, TeamData
+from sketch.convert.converter import ConvertedSlot, ConvertResult, SlotSource
+from sketch.team import STAT_KEYS, PokemonEntry
 
 
 def _zero_evs() -> dict[str, int]:
@@ -33,19 +33,18 @@ def _result(
     n = len(sources)
     sp = species or [f"Mon{i}" for i in range(n)]
     urls = source_urls or [None] * n
-    team = TeamData(pokemon=[_mon(s) for s in sp])
-    slot_sources = [
-        SlotSource(label=label, url=url)
-        for label, url in zip(sources, urls, strict=True)
+    slots = [
+        ConvertedSlot(pokemon=_mon(name), source=SlotSource(label=label, url=url))
+        for name, label, url in zip(sp, sources, urls, strict=True)
     ]
-    return ConvertResult(team=team, sources=slot_sources), sp
+    return ConvertResult(slots=slots), sp
 
 
 class TestSourceSummary(unittest.TestCase):
     def test_all_from_bank_with_urls(self) -> None:
         urls = [f"https://pokepast.es/abc{i}" for i in range(6)]
-        r, names = _result(["bank"] * 6, source_urls=urls)
-        out = _source_summary(r, names)
+        r, _ = _result(["bank"] * 6, source_urls=urls)
+        out = _source_summary(r)
         self.assertIn("6 from bank", out)
         self.assertIn("Trained 6 mons", out)
         # Full URLs rendered so Discord turns them into hyperlinks.
@@ -54,15 +53,15 @@ class TestSourceSummary(unittest.TestCase):
 
     def test_all_estimated(self) -> None:
         r, names = _result(["estimated"] * 6)
-        out = _source_summary(r, names)
+        out = _source_summary(r)
         self.assertIn("6 estimated", out)
         # Each mon listed as estimated.
         for name in names:
             self.assertIn(f"• {name} — estimated", out)
 
     def test_all_kept(self) -> None:
-        r, names = _result(["kept"] * 6)
-        out = _source_summary(r, names)
+        r, _ = _result(["kept"] * 6)
+        out = _source_summary(r)
         self.assertIn("6 already trained", out)
         # Kept mons are not individually listed.
         self.assertNotIn("•", out)
@@ -86,7 +85,7 @@ class TestSourceSummary(unittest.TestCase):
             "Sinistcha",
         ]
         r, _ = _result(sources, source_urls=urls, species=names)
-        out = _source_summary(r, names)
+        out = _source_summary(r)
         self.assertIn("3 from bank", out)
         self.assertIn("2 estimated", out)
         self.assertIn("1 already trained", out)
@@ -97,8 +96,8 @@ class TestSourceSummary(unittest.TestCase):
         self.assertIn("• Garchomp — estimated", out)
 
     def test_empty(self) -> None:
-        r, names = _result([])
-        out = _source_summary(r, names)
+        r, _ = _result([])
+        out = _source_summary(r)
         self.assertIn("0 matched", out)
 
 

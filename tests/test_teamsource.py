@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from sketch.team import PokemonEntry, TeamData
 from sketch.teamsource import (
-    TeamUrlKind,
+    TeamUrlSource,
     UnsupportedTeamUrlError,
     classify_team_url,
     fetch_team_from_url,
@@ -36,10 +36,10 @@ def _team() -> TeamData:
 
 class TestClassifyTeamUrl(unittest.TestCase):
     def test_pokepaste(self) -> None:
-        self.assertIs(classify_team_url(_POKEPASTE_URL), TeamUrlKind.POKEPASTE)
+        self.assertIs(classify_team_url(_POKEPASTE_URL), TeamUrlSource.POKEPASTE)
 
     def test_vrpaste(self) -> None:
-        self.assertIs(classify_team_url(_VRPASTE_URL), TeamUrlKind.VRPASTE)
+        self.assertIs(classify_team_url(_VRPASTE_URL), TeamUrlSource.VRPASTE)
 
     def test_unrecognized(self) -> None:
         self.assertIsNone(classify_team_url("https://example.com/whatever"))
@@ -65,21 +65,15 @@ class TestFetchTeamFromUrl(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, team)
         fetch_vrpaste.assert_awaited_once_with(_VRPASTE_URL)
 
-    async def test_pokepaste_fetches_raw_then_parses(self) -> None:
+    async def test_pokepaste_delegates_to_fetch_pokepaste(self) -> None:
         team = _team()
-        with (
-            patch(
-                "sketch.teamsource.fetch_pokepaste_raw",
-                new=AsyncMock(return_value="raw showdown text"),
-            ) as fetch_raw,
-            patch(
-                "sketch.teamsource.parse_showdown", return_value=team
-            ) as parse_showdown,
-        ):
+        with patch(
+            "sketch.teamsource.fetch_pokepaste",
+            new=AsyncMock(return_value=team),
+        ) as fetch_pokepaste:
             result = await fetch_team_from_url(_POKEPASTE_URL)
         self.assertIs(result, team)
-        fetch_raw.assert_awaited_once_with(_POKEPASTE_URL)
-        parse_showdown.assert_called_once_with("raw showdown text")
+        fetch_pokepaste.assert_awaited_once_with(_POKEPASTE_URL)
 
     async def test_unrecognized_raises(self) -> None:
         with self.assertRaises(UnsupportedTeamUrlError):

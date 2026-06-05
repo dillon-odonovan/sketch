@@ -54,10 +54,7 @@ logger = logging.getLogger(__name__)
 _PASTE_INPUT_MAX = 4000
 
 
-def _source_summary(
-    result: ConvertResult,
-    ots_pokemon_names: list[str],
-) -> str:
+def _source_summary(result: ConvertResult) -> str:
     """Build the user-facing provenance reply.
 
     Returns a summary line plus a per-mon attribution block so the user
@@ -70,11 +67,11 @@ def _source_summary(
         • Garchomp — pokepast.es/def456
         ...
     """
-    sources = result.sources
+    slots = result.slots
 
-    from_bank = sum(1 for s in sources if s.label == "bank")
-    estimated = sum(1 for s in sources if s.label == "estimated")
-    kept = sum(1 for s in sources if s.label == "kept")
+    from_bank = sum(1 for s in slots if s.source.label == "bank")
+    estimated = sum(1 for s in slots if s.source.label == "estimated")
+    kept = sum(1 for s in slots if s.source.label == "kept")
 
     parts: list[str] = []
     if from_bank:
@@ -84,16 +81,17 @@ def _source_summary(
     if kept:
         parts.append(f"{kept} already trained")
 
-    total = len(sources)
+    total = len(slots)
     detail = ", ".join(parts) if parts else "0 matched"
     headline = f"Trained {total} mons ({detail})."
 
     lines = [headline]
-    for name, src in zip(ots_pokemon_names, sources, strict=False):
-        if src.label == "bank" and src.url:
+    for slot in slots:
+        name = slot.pokemon.species
+        if slot.source.label == "bank" and slot.source.url:
             # Full URL so Discord renders it as a clickable hyperlink.
-            lines.append(f"• {name} — {src.url}")
-        elif src.label == "estimated":
+            lines.append(f"• {name} — {slot.source.url}")
+        elif slot.source.label == "estimated":
             lines.append(f"• {name} — estimated")
         # "kept" mons are not listed to keep the reply concise.
 
@@ -136,8 +134,7 @@ async def _run_conversion(
         await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
         return
 
-    pokemon_names = [p.species for p in ots.pokemon]
-    summary = _source_summary(result, pokemon_names)
+    summary = _source_summary(result)
     await interaction.followup.send(
         f"{summary}\n{cts_url}",
         ephemeral=True,

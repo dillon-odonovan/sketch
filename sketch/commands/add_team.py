@@ -71,7 +71,7 @@ from sketch.storage.guild_config import GuildConfigStore
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
 from sketch.team import TeamData
 from sketch.teamsource import (
-    TeamUrlKind,
+    TeamUrlSource,
     classify_team_url,
     unsupported_team_url_message,
 )
@@ -226,13 +226,13 @@ async def _resolve_canonical_url(
     """
     if inputs.url is not None:
         kind = classify_team_url(inputs.url)
-        if kind is TeamUrlKind.VRPASTE:
+        if kind is TeamUrlSource.VRPASTE:
             return await _resolve_via_vrpaste(
                 interaction,
                 inputs=inputs,
                 vrpaste_cache=vrpaste_cache,
             )
-        if kind is TeamUrlKind.POKEPASTE:
+        if kind is TeamUrlSource.POKEPASTE:
             # is_pokepaste_url and canonicalize share one regex, so this
             # won't raise once the URL is classified as a Pokepaste.
             return inputs.url, canonicalize_pokepaste_url(inputs.url), False
