@@ -25,6 +25,7 @@ from sketch.commands._shared import (
     _broadcast_team_removed,
     _format_choices,
     _resolve_guild_sheets,
+    _with_trace,
 )
 from sketch.logging_setup import trace_id_var
 from sketch.pokepaste.validator import (
@@ -62,8 +63,10 @@ async def _normalize_inputs(
 ) -> _DeleteTeamInputs | None:
     if url is None and replica is None:
         await interaction.followup.send(
-            "Provide a **Pokepaste/VRPaste URL** or a **Champions Team ID** "
-            "(or both). At least one is required.",
+            _with_trace(
+                "Provide a **Pokepaste/VRPaste URL** or a **Champions Team ID** "
+                "(or both). At least one is required."
+            ),
             ephemeral=True,
         )
         return None
@@ -73,7 +76,7 @@ async def _normalize_inputs(
         try:
             normalized_replica = normalize_replica(replica)
         except ValidationError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
+            await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
             return None
 
     fmt_name = format_choice.value
@@ -109,17 +112,21 @@ async def _resolve_target_url(
                 lookup_pokepaste_url, inputs.url, vrpaste_cache
             )
         except ValidationError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
+            await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
             return None
         except Exception:
             logger.exception("VRPaste cache read failed for url=%s", inputs.url)
-            await interaction.followup.send(GENERIC_CACHE_READ_ERROR, ephemeral=True)
+            await interaction.followup.send(
+                _with_trace(GENERIC_CACHE_READ_ERROR), ephemeral=True
+            )
             return None
         if resolved is None:
             await interaction.followup.send(
-                f"We don't have a record of `{inputs.url}` — that team isn't "
-                "in the sheet. If you know the Pokepaste URL, submit that "
-                "directly.",
+                _with_trace(
+                    f"We don't have a record of `{inputs.url}` — that team isn't "
+                    "in the sheet. If you know the Pokepaste URL, submit that "
+                    "directly."
+                ),
                 ephemeral=True,
             )
             return None
@@ -129,13 +136,15 @@ async def _resolve_target_url(
         try:
             return canonicalize_pokepaste_url(inputs.url)
         except ValidationError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
+            await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
             return None
 
     await interaction.followup.send(
-        f"`{inputs.url}` doesn't look like a Pokepaste or VRPaste URL. "
-        "Expected something like `https://pokepast.es/abc123` or "
-        "`https://www.vrpastes.com/abc123`.",
+        _with_trace(
+            f"`{inputs.url}` doesn't look like a Pokepaste or VRPaste URL. "
+            "Expected something like `https://pokepast.es/abc123` or "
+            "`https://www.vrpastes.com/abc123`."
+        ),
         ephemeral=True,
     )
     return None
@@ -170,7 +179,7 @@ async def _delete_and_announce(
             interaction.guild_id,
         )
         await interaction.followup.send(
-            f"No team matching {key} found in *{inputs.fmt_name}*.",
+            _with_trace(f"No team matching {key} found in *{inputs.fmt_name}*."),
             ephemeral=True,
         )
         return
@@ -184,8 +193,10 @@ async def _delete_and_announce(
             interaction.guild_id,
         )
         await interaction.followup.send(
-            "The sheet shifted under us before we could delete that row — "
-            "please run the command again.",
+            _with_trace(
+                "The sheet shifted under us before we could delete that row — "
+                "please run the command again."
+            ),
             ephemeral=True,
         )
         return
@@ -196,7 +207,9 @@ async def _delete_and_announce(
             target_url,
             inputs.replica,
         )
-        await interaction.followup.send(GENERIC_SHEET_DELETE_ERROR, ephemeral=True)
+        await interaction.followup.send(
+            _with_trace(GENERIC_SHEET_DELETE_ERROR), ephemeral=True
+        )
         return
 
     sheets.invalidate_snapshot(inputs.sheet_name)

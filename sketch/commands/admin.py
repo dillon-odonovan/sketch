@@ -33,6 +33,7 @@ from sketch.commands._shared import (
     GUILD_ONLY_ERROR,
     UNCONFIGURED_GUILD_ERROR,
     _spreadsheet_link,
+    _with_trace,
 )
 from sketch.logging_setup import trace_id_var
 from sketch.storage.guild_config import GuildConfigStore
@@ -71,7 +72,9 @@ def register(
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild_id = interaction.guild_id
         if guild_id is None:
-            await interaction.followup.send(GUILD_ONLY_ERROR, ephemeral=True)
+            await interaction.followup.send(
+                _with_trace(GUILD_ONLY_ERROR), ephemeral=True
+            )
             return
 
         spreadsheet_id = spreadsheet_id.strip()
@@ -84,9 +87,11 @@ def register(
 
         if not _SPREADSHEET_ID_RE.match(spreadsheet_id):
             await interaction.followup.send(
-                "That doesn't look like a Google Sheets ID. Paste just the "
-                "ID portion of the URL — the part between `/d/` and `/edit` "
-                "(letters, digits, `_`, and `-` only).",
+                _with_trace(
+                    "That doesn't look like a Google Sheets ID. Paste just the "
+                    "ID portion of the URL — the part between `/d/` and `/edit` "
+                    "(letters, digits, `_`, and `-` only)."
+                ),
                 ephemeral=True,
             )
             return
@@ -107,13 +112,15 @@ def register(
                 exc_info=True,
             )
             await interaction.followup.send(
-                f"Couldn't open <{_spreadsheet_link(spreadsheet_id)}>. Check "
-                "that:\n"
-                "1. The ID is correct (no extra characters from the URL).\n"
-                "2. The sheet is shared with the bot's service account as "
-                "**Editor** — ask the bot owner for the address if you don't "
-                "have it.\n"
-                "3. The sheet exists and isn't in the trash.",
+                _with_trace(
+                    f"Couldn't open <{_spreadsheet_link(spreadsheet_id)}>. Check "
+                    "that:\n"
+                    "1. The ID is correct (no extra characters from the URL).\n"
+                    "2. The sheet is shared with the bot's service account as "
+                    "**Editor** — ask the bot owner for the address if you don't "
+                    "have it.\n"
+                    "3. The sheet exists and isn't in the trash."
+                ),
                 ephemeral=True,
             )
             return
@@ -128,10 +135,12 @@ def register(
         missing_tabs = [t for t in config.FORMAT_SHEETS.values() if t not in tabs]
         if missing_tabs:
             await interaction.followup.send(
-                "The sheet opened, but it's missing the expected tab(s): "
-                f"{', '.join(f'`{t}`' for t in missing_tabs)}. Add the tab(s) "
-                "(or use a copy of the canonical TeamBank Parser template) "
-                "and try again.",
+                _with_trace(
+                    "The sheet opened, but it's missing the expected tab(s): "
+                    f"{', '.join(f'`{t}`' for t in missing_tabs)}. Add the tab(s) "
+                    "(or use a copy of the canonical TeamBank Parser template) "
+                    "and try again."
+                ),
                 ephemeral=True,
             )
             return
@@ -150,8 +159,10 @@ def register(
                 "Failed to persist spreadsheet_id for guild_id=%s", guild_id
             )
             await interaction.followup.send(
-                "Couldn't save that to the bot's config right now — please "
-                "try again in a moment.",
+                _with_trace(
+                    "Couldn't save that to the bot's config right now — please "
+                    "try again in a moment."
+                ),
                 ephemeral=True,
             )
             return
@@ -190,7 +201,9 @@ def register(
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild_id = interaction.guild_id
         if guild_id is None:
-            await interaction.followup.send(GUILD_ONLY_ERROR, ephemeral=True)
+            await interaction.followup.send(
+                _with_trace(GUILD_ONLY_ERROR), ephemeral=True
+            )
             return
 
         logger.info(
@@ -205,8 +218,10 @@ def register(
             # would never fire. Refuse rather than silently store an
             # orphaned channel value.
             await interaction.followup.send(
-                "This server doesn't have a sheet registered yet. Run "
-                "`/register-sheet` first, then set the broadcast channel.",
+                _with_trace(
+                    "This server doesn't have a sheet registered yet. Run "
+                    "`/register-sheet` first, then set the broadcast channel."
+                ),
                 ephemeral=True,
             )
             return
@@ -220,8 +235,10 @@ def register(
                 "Failed to persist broadcast_channel_id for guild_id=%s", guild_id
             )
             await interaction.followup.send(
-                "Couldn't save that to the bot's config right now — please "
-                "try again in a moment.",
+                _with_trace(
+                    "Couldn't save that to the bot's config right now — please "
+                    "try again in a moment."
+                ),
                 ephemeral=True,
             )
             return
@@ -242,7 +259,9 @@ def register(
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild_id = interaction.guild_id
         if guild_id is None:
-            await interaction.followup.send(GUILD_ONLY_ERROR, ephemeral=True)
+            await interaction.followup.send(
+                _with_trace(GUILD_ONLY_ERROR), ephemeral=True
+            )
             return
 
         logger.info(
@@ -254,13 +273,17 @@ def register(
         cfg = store.get(guild_id)
         if cfg is None:
             await interaction.followup.send(
-                "This server doesn't have a sheet registered yet. Nothing to clear.",
+                _with_trace(
+                    "This server doesn't have a sheet registered yet. Nothing to clear."
+                ),
                 ephemeral=True,
             )
             return
         if cfg.broadcast_channel_id is None:
             await interaction.followup.send(
-                "No broadcast channel is currently set — nothing to clear.",
+                _with_trace(
+                    "No broadcast channel is currently set — nothing to clear."
+                ),
                 ephemeral=True,
             )
             return
@@ -272,8 +295,10 @@ def register(
                 "Failed to clear broadcast_channel_id for guild_id=%s", guild_id
             )
             await interaction.followup.send(
-                "Couldn't update the bot's config right now — please try "
-                "again in a moment.",
+                _with_trace(
+                    "Couldn't update the bot's config right now — please try "
+                    "again in a moment."
+                ),
                 ephemeral=True,
             )
             return
@@ -294,7 +319,9 @@ def register(
         trace_id_var.set(str(interaction.id))
         guild_id = interaction.guild_id
         if guild_id is None:
-            await interaction.response.send_message(GUILD_ONLY_ERROR, ephemeral=True)
+            await interaction.response.send_message(
+                _with_trace(GUILD_ONLY_ERROR), ephemeral=True
+            )
             return
 
         logger.info(
@@ -305,8 +332,10 @@ def register(
         cfg = store.get(guild_id)
         if cfg is None:
             await interaction.response.send_message(
-                "This server has no Sketch configuration. Run "
-                "`/register-sheet` to get started.",
+                _with_trace(
+                    "This server has no Sketch configuration. Run "
+                    "`/register-sheet` to get started."
+                ),
                 ephemeral=True,
             )
             return
@@ -332,7 +361,9 @@ def register(
         trace_id_var.set(str(interaction.id))
         guild_id = interaction.guild_id
         if guild_id is None:
-            await interaction.response.send_message(GUILD_ONLY_ERROR, ephemeral=True)
+            await interaction.response.send_message(
+                _with_trace(GUILD_ONLY_ERROR), ephemeral=True
+            )
             return
 
         logger.info(
@@ -343,7 +374,7 @@ def register(
         cfg = store.get(guild_id)
         if cfg is None:
             await interaction.response.send_message(
-                UNCONFIGURED_GUILD_ERROR, ephemeral=True
+                _with_trace(UNCONFIGURED_GUILD_ERROR), ephemeral=True
             )
             return
 

@@ -53,6 +53,7 @@ from sketch.commands._shared import (
     _format_choices,
     _paste_type_choices,
     _resolve_guild_sheets,
+    _with_trace,
 )
 from sketch.logging_setup import trace_id_var
 from sketch.pokepaste.fetcher import PokepasteFetchError, fetch_pokepaste_raw
@@ -115,8 +116,10 @@ async def _normalize_inputs(
     """
     if url is None and replica is None:
         await interaction.followup.send(
-            "Provide a **Pokepaste URL** or a **Champions Team ID** (or "
-            "both). At least one is required.",
+            _with_trace(
+                "Provide a **Pokepaste URL** or a **Champions Team ID** (or "
+                "both). At least one is required."
+            ),
             ephemeral=True,
         )
         return None
@@ -126,7 +129,7 @@ async def _normalize_inputs(
         try:
             normalized_replica = normalize_replica(replica)
         except ValidationError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
+            await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
             return None
 
     fmt_name = format_choice.value
@@ -228,9 +231,11 @@ async def _resolve_canonical_url(
             canonical_url_for_dedup = canonicalize_pokepaste_url(inputs.url)
         except ValidationError:
             await interaction.followup.send(
-                f"`{inputs.url}` doesn't look like a Pokepaste or VRPaste URL. "
-                "Expected something like `https://pokepast.es/abc123` or "
-                "`https://www.vrpastes.com/abc123`.",
+                _with_trace(
+                    f"`{inputs.url}` doesn't look like a Pokepaste or VRPaste URL. "
+                    "Expected something like `https://pokepast.es/abc123` or "
+                    "`https://www.vrpastes.com/abc123`."
+                ),
                 ephemeral=True,
             )
             return None
@@ -242,7 +247,9 @@ async def _resolve_canonical_url(
         cached = await asyncio.to_thread(replica_cache.get, inputs.replica)
     except Exception:
         logger.exception("Replica cache read failed for code=%s", inputs.replica)
-        await interaction.followup.send(GENERIC_CACHE_READ_ERROR, ephemeral=True)
+        await interaction.followup.send(
+            _with_trace(GENERIC_CACHE_READ_ERROR), ephemeral=True
+        )
         return None
 
     if cached is not None and cached.pokepaste_url is not None:
@@ -306,14 +313,16 @@ async def _resolve_via_vrpaste(
         vrpaste_id = extract_vrpaste_id(inputs.url)
         canonical_vrpaste_url = canonicalize_vrpaste_url(inputs.url)
     except ValidationError as e:
-        await interaction.followup.send(str(e), ephemeral=True)
+        await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
         return None
 
     try:
         cached = await asyncio.to_thread(vrpaste_cache.get, vrpaste_id)
     except Exception:
         logger.exception("VRPaste cache read failed for id=%s", vrpaste_id)
-        await interaction.followup.send(GENERIC_CACHE_READ_ERROR, ephemeral=True)
+        await interaction.followup.send(
+            _with_trace(GENERIC_CACHE_READ_ERROR), ephemeral=True
+        )
         return None
 
     if cached is not None:
@@ -332,14 +341,14 @@ async def _resolve_via_vrpaste(
     try:
         team = await fetch_vrpaste(canonical_vrpaste_url)
     except VRPasteFetchError as exc:
-        await _edit_status(interaction, str(exc))
+        await _edit_status(interaction, _with_trace(str(exc)))
         return None
 
     paste_text = render_showdown(team)
     try:
         minted_url = await post_to_pokepaste(paste_text, title=f"VRPaste {vrpaste_id}")
     except PokepasteUploadError as exc:
-        await _edit_status(interaction, str(exc))
+        await _edit_status(interaction, _with_trace(str(exc)))
         return None
 
     # Race-safe cache write: `create` is fail-if-exists. If two
@@ -417,11 +426,13 @@ async def _resolve_via_ocr(
     """
     if inputs.page1 is None:
         await interaction.followup.send(
-            f"Code `{inputs.replica}` isn't in the cache yet. Either provide "
-            "a Pokepaste URL too, or attach **page1** (and optionally page2) "
-            "screenshots of the Replica share screen so I can OCR the team. "
-            "A single stitched image of both pages works — just attach as "
-            "page1.",
+            _with_trace(
+                f"Code `{inputs.replica}` isn't in the cache yet. Either provide "
+                "a Pokepaste URL too, or attach **page1** (and optionally page2) "
+                "screenshots of the Replica share screen so I can OCR the team. "
+                "A single stitched image of both pages works — just attach as "
+                "page1."
+            ),
             ephemeral=True,
         )
         return None
@@ -531,7 +542,7 @@ async def _seed_cache_with_paste(
     except Exception:
         logger.exception("Replica cache create failed for code=%s", inputs.replica)
         await interaction.edit_original_response(
-            content=GENERIC_CACHE_WRITE_ERROR, embed=None, view=None
+            content=_with_trace(GENERIC_CACHE_WRITE_ERROR), embed=None, view=None
         )
         return None
 
@@ -646,8 +657,10 @@ async def _download_screenshots(
             exc_info=True,
         )
         await interaction.followup.send(
-            "Couldn't download those attachments — please try uploading the "
-            "screenshots again.",
+            _with_trace(
+                "Couldn't download those attachments — please try uploading the "
+                "screenshots again."
+            ),
             ephemeral=True,
         )
         return None
@@ -673,7 +686,7 @@ async def _extract_and_validate_team(
             anthropic_client, page1_bytes, page2_bytes
         )
     except ExtractionError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
         return None
 
     if team.team_id is not None and team.team_id != inputs.replica:
@@ -683,9 +696,11 @@ async def _extract_and_validate_team(
             team.team_id,
         )
         await interaction.followup.send(
-            f"The screenshots show Team ID `{team.team_id}`, but you "
-            f"submitted code `{inputs.replica}`. Double-check the "
-            "attachments and re-run with the correct screenshots.",
+            _with_trace(
+                f"The screenshots show Team ID `{team.team_id}`, but you "
+                f"submitted code `{inputs.replica}`. Double-check the "
+                "attachments and re-run with the correct screenshots."
+            ),
             ephemeral=True,
         )
         return None
@@ -759,7 +774,7 @@ async def _mint_pokepaste(
         return await post_to_pokepaste(paste_text, title=f"Replica {inputs.replica}")
     except PokepasteUploadError as exc:
         await interaction.edit_original_response(
-            content=str(exc), embed=None, view=None
+            content=_with_trace(str(exc)), embed=None, view=None
         )
         return None
 
@@ -793,7 +808,7 @@ async def _commit_team_row(
         )
     except Exception:
         logger.exception("Failed to check for existing team")
-        await _edit_status(interaction, GENERIC_SHEET_READ_ERROR)
+        await _edit_status(interaction, _with_trace(GENERIC_SHEET_READ_ERROR))
         return
 
     if existing is not None:
@@ -807,15 +822,17 @@ async def _commit_team_row(
         existing_desc = existing.description or "(no description)"
         await _edit_status(
             interaction,
-            f"This Pokepaste is already in *{inputs.fmt_name}* on row "
-            f'{existing.row_number}: "{existing_desc}".',
+            _with_trace(
+                f"This Pokepaste is already in *{inputs.fmt_name}* on row "
+                f'{existing.row_number}: "{existing_desc}".'
+            ),
         )
         return
 
     try:
         await validate_pokepaste_url(canonical_url)
     except ValidationError as e:
-        await _edit_status(interaction, str(e))
+        await _edit_status(interaction, _with_trace(str(e)))
         return
 
     try:
@@ -828,7 +845,7 @@ async def _commit_team_row(
         )
     except Exception:
         logger.exception("Failed to add row")
-        await _edit_status(interaction, GENERIC_SHEET_WRITE_ERROR)
+        await _edit_status(interaction, _with_trace(GENERIC_SHEET_WRITE_ERROR))
         return
 
     msg = f"Added team to row {row} in *{inputs.fmt_name}*."

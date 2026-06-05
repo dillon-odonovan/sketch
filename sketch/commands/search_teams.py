@@ -22,6 +22,7 @@ from sketch.commands._shared import (
     _filter_team_rows,
     _format_choices,
     _resolve_guild_sheets,
+    _with_trace,
 )
 from sketch.logging_setup import trace_id_var
 from sketch.pokepaste.validator import ValidationError, canonicalize_pokepaste_url
@@ -96,7 +97,7 @@ def register(
             try:
                 url_target = canonicalize_pokepaste_url(url_raw)
             except ValidationError as e:
-                await interaction.followup.send(str(e), ephemeral=True)
+                await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
                 return
         replica_raw = (replica or "").strip() or None
         replica_target: str | None = None
@@ -104,7 +105,7 @@ def register(
             try:
                 replica_target = normalize_replica(replica_raw)
             except ValidationError as e:
-                await interaction.followup.send(str(e), ephemeral=True)
+                await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
                 return
         logger.info(
             "search-teams invoked by user_id=%s guild_id=%s: format=%s "
@@ -125,8 +126,10 @@ def register(
             and replica_target is None
         ):
             await interaction.followup.send(
-                "Provide at least one of `mon1`..`mon6`, `description`, "
-                "`url`, or `replica`.",
+                _with_trace(
+                    "Provide at least one of `mon1`..`mon6`, `description`, "
+                    "`url`, or `replica`."
+                ),
                 ephemeral=True,
             )
             return
@@ -139,7 +142,7 @@ def register(
             except Exception:
                 logger.exception("Failed to read sheet")
                 await interaction.followup.send(
-                    GENERIC_SHEET_READ_ERROR, ephemeral=True
+                    _with_trace(GENERIC_SHEET_READ_ERROR), ephemeral=True
                 )
                 return
             matches = _filter_team_rows(
@@ -162,7 +165,7 @@ def register(
                 except Exception:
                     logger.exception("Failed to load DEX")
                     await interaction.followup.send(
-                        GENERIC_SHEET_READ_ERROR, ephemeral=True
+                        _with_trace(GENERIC_SHEET_READ_ERROR), ephemeral=True
                     )
                     return
 
@@ -176,7 +179,7 @@ def register(
                         else ""
                     )
                     await interaction.followup.send(
-                        f"Couldn't find Pokémon `{q}` in the DEX.{hint}",
+                        _with_trace(f"Couldn't find Pokémon `{q}` in the DEX.{hint}"),
                         ephemeral=True,
                     )
                     return
@@ -187,7 +190,7 @@ def register(
             except Exception:
                 logger.exception("Failed to read sheet")
                 await interaction.followup.send(
-                    GENERIC_SHEET_READ_ERROR, ephemeral=True
+                    _with_trace(GENERIC_SHEET_READ_ERROR), ephemeral=True
                 )
                 return
 

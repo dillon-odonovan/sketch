@@ -24,10 +24,22 @@ import discord
 from discord import app_commands
 
 from sketch import config
+from sketch.logging_setup import trace_id_var
 from sketch.pokepaste.validator import ValidationError, canonicalize_pokepaste_url
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry, TeamRow
 
 logger = logging.getLogger(__name__)
+
+
+# --- Trace ID helper ------------------------------------------------------
+
+
+def _with_trace(message: str) -> str:
+    """Append the current trace ID to a user-facing error message."""
+    tid = trace_id_var.get()
+    if tid == "-":
+        return message
+    return f"{message}\n\nTrace ID: `{tid}`"
 
 
 # --- User-facing error constants ------------------------------------------
@@ -295,7 +307,9 @@ async def _resolve_guild_sheets(
     """
     guild_id = interaction.guild_id
     if guild_id is None:
-        await interaction.followup.send(UNCONFIGURED_GUILD_ERROR, ephemeral=True)
+        await interaction.followup.send(
+            _with_trace(UNCONFIGURED_GUILD_ERROR), ephemeral=True
+        )
         return None
     sheets = registry.get(guild_id)
     if sheets is None:
@@ -304,7 +318,9 @@ async def _resolve_guild_sheets(
             guild_id,
             interaction.user.id,
         )
-        await interaction.followup.send(UNCONFIGURED_GUILD_ERROR, ephemeral=True)
+        await interaction.followup.send(
+            _with_trace(UNCONFIGURED_GUILD_ERROR), ephemeral=True
+        )
         return None
     return sheets
 
