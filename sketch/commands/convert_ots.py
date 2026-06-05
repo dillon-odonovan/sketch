@@ -51,11 +51,25 @@ logger = logging.getLogger(__name__)
 _PASTE_INPUT_MAX = 4000
 
 
-def _source_summary(sources: list[str]) -> str:
-    """Build a one-line provenance note for the user-facing reply.
+def _source_summary(
+    result: ConvertResult,
+    ots_pokemon_names: list[str],
+) -> str:
+    """Build the user-facing provenance reply.
 
-    E.g. "Trained 6 mons (4 from bank, 2 estimated)."
+    Returns a summary line plus a per-mon attribution block so the user
+    can see exactly which bank team each spread was sourced from.
+
+    Example:
+        Trained 6 mons (4 from bank, 1 estimated, 1 already trained).
+        • Venusaur — pokepast.es/abc123
+        • Charizard — estimated
+        • Garchomp — pokepast.es/def456
+        ...
     """
+    sources = result.sources
+    source_urls = result.source_urls
+
     from_bank = sources.count("bank")
     estimated = sources.count("estimated")
     kept = sources.count("kept")
@@ -70,7 +84,19 @@ def _source_summary(sources: list[str]) -> str:
 
     total = len(sources)
     detail = ", ".join(parts) if parts else "0 matched"
-    return f"Trained {total} mons ({detail})."
+    headline = f"Trained {total} mons ({detail})."
+
+    lines = [headline]
+    for name, src, url in zip(ots_pokemon_names, sources, source_urls, strict=False):
+        if src == "bank" and url:
+            # Shorten pokepast.es/abc123 to just the hostname+id for brevity.
+            short = url.replace("https://", "").replace("http://", "")
+            lines.append(f"• {name} — {short}")
+        elif src == "estimated":
+            lines.append(f"• {name} — estimated")
+        # "kept" mons are not listed to keep the reply concise.
+
+    return "\n".join(lines)
 
 
 async def _run_conversion(
@@ -111,7 +137,8 @@ async def _run_conversion(
         await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
         return
 
-    summary = _source_summary(result.sources)
+    pokemon_names = [p.species for p in ots.pokemon]
+    summary = _source_summary(result, pokemon_names)
     await interaction.followup.send(
         f"{summary}\n{cts_url}",
         ephemeral=True,

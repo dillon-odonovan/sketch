@@ -132,9 +132,10 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trained.nature, target.nature)
         self.assertEqual(trained.moves, target.moves)
 
-    async def test_sources_length_equals_team_size(self) -> None:
+    async def test_sources_and_urls_length_equals_team_size(self) -> None:
         result = await self._run(llm_spreads=_all_llm_spreads())
         self.assertEqual(len(result.sources), 6)
+        self.assertEqual(len(result.source_urls), 6)
 
     async def test_unsupported_format_raises(self) -> None:
         sheets = AsyncMock()
@@ -158,7 +159,7 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
             evs=bank_spread,
         )
         bank_team = BankTeam(
-            url="u",
+            url="https://pokepast.es/test",
             team=TeamData(
                 pokemon=[
                     bank_pikachu,
@@ -189,8 +190,10 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.team.pokemon[0].evs, bank_spread)
         self.assertEqual(result.sources[0], "bank")
+        self.assertEqual(result.source_urls[0], "https://pokepast.es/test")
         self.assertEqual(result.team.pokemon[1].evs, llm_spread)
         self.assertEqual(result.sources[1], "estimated")
+        self.assertIsNone(result.source_urls[1])
 
 
 if __name__ == "__main__":

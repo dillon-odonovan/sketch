@@ -72,16 +72,35 @@ class TestChooseEvsEmpty(unittest.TestCase):
         bank = [_bank_team("url1", _mon("Snorlax", evs=_evs(hp=32)))]
         self.assertIsNone(_choose(_mon("Pikachu"), bank))
 
+    def test_all_zero_ev_candidates_returns_none(self) -> None:
+        # OTS pastes stored in the bank have all-zero EVs and should be
+        # treated as no match — returning them would produce an
+        # apparently trained mon with no EVs in the paste.
+        bank = [_bank_team("url1", _mon("Pikachu", evs=_zero_evs()))]
+        self.assertIsNone(_choose(_mon("Pikachu"), bank))
+
+    def test_mixed_zero_and_trained_returns_trained(self) -> None:
+        trained_spread = _evs(spe=32)
+        bank = [
+            _bank_team("u1", _mon("Pikachu", evs=_zero_evs())),
+            _bank_team("u2", _mon("Pikachu", evs=trained_spread)),
+        ]
+        result = _choose(_mon("Pikachu"), bank)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.evs, trained_spread)
+
 
 class TestChooseEvsSingleCandidate(unittest.TestCase):
     def test_single_candidate_returned(self) -> None:
         spread = _evs(hp=4, spe=32)
-        bank = [_bank_team("url1", _mon("Pikachu", evs=spread))]
+        bank = [_bank_team("https://pokepast.es/abc", _mon("Pikachu", evs=spread))]
         result = _choose(_mon("Pikachu"), bank)
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result.evs, spread)
         self.assertEqual(result.source, "bank")
+        self.assertEqual(result.source_url, "https://pokepast.es/abc")
 
     def test_case_insensitive_species_match(self) -> None:
         spread = _evs(spe=32)

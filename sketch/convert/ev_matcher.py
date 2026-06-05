@@ -26,6 +26,14 @@ Frequency tiebreak:
   the complete 6-tuple (hp, atk, def, spa, spd, spe), clamped to the
   format's per-stat cap; this de-duplicates spreads that happen to look
   identical after clamping.
+
+Zero-EV filtering:
+  Candidates whose EVs are all zero are excluded before ranking. OTS
+  pastes stored in the bank have zero EVs and provide no useful spread
+  information — returning them as a "bank match" would produce a team
+  that looks trained in the source summary but has no EVs written to the
+  paste. Mons whose only bank entries have zero EVs fall through to the
+  LLM fallback instead.
 """
 
 from __future__ import annotations
@@ -44,13 +52,16 @@ class EvChoice:
 
     `source` is the coarse provenance for the user-facing summary
     (`"bank"` here; the converter uses `"estimated"` for LLM guesses and
-    `"kept"` for already-trained mons). `detail` is a short log-only note
-    on how strong the match was.
+    `"kept"` for already-trained mons). `source_url` is the Pokepaste URL
+    of the bank team the spread was lifted from (None for non-bank
+    sources). `detail` is a short log-only note on how strong the match
+    was.
     """
 
     evs: dict[str, int]
     source: str
     detail: str
+    source_url: str | None = None
 
 
 def _norm(value: str | None) -> str:
@@ -65,6 +76,7 @@ def _move_set(moves: list[str]) -> frozenset[str]:
 class _Candidate:
     entry: PokemonEntry
     overlap: int  # how many OTS species appear on this candidate's team
+    url: str  # Pokepaste URL of the bank team this entry came from
 
 
 def _score(target: PokemonEntry, cand: _Candidate) -> tuple[int, int, int, int]:
@@ -107,8 +119,12 @@ def choose_evs(
 
     `ots_species` is the normalized set of the OTS's species (used to
     compute each candidate team's composition overlap). The returned
-    spread is clamped to `ev_model.max_per_stat` per stat and
-    `ev_model.max_total` in aggregate.
+    spread is clamped to `ev_model.max_per_stat` per stat.
+
+    Returns None when:
+    - No bank team contains a Pokemon of the same species, OR
+    - All same-species bank entries have zero EVs (stored as OTS pastes,
+      not useful for CTS conversion — fall through to the LLM instead).
     """
     target_species = _norm_species(target.species)
     all_candidates: list[_Candidate] = []
@@ -116,18 +132,30 @@ def choose_evs(
         overlap = len(ots_species & {_norm_species(p.species) for p in bt.team.pokemon})
         for entry in bt.team.pokemon:
             if _norm_species(entry.species) == target_species:
-                all_candidates.append(_Candidate(entry=entry, overlap=overlap))
+                all_candidates.append(
+                    _Candidate(entry=entry, overlap=overlap, url=bt.url)
+                )
                 break  # each team has at most one of a given species; skip the rest
 
     if not all_candidates:
         return None
 
+    # Exclude candidates with all-zero EVs. These are OTS pastes stored
+    # in the bank — they carry no spread information and returning them as
+    # a "bank match" would produce a paste that looks trained but has no
+    # EVs written.
+    trained_candidates = [
+        c for c in all_candidates if any(v != 0 for v in c.entry.evs.values())
+    ]
+    if not trained_candidates:
+        return None
+
     # Stage 1: gate by nature. Prefer same-nature candidates; fall back to
     # all candidates if none exist with the matching nature.
     same_nature = [
-        c for c in all_candidates if _norm(c.entry.nature) == _norm(target.nature)
+        c for c in trained_candidates if _norm(c.entry.nature) == _norm(target.nature)
     ]
-    pool = same_nature if same_nature else all_candidates
+    pool = same_nature if same_nature else trained_candidates
     nature_gated = bool(same_nature)
 
     best_key = max(_score(target, c) for c in pool)
@@ -142,11 +170,23 @@ def choose_evs(
     winning_tuple, freq = spread_counts.most_common(1)[0]
     evs = dict(zip(STAT_KEYS, winning_tuple, strict=False))
 
+    # Source URL: find one candidate whose clamped spread matches the winner.
+    source_url = next(
+        (
+            c.url
+            for c in top
+            if tuple(_clamp(c.entry.evs, ev_model)[k] for k in STAT_KEYS)
+            == winning_tuple
+        ),
+        None,
+    )
+
     ability_ok, item_ok, move_overlap, overlap = best_key
     detail = (
         f"nature_gated={nature_gated} ability={'y' if ability_ok else 'n'} "
         f"item={'y' if item_ok else 'n'} moves={move_overlap} "
-        f"composition={overlap} (from {len(all_candidates)} candidate(s), "
-        f"pool={len(pool)}, spread freq {freq}/{len(top)})"
+        f"composition={overlap} (from {len(trained_candidates)} trained "
+        f"candidate(s), pool={len(pool)}, spread freq {freq}/{len(top)}, "
+        f"url={source_url})"
     )
-    return EvChoice(evs=evs, source="bank", detail=detail)
+    return EvChoice(evs=evs, source="bank", detail=detail, source_url=source_url)

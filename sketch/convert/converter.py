@@ -44,6 +44,10 @@ class ConvertResult:
     # One label per Pokemon slot (same order as `team.pokemon`).
     # Values: "kept", "bank", or "estimated".
     sources: list[str]
+    # Pokepaste URL of the bank team the spread was lifted from, or None
+    # when the spread was estimated by the LLM or the mon was already
+    # trained. Parallel to `sources`.
+    source_urls: list[str | None]
 
 
 async def convert_ots_to_cts(
@@ -136,6 +140,7 @@ async def convert_ots_to_cts(
     # Build the trained team.
     new_pokemon = []
     sources: list[str] = []
+    source_urls: list[str | None] = []
 
     for slot, (mon, choice) in enumerate(
         zip(ots.pokemon, choices, strict=False), start=1
@@ -143,11 +148,13 @@ async def convert_ots_to_cts(
         if choice is not None:
             new_pokemon.append(dataclasses.replace(mon, evs=choice.evs))
             sources.append(choice.source)
+            source_urls.append(choice.source_url)
         else:
             evs = guessed.get(slot, _ZERO_EVS.copy())
             logger.info("EV guess for %s (slot %d): %s", mon.species, slot, evs)
             new_pokemon.append(dataclasses.replace(mon, evs=evs))
             sources.append("estimated")
+            source_urls.append(None)
 
     trained = dataclasses.replace(ots, pokemon=new_pokemon)
-    return ConvertResult(team=trained, sources=sources)
+    return ConvertResult(team=trained, sources=sources, source_urls=source_urls)
