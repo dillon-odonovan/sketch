@@ -2,22 +2,30 @@
 
 Pure, side-effect-free scoring over the candidate `BankTeam`s loaded by
 `sketch.convert.bank`. Given one target OTS Pokemon, gather every bank
-Pokemon of the same species and rank them by a single lexicographic key,
-documented in `_score` and easy to retune in one place:
+Pokemon of the same species and select the best EV spread in two stages:
 
-  1. nature / stat-alignment match  (validity gate — a spread is only
-     meaningful under its intended nature; `32 Atk / 32 Spe` reads as
-     Adamant *or* Jolly, and the nature disambiguates which stats the
-     investment was actually for)
-  2. ability match                  (highest-precedence set signal)
-  3. item match
-  4. move-overlap count
-  5. team-composition overlap        (more of the OTS's six mons present
-     on the source team ⇒ more representative archetype)
+Stage 1 — nature gate:
+  Prefer candidates whose nature matches the OTS mon's nature (same stat
+  alignment). If any same-nature candidates exist, restrict the pool to
+  them. Only fall through to mismatched-nature candidates when the bank
+  has no same-nature entry — so a high-quality ability+item+moves match
+  isn't thrown away just because the nature differs.
 
-Among candidates tied on that key, the *most frequent* exact spread wins
-— so a common ability+item+moves Pokemon with several different spreads
-in the bank converges on the consensus one rather than an outlier.
+Stage 2 — ranking (within the selected pool):
+  Rank by a single lexicographic key so the comparator lives in one place:
+    1. ability match                (highest-precedence set signal)
+    2. item match
+    3. move-overlap count           (desc)
+    4. team-composition overlap     (desc — more of the OTS's six mons on
+                                     the source team ⇒ more representative)
+
+Frequency tiebreak:
+  Among the top-ranked candidates (same key value), the *most common full
+  spread* wins — so a popular archetype spread rises above one-off
+  outliers rather than picking the first encountered. "Full spread" means
+  the complete 6-tuple (hp, atk, def, spa, spd, spe), clamped to the
+  format's per-stat cap; this de-duplicates spreads that happen to look
+  identical after clamping.
 """
 
 from __future__ import annotations
@@ -26,6 +34,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from sketch.convert.bank import BankTeam, _norm_species
+from sketch.convert.ev_model import EvModel
 from sketch.team import STAT_KEYS, PokemonEntry
 
 
@@ -58,11 +67,15 @@ class _Candidate:
     overlap: int  # how many OTS species appear on this candidate's team
 
 
-def _score(target: PokemonEntry, cand: _Candidate) -> tuple[int, int, int, int, int]:
-    """Lexicographic ranking key (higher is better) for one candidate."""
+def _score(target: PokemonEntry, cand: _Candidate) -> tuple[int, int, int, int]:
+    """Lexicographic ranking key (higher is better) for one candidate.
+
+    Nature is not part of this key — it is handled as a pool gate before
+    scoring runs, so all candidates in the pool have already cleared the
+    nature filter (or nature matching is being skipped as a fallback).
+    """
     target_moves = _move_set(target.moves)
     return (
-        int(_norm(cand.entry.nature) == _norm(target.nature)),
         int(_norm(cand.entry.ability) == _norm(target.ability)),
         int(_norm(cand.entry.item) == _norm(target.item)),
         len(target_moves & _move_set(cand.entry.moves)),
@@ -70,50 +83,68 @@ def _score(target: PokemonEntry, cand: _Candidate) -> tuple[int, int, int, int, 
     )
 
 
-def _clamp(evs: dict[str, int], max_per_stat: int) -> dict[str, int]:
-    return {k: max(0, min(int(evs.get(k, 0)), max_per_stat)) for k in STAT_KEYS}
+def _clamp(evs: dict[str, int], ev_model: EvModel) -> dict[str, int]:
+    clamped = {
+        k: max(0, min(int(evs.get(k, 0)), ev_model.max_per_stat)) for k in STAT_KEYS
+    }
+    if ev_model.max_total is not None and sum(clamped.values()) > ev_model.max_total:
+        # Scale down proportionally so the total sits within budget.
+        total = sum(clamped.values())
+        ratio = ev_model.max_total / total
+        clamped = {k: int(v * ratio) for k, v in clamped.items()}
+    return clamped
 
 
 def choose_evs(
     target: PokemonEntry,
     bank_teams: list[BankTeam],
     ots_species: set[str],
-    max_per_stat: int,
+    ev_model: EvModel,
 ) -> EvChoice | None:
     """Return the best bank spread for `target`, or None if no bank match.
 
     `ots_species` is the normalized set of the OTS's species (used to
     compute each candidate team's composition overlap). The returned
-    spread is clamped to `max_per_stat`.
+    spread is clamped to `ev_model.max_per_stat` per stat and
+    `ev_model.max_total` in aggregate.
     """
     target_species = _norm_species(target.species)
-    candidates: list[_Candidate] = []
+    all_candidates: list[_Candidate] = []
     for bt in bank_teams:
         overlap = len(ots_species & {_norm_species(p.species) for p in bt.team.pokemon})
         for entry in bt.team.pokemon:
             if _norm_species(entry.species) == target_species:
-                candidates.append(_Candidate(entry=entry, overlap=overlap))
+                all_candidates.append(_Candidate(entry=entry, overlap=overlap))
+                break  # each team has at most one of a given species; skip the rest
 
-    if not candidates:
+    if not all_candidates:
         return None
 
-    best_key = max(_score(target, c) for c in candidates)
-    top = [c for c in candidates if _score(target, c) == best_key]
+    # Stage 1: gate by nature. Prefer same-nature candidates; fall back to
+    # all candidates if none exist with the matching nature.
+    same_nature = [
+        c for c in all_candidates if _norm(c.entry.nature) == _norm(target.nature)
+    ]
+    pool = same_nature if same_nature else all_candidates
+    nature_gated = bool(same_nature)
 
-    # Frequency tiebreak: among the equally-ranked candidates, pick the
-    # spread that shows up most often. Counter.most_common preserves
-    # insertion order on ties, so the first-seen spread wins a true tie.
+    best_key = max(_score(target, c) for c in pool)
+    top = [c for c in pool if _score(target, c) == best_key]
+
+    # Frequency tiebreak: count the most common *full spread* (6-tuple) among
+    # the top candidates. Picks the consensus spread rather than a one-off;
+    # `Counter.most_common` is stable on ties so the first-seen spread wins.
     spread_counts = Counter(
-        tuple(_clamp(c.entry.evs, max_per_stat)[k] for k in STAT_KEYS) for c in top
+        tuple(_clamp(c.entry.evs, ev_model)[k] for k in STAT_KEYS) for c in top
     )
     winning_tuple, freq = spread_counts.most_common(1)[0]
     evs = dict(zip(STAT_KEYS, winning_tuple, strict=False))
 
-    nature_ok, ability_ok, item_ok, move_overlap, overlap = best_key
+    ability_ok, item_ok, move_overlap, overlap = best_key
     detail = (
-        f"nature={'y' if nature_ok else 'n'} ability={'y' if ability_ok else 'n'} "
+        f"nature_gated={nature_gated} ability={'y' if ability_ok else 'n'} "
         f"item={'y' if item_ok else 'n'} moves={move_overlap} "
-        f"composition={overlap} (from {len(candidates)} candidate(s), "
-        f"spread freq {freq}/{len(top)})"
+        f"composition={overlap} (from {len(all_candidates)} candidate(s), "
+        f"pool={len(pool)}, spread freq {freq}/{len(top)})"
     )
     return EvChoice(evs=evs, source="bank", detail=detail)

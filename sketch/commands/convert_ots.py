@@ -27,6 +27,7 @@ from sketch.champions.showdown_parser import ShowdownParseError, parse_showdown
 from sketch.commands._shared import (
     _format_choices,
     _resolve_guild_sheets,
+    _with_trace,
 )
 from sketch.convert.converter import ConvertResult, convert_ots_to_cts
 from sketch.convert.ev_model import UnsupportedFormatError
@@ -83,7 +84,7 @@ async def _run_conversion(
     try:
         ots = parse_showdown(ots_text)
     except ShowdownParseError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
         return
 
     try:
@@ -95,17 +96,17 @@ async def _run_conversion(
             anthropic_client=anthropic_client,
         )
     except UnsupportedFormatError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
         return
     except EvGuessError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
         return
 
     paste_text = render_showdown(result.team)
     try:
         cts_url = await post_to_pokepaste(paste_text, title="OTS→CTS")
     except PokepasteUploadError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
         return
 
     summary = _source_summary(result.sources)
@@ -166,9 +167,7 @@ def register(
 
     @tree.command(
         name="convert-ots",
-        description=(
-            "Fill in EVs for an Open Team Sheet and return a trained " "Pokepaste URL."
-        ),
+        description="Fill in EVs for an OTS team and return a trained Pokepaste URL.",
     )
     @app_commands.describe(
         format="Format/regulation (determines the EV regime)",
@@ -205,8 +204,10 @@ def register(
 
             if not is_pokepaste_url(url):
                 await interaction.followup.send(
-                    f"`{url}` doesn't look like a Pokepaste URL. "
-                    "Expected something like `https://pokepast.es/abc123`.",
+                    _with_trace(
+                        f"`{url}` doesn't look like a Pokepaste URL. "
+                        "Expected something like `https://pokepast.es/abc123`."
+                    ),
                     ephemeral=True,
                 )
                 return
@@ -214,7 +215,7 @@ def register(
             try:
                 ots_text = await fetch_pokepaste_raw(url)
             except (PokepasteFetchError, ValidationError) as exc:
-                await interaction.followup.send(str(exc), ephemeral=True)
+                await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
                 return
 
             logger.info(

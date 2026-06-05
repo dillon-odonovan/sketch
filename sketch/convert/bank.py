@@ -45,10 +45,20 @@ class BankTeam:
 def _norm_species(name: str) -> str:
     """Casefold a species name for comparison.
 
-    Species in the OTS paste and in the sheet's species columns both
-    originate from the same Showdown render (e.g. `Charizard-Mega-Y`), so
-    a casefold compare is enough to align them — mirrors the matching in
-    `sketch.commands._shared._filter_team_rows`.
+    Both the OTS paste text and the bank team pastes go through
+    `parse_showdown`, which preserves species names exactly as written in
+    the Showdown export (e.g. `Charizard-Mega-Y`, not `Charizard`). The
+    sheet's species columns are populated by the in-sheet
+    `TEAMDATAFROMPASTE` AppsScript formula, which parses the same paste
+    text and produces the same canonical form. A casefold compare is
+    therefore sufficient — no extra normalization is needed.
+
+    Note: OTS input provided as raw user text (rather than fetched from a
+    Pokepaste URL) may use the pre-Mega base form (e.g. `Charizard @ Mega
+    Stone`). In that case the species name won't match `Charizard-Mega-Y`
+    in the bank or the sheet. Handling pre-Mega text-paste OTS input is a
+    future follow-up; for now, URL input (which always goes through
+    `parse_showdown`) is the recommended path.
     """
     return name.strip().lower()
 

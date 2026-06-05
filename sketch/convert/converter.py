@@ -83,7 +83,8 @@ async def convert_ots_to_cts(
         If the LLM fallback fails for any unmatched mon and no bank
         spread was available as a safety net.
     """
-    effective_model = model or config.CONVERT_EV_MODEL
+    # Model name for the Anthropic API call in the LLM-guess fallback.
+    llm_model = model or config.CONVERT_EV_MODEL
     ev_model: EvModel = ev_model_for_format(fmt_name)
 
     ots_species = {p.species.lower() for p in ots.pokemon}
@@ -96,7 +97,7 @@ async def convert_ots_to_cts(
     choices: list[EvChoice | None] = []
     unmatched_entries: list[tuple[int, object]] = []  # (1-based slot, PokemonEntry)
 
-    for slot_0, mon in enumerate(ots.pokemon):
+    for slot, mon in enumerate(ots.pokemon, start=1):
         # Already trained: preserve the existing spread.
         if any(v != 0 for v in mon.evs.values()):
             choices.append(
@@ -106,15 +107,15 @@ async def convert_ots_to_cts(
             )
             continue
 
-        choice = choose_evs(mon, bank_teams, ots_species, ev_model.max_per_stat)
+        choice = choose_evs(mon, bank_teams, ots_species, ev_model)
         if choice is not None:
             logger.info(
-                "EV match for %s (slot %d): %s", mon.species, slot_0 + 1, choice.detail
+                "EV match for %s (slot %d): %s", mon.species, slot, choice.detail
             )
             choices.append(choice)
         else:
             choices.append(None)
-            unmatched_entries.append((slot_0 + 1, mon))
+            unmatched_entries.append((slot, mon))
 
     # Second pass: LLM for unmatched mons (one batched call).
     guessed: dict[int, dict[str, int]] = {}
@@ -129,26 +130,22 @@ async def convert_ots_to_cts(
             unmatched_entries,
             fmt_name=fmt_name,
             ev_model=ev_model,
-            model=effective_model,
+            model=llm_model,
         )
 
     # Build the trained team.
     new_pokemon = []
     sources: list[str] = []
 
-    for slot_0, (mon, choice) in enumerate(zip(ots.pokemon, choices, strict=False)):
+    for slot, (mon, choice) in enumerate(
+        zip(ots.pokemon, choices, strict=False), start=1
+    ):
         if choice is not None:
             new_pokemon.append(dataclasses.replace(mon, evs=choice.evs))
             sources.append(choice.source)
         else:
-            slot = slot_0 + 1
             evs = guessed.get(slot, _ZERO_EVS.copy())
-            logger.info(
-                "EV guess for %s (slot %d): %s",
-                mon.species,
-                slot,
-                evs,
-            )
+            logger.info("EV guess for %s (slot %d): %s", mon.species, slot, evs)
             new_pokemon.append(dataclasses.replace(mon, evs=evs))
             sources.append("estimated")
 
