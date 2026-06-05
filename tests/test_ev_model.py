@@ -7,14 +7,25 @@ import unittest
 from sketch.convert.ev_model import (
     CHAMPIONS,
     LEGACY,
+    Format,
     UnsupportedFormatError,
     ev_model_for_format,
 )
 
 
+class TestFormat(unittest.TestCase):
+    def test_format_is_str(self) -> None:
+        self.assertEqual(Format.REG_M_A, "Reg M-A")
+
+    def test_format_lookup_works_with_plain_string(self) -> None:
+        # StrEnum equality means a plain-string key still resolves correctly.
+        model = ev_model_for_format("Reg M-A")
+        self.assertIs(model, CHAMPIONS)
+
+
 class TestEvModelForFormat(unittest.TestCase):
     def test_champions_format_returns_champions_model(self) -> None:
-        model = ev_model_for_format("Reg M-A")
+        model = ev_model_for_format(Format.REG_M_A)
         self.assertIs(model, CHAMPIONS)
         self.assertEqual(model.max_per_stat, 32)
 

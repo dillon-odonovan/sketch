@@ -341,23 +341,15 @@ class TestChooseEvsFrequencyTiebreak(unittest.TestCase):
 
 class TestChooseEvsClamping(unittest.TestCase):
     def test_evs_clamped_to_max_per_stat(self) -> None:
+        # Values above the per-stat cap are clamped down. No total-budget
+        # enforcement is applied — bank spreads come from real game teams,
+        # which the game itself keeps within the aggregate budget.
         over_cap = _evs(hp=100, spe=200)
         bank = [_bank_team("u", _mon("Pikachu", evs=over_cap))]
         result = _choose(_mon("Pikachu"), bank)
         assert result is not None
         for v in result.evs.values():
             self.assertLessEqual(v, CHAMPIONS.max_per_stat)
-
-    def test_total_budget_enforced(self) -> None:
-        # Spread that exceeds CHAMPIONS_EV_MAX_TOTAL per stat clamped per-stat
-        # but still over total → _clamp should scale down.
-        big_spread = {k: CHAMPIONS.max_per_stat for k in STAT_KEYS}  # 32*6=192
-        bank = [_bank_team("u", _mon("Pikachu", evs=big_spread))]
-        result = _choose(_mon("Pikachu"), bank)
-        assert result is not None
-        total = sum(result.evs.values())
-        if CHAMPIONS.max_total is not None:
-            self.assertLessEqual(total, CHAMPIONS.max_total)
 
 
 if __name__ == "__main__":

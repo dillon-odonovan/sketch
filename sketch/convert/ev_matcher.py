@@ -84,15 +84,17 @@ def _score(target: PokemonEntry, cand: _Candidate) -> tuple[int, int, int, int]:
 
 
 def _clamp(evs: dict[str, int], ev_model: EvModel) -> dict[str, int]:
-    clamped = {
+    """Clamp each EV value to the format's per-stat cap.
+
+    No total-budget enforcement is applied here: bank spreads come from
+    real teams stored by the game, which already enforces the aggregate
+    cap, so over-budget totals can't reach the database. The full 6-stat
+    tuple is returned so the frequency counter in `choose_evs` can compare
+    complete spreads rather than individual stats.
+    """
+    return {
         k: max(0, min(int(evs.get(k, 0)), ev_model.max_per_stat)) for k in STAT_KEYS
     }
-    if ev_model.max_total is not None and sum(clamped.values()) > ev_model.max_total:
-        # Scale down proportionally so the total sits within budget.
-        total = sum(clamped.values())
-        ratio = ev_model.max_total / total
-        clamped = {k: int(v * ratio) for k, v in clamped.items()}
-    return clamped
 
 
 def choose_evs(

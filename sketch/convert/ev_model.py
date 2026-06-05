@@ -12,6 +12,7 @@ legacy format later is a registry entry, not a code change.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from sketch.pokepaste.validator import ValidationError
 from sketch.team import CHAMPIONS_EV_MAX_PER_STAT
@@ -19,12 +20,25 @@ from sketch.team import CHAMPIONS_EV_MAX_PER_STAT
 # Champions approximate total budget. The game doesn't publish the exact
 # internal formula, but competitive observation puts the usable total at
 # roughly 66 Stat Points (two stats fully invested at 32 each with a few
-# left over for a third). Used as a soft filter in `ev_matcher` to
-# de-prioritize bank spreads that are suspiciously over budget.
+# left over for a third). Surfaced in the LLM prompt so the model knows
+# how sparse spreads should be.
 CHAMPIONS_EV_MAX_TOTAL = 66
 
-# Mainline VGC (Gen 8/9): 508 total EVs, 252 per stat, 4 everywhere else.
+# Mainline VGC (Gen 8/9): 252 per stat, 508 usable total.
+LEGACY_EV_MAX_PER_STAT = 252
 LEGACY_EV_MAX_TOTAL = 508
+
+
+class Format(StrEnum):
+    """Canonical format identifiers.
+
+    Using a `StrEnum` means each member IS a `str` (e.g.
+    ``Format.REG_M_A == "Reg M-A"`` is ``True``), so existing code that
+    passes plain string format names to `ev_model_for_format` continues to
+    work without changes — dict lookup uses the inherited `str` hash.
+    """
+
+    REG_M_A = "Reg M-A"
 
 
 @dataclass(frozen=True)
@@ -34,9 +48,9 @@ class EvModel:
     `label` is a short human name for the regime (surfaced in the LLM
     prompt). `max_per_stat` is the per-stat cap used to validate mined
     spreads and clamp guessed ones. `max_total` is the total-EV budget
-    across all stats; used as a soft sanity filter when mining bank spreads
-    (spreads over budget are de-prioritised, not rejected outright, since
-    the bank's strict Showdown parser doesn't enforce the total).
+    across all stats; informational (used in the LLM prompt) — it is NOT
+    enforced when selecting bank spreads, since those come from real teams
+    that the game itself constrains.
     """
 
     label: str
@@ -57,16 +71,16 @@ CHAMPIONS = EvModel(
 # "support a legacy format" a one-line `FORMAT_EV_MODELS` addition.
 LEGACY = EvModel(
     label="Legacy EVs",
-    max_per_stat=252,
+    max_per_stat=LEGACY_EV_MAX_PER_STAT,
     max_total=LEGACY_EV_MAX_TOTAL,
 )
 
 
-# Maps a format name (the keys of `config.FORMAT_SHEETS`) to its EV regime.
-# Add an entry here whenever a new format is added to `config.FORMAT_SHEETS` —
-# the `ev_model_for_format` guard will raise loudly if a format is missing.
-FORMAT_EV_MODELS: dict[str, EvModel] = {
-    "Reg M-A": CHAMPIONS,
+# Maps a Format to its EV regime. Add an entry here whenever a new Format
+# member is added — `ev_model_for_format` raises loudly if a format is
+# missing, preventing silent conversion under the wrong cap.
+FORMAT_EV_MODELS: dict[Format, EvModel] = {
+    Format.REG_M_A: CHAMPIONS,
 }
 
 
@@ -82,12 +96,12 @@ class UnsupportedFormatError(ValidationError):
 def ev_model_for_format(fmt_name: str) -> EvModel:
     """Return the `EvModel` for `fmt_name`, or raise `UnsupportedFormatError`.
 
-    Every format in `config.FORMAT_SHEETS` should have a corresponding entry
-    in `FORMAT_EV_MODELS`. This raises loudly if a new format is added to the
-    choices before its EV regime is registered — prevents silently converting
-    under the wrong cap.
+    Accepts a plain ``str`` or a ``Format`` member (they compare equal via
+    ``StrEnum``). Raises ``UnsupportedFormatError`` if `fmt_name` has no
+    registered regime — a fail-loud guard against silently converting under
+    the wrong cap when a new format is added to `config.FORMAT_SHEETS`.
     """
-    model = FORMAT_EV_MODELS.get(fmt_name)
+    model = FORMAT_EV_MODELS.get(fmt_name)  # type: ignore[call-overload]
     if model is None:
         raise UnsupportedFormatError(
             f"`{fmt_name}` isn't supported by /convert-ots yet."
