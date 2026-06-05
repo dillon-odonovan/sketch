@@ -44,9 +44,9 @@ class TestSourceSummary(unittest.TestCase):
         out = _source_summary(r, names)
         self.assertIn("6 from bank", out)
         self.assertIn("Trained 6 mons", out)
-        # Each mon should appear with its shortened URL.
+        # Full URLs rendered so Discord turns them into hyperlinks.
         for i in range(6):
-            self.assertIn(f"pokepast.es/abc{i}", out)
+            self.assertIn(f"https://pokepast.es/abc{i}", out)
 
     def test_all_estimated(self) -> None:
         r, names = _result(["estimated"] * 6)
@@ -87,9 +87,9 @@ class TestSourceSummary(unittest.TestCase):
         self.assertIn("2 estimated", out)
         self.assertIn("1 already trained", out)
         self.assertIn("Trained 6 mons", out)
-        self.assertIn("pokepast.es/a1", out)
-        self.assertIn("pokepast.es/a2", out)
-        self.assertIn("pokepast.es/a3", out)
+        self.assertIn("https://pokepast.es/a1", out)
+        self.assertIn("https://pokepast.es/a2", out)
+        self.assertIn("https://pokepast.es/a3", out)
         self.assertIn("• Garchomp — estimated", out)
 
     def test_empty(self) -> None:

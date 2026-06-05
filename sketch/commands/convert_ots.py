@@ -43,6 +43,9 @@ from sketch.pokepaste.renderer import (
 )
 from sketch.pokepaste.validator import ValidationError, is_pokepaste_url
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
+from sketch.team import TeamData
+from sketch.vrpaste.fetcher import VRPasteFetchError, fetch_vrpaste
+from sketch.vrpaste.validator import is_vrpaste_url
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +92,8 @@ def _source_summary(
     lines = [headline]
     for name, src, url in zip(ots_pokemon_names, sources, source_urls, strict=False):
         if src == "bank" and url:
-            # Shorten pokepast.es/abc123 to just the hostname+id for brevity.
-            short = url.replace("https://", "").replace("http://", "")
-            lines.append(f"• {name} — {short}")
+            # Full URL so Discord renders it as a clickable hyperlink.
+            lines.append(f"• {name} — {url}")
         elif src == "estimated":
             lines.append(f"• {name} — estimated")
         # "kept" mons are not listed to keep the reply concise.
@@ -105,16 +107,14 @@ async def _run_conversion(
     sheets: SheetsClient,
     fmt_name: str,
     sheet_name: str,
-    ots_text: str,
+    ots: TeamData,
     anthropic_client: anthropic.AsyncAnthropic,
 ) -> None:
-    """Core pipeline: parse → convert → render → mint → reply."""
-    try:
-        ots = parse_showdown(ots_text)
-    except ShowdownParseError as exc:
-        await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
-        return
+    """Core pipeline: convert → render → mint → reply.
 
+    Accepts an already-parsed `TeamData` so URL sources (Pokepaste and
+    VRPaste) and the modal text path all converge after OTS resolution.
+    """
     try:
         result: ConvertResult = await convert_ots_to_cts(
             ots,
@@ -176,12 +176,17 @@ class _OtsPasteModal(discord.ui.Modal, title="Paste OTS Showdown text"):
         # visible while the conversion runs.
         await interaction.response.defer(ephemeral=True, thinking=True)
         ots_text = self.paste_input.value or ""
+        try:
+            ots = parse_showdown(ots_text)
+        except ShowdownParseError as exc:
+            await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
+            return
         await _run_conversion(
             interaction,
             sheets=self._sheets,
             fmt_name=self._fmt_name,
             sheet_name=self._sheet_name,
-            ots_text=ots_text,
+            ots=ots,
             anthropic_client=self._anthropic_client,
         )
 
@@ -201,7 +206,7 @@ def register(
     @app_commands.describe(
         format="Format/regulation (determines the EV regime)",
         url=(
-            "Pokepaste URL of the OTS (e.g. https://pokepast.es/abc123). "
+            "Pokepaste or VRPaste URL of the OTS. "
             "Omit to paste Showdown text directly."
         ),
     )
@@ -231,20 +236,38 @@ def register(
             if sheets is None:
                 return
 
-            if not is_pokepaste_url(url):
+            if is_vrpaste_url(url):
+                try:
+                    ots: TeamData = await fetch_vrpaste(url)
+                except VRPasteFetchError as exc:
+                    await interaction.followup.send(
+                        _with_trace(str(exc)), ephemeral=True
+                    )
+                    return
+            elif is_pokepaste_url(url):
+                try:
+                    ots_text = await fetch_pokepaste_raw(url)
+                except (PokepasteFetchError, ValidationError) as exc:
+                    await interaction.followup.send(
+                        _with_trace(str(exc)), ephemeral=True
+                    )
+                    return
+                try:
+                    ots = parse_showdown(ots_text)
+                except ShowdownParseError as exc:
+                    await interaction.followup.send(
+                        _with_trace(str(exc)), ephemeral=True
+                    )
+                    return
+            else:
                 await interaction.followup.send(
                     _with_trace(
-                        f"`{url}` doesn't look like a Pokepaste URL. "
-                        "Expected something like `https://pokepast.es/abc123`."
+                        f"`{url}` doesn't look like a Pokepaste or VRPaste URL. "
+                        "Expected something like `https://pokepast.es/abc123` "
+                        "or `https://www.vrpastes.com/abc123`."
                     ),
                     ephemeral=True,
                 )
-                return
-
-            try:
-                ots_text = await fetch_pokepaste_raw(url)
-            except (PokepasteFetchError, ValidationError) as exc:
-                await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
                 return
 
             logger.info(
@@ -260,7 +283,7 @@ def register(
                 sheets=sheets,
                 fmt_name=fmt_name,
                 sheet_name=sheet_name,
-                ots_text=ots_text,
+                ots=ots,
                 anthropic_client=anthropic_client,
             )
             return
