@@ -25,21 +25,27 @@ from discord import app_commands
 from sketch import config
 from sketch.champions.showdown_parser import ShowdownParseError, parse_showdown
 from sketch.commands._shared import (
+    GUILD_ONLY_ERROR,
+    UNCONFIGURED_GUILD_ERROR,
     _format_choices,
     _resolve_guild_sheets,
+    _with_trace,
 )
 from sketch.convert.converter import ConvertResult, convert_ots_to_cts
 from sketch.convert.ev_model import UnsupportedFormatError
 from sketch.convert.llm_guess import EvGuessError
 from sketch.logging_setup import trace_id_var
-from sketch.pokepaste.fetcher import PokepasteFetchError, fetch_pokepaste_raw
+from sketch.pokepaste.fetcher import PokepasteFetchError
 from sketch.pokepaste.renderer import (
     PokepasteUploadError,
     post_to_pokepaste,
     render_showdown,
 )
-from sketch.pokepaste.validator import ValidationError, is_pokepaste_url
+from sketch.pokepaste.validator import ValidationError
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
+from sketch.team import TeamData
+from sketch.teamsource import fetch_team_from_url
+from sketch.vrpaste.fetcher import VRPasteFetchError
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +54,24 @@ logger = logging.getLogger(__name__)
 _PASTE_INPUT_MAX = 4000
 
 
-def _source_summary(sources: list[str]) -> str:
-    """Build a one-line provenance note for the user-facing reply.
+def _source_summary(result: ConvertResult) -> str:
+    """Build the user-facing provenance reply.
 
-    E.g. "Trained 6 mons (4 from bank, 2 estimated)."
+    Returns a summary line plus a per-mon attribution block so the user
+    can see exactly which bank team each spread was sourced from.
+
+    Example:
+        Trained 6 mons (4 from bank, 1 estimated, 1 already trained).
+        • Venusaur — pokepast.es/abc123
+        • Charizard — estimated
+        • Garchomp — pokepast.es/def456
+        ...
     """
-    from_bank = sources.count("bank")
-    estimated = sources.count("estimated")
-    kept = sources.count("kept")
+    slots = result.slots
+
+    from_bank = sum(1 for s in slots if s.source.label == "bank")
+    estimated = sum(1 for s in slots if s.source.label == "estimated")
+    kept = sum(1 for s in slots if s.source.label == "kept")
 
     parts: list[str] = []
     if from_bank:
@@ -65,9 +81,21 @@ def _source_summary(sources: list[str]) -> str:
     if kept:
         parts.append(f"{kept} already trained")
 
-    total = len(sources)
+    total = len(slots)
     detail = ", ".join(parts) if parts else "0 matched"
-    return f"Trained {total} mons ({detail})."
+    headline = f"Trained {total} mons ({detail})."
+
+    lines = [headline]
+    for slot in slots:
+        name = slot.pokemon.species
+        if slot.source.label == "bank" and slot.source.url:
+            # Full URL so Discord renders it as a clickable hyperlink.
+            lines.append(f"• {name} — {slot.source.url}")
+        elif slot.source.label == "estimated":
+            lines.append(f"• {name} — estimated")
+        # "kept" mons are not listed to keep the reply concise.
+
+    return "\n".join(lines)
 
 
 async def _run_conversion(
@@ -76,16 +104,14 @@ async def _run_conversion(
     sheets: SheetsClient,
     fmt_name: str,
     sheet_name: str,
-    ots_text: str,
+    ots: TeamData,
     anthropic_client: anthropic.AsyncAnthropic,
 ) -> None:
-    """Core pipeline: parse → convert → render → mint → reply."""
-    try:
-        ots = parse_showdown(ots_text)
-    except ShowdownParseError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
-        return
+    """Core pipeline: convert → render → mint → reply.
 
+    Accepts an already-parsed `TeamData` so URL sources (Pokepaste and
+    VRPaste) and the modal text path all converge after OTS resolution.
+    """
     try:
         result: ConvertResult = await convert_ots_to_cts(
             ots,
@@ -95,20 +121,20 @@ async def _run_conversion(
             anthropic_client=anthropic_client,
         )
     except UnsupportedFormatError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
         return
     except EvGuessError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
         return
 
     paste_text = render_showdown(result.team)
     try:
         cts_url = await post_to_pokepaste(paste_text, title="OTS→CTS")
     except PokepasteUploadError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
         return
 
-    summary = _source_summary(result.sources)
+    summary = _source_summary(result)
     await interaction.followup.send(
         f"{summary}\n{cts_url}",
         ephemeral=True,
@@ -146,12 +172,17 @@ class _OtsPasteModal(discord.ui.Modal, title="Paste OTS Showdown text"):
         # visible while the conversion runs.
         await interaction.response.defer(ephemeral=True, thinking=True)
         ots_text = self.paste_input.value or ""
+        try:
+            ots = parse_showdown(ots_text)
+        except ShowdownParseError as exc:
+            await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
+            return
         await _run_conversion(
             interaction,
             sheets=self._sheets,
             fmt_name=self._fmt_name,
             sheet_name=self._sheet_name,
-            ots_text=ots_text,
+            ots=ots,
             anthropic_client=self._anthropic_client,
         )
 
@@ -166,14 +197,12 @@ def register(
 
     @tree.command(
         name="convert-ots",
-        description=(
-            "Fill in EVs for an Open Team Sheet and return a trained " "Pokepaste URL."
-        ),
+        description="Fill in EVs for an OTS team and return a trained Pokepaste URL.",
     )
     @app_commands.describe(
         format="Format/regulation (determines the EV regime)",
         url=(
-            "Pokepaste URL of the OTS (e.g. https://pokepast.es/abc123). "
+            "Pokepaste or VRPaste URL of the OTS. "
             "Omit to paste Showdown text directly."
         ),
     )
@@ -203,18 +232,18 @@ def register(
             if sheets is None:
                 return
 
-            if not is_pokepaste_url(url):
-                await interaction.followup.send(
-                    f"`{url}` doesn't look like a Pokepaste URL. "
-                    "Expected something like `https://pokepast.es/abc123`.",
-                    ephemeral=True,
-                )
-                return
-
+            # `fetch_team_from_url` classifies the URL and returns a parsed
+            # TeamData (or raises UnsupportedTeamUrlError, a ValidationError
+            # subclass, for an unrecognized URL).
             try:
-                ots_text = await fetch_pokepaste_raw(url)
-            except (PokepasteFetchError, ValidationError) as exc:
-                await interaction.followup.send(str(exc), ephemeral=True)
+                ots = await fetch_team_from_url(url)
+            except (
+                VRPasteFetchError,
+                PokepasteFetchError,
+                ValidationError,
+                ShowdownParseError,
+            ) as exc:
+                await interaction.followup.send(_with_trace(str(exc)), ephemeral=True)
                 return
 
             logger.info(
@@ -230,7 +259,7 @@ def register(
                 sheets=sheets,
                 fmt_name=fmt_name,
                 sheet_name=sheet_name,
-                ots_text=ots_text,
+                ots=ots,
                 anthropic_client=anthropic_client,
             )
             return
@@ -248,17 +277,14 @@ def register(
         guild_id = interaction.guild_id
         if guild_id is None:
             await interaction.response.send_message(
-                "This command can only be used inside a server.", ephemeral=True
+                _with_trace(GUILD_ONLY_ERROR), ephemeral=True
             )
             return
 
         sheets = registry.get(guild_id)
         if sheets is None:
             await interaction.response.send_message(
-                "This server isn't configured to use Sketch. A server admin "
-                "can run `/register-sheet` to set the Google Sheet this server "
-                "writes to.",
-                ephemeral=True,
+                _with_trace(UNCONFIGURED_GUILD_ERROR), ephemeral=True
             )
             return
 
