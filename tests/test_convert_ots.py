@@ -27,6 +27,12 @@ from sketch.convert.ev_model import (
     ev_model_for_format,
 )
 from sketch.convert.llm_guess import EvGuessError
+from sketch.convert.normalize import (
+    _form_from_item,
+    normalize_species,
+    normalize_team,
+)
+from sketch.search.dex import DexIndex
 from sketch.storage.sheets_client import SearchSnapshot, TeamRow
 from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
@@ -664,6 +670,256 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.sources[0], "bank")
         self.assertEqual(result.team.pokemon[1].evs, llm_spread)
         self.assertEqual(result.sources[1], "estimated")
+
+
+# ---------------------------------------------------------------------------
+# normalize tests
+# ---------------------------------------------------------------------------
+
+# A DEX fixture covering the form families exercised below. `Blastoise` is
+# intentionally present WITHOUT a `-Mega` form so the guard path is testable.
+_DEX = DexIndex(
+    [
+        "Charizard",
+        "Charizard-Mega-X",
+        "Charizard-Mega-Y",
+        "Venusaur",
+        "Venusaur-Mega",
+        "Blastoise",
+        "Groudon",
+        "Groudon-Primal",
+        "Giratina",
+        "Giratina-Origin",
+        "Dialga",
+        "Dialga-Origin",
+        "Zacian",
+        "Zacian-Crowned",
+        "Pikachu",
+        "Snorlax",
+        "Gengar",
+    ]
+)
+
+
+class TestFormFromItem(unittest.TestCase):
+    """The pure item→form rule layer, independent of any DEX."""
+
+    def test_mega_stone_no_variant(self) -> None:
+        self.assertEqual(_form_from_item("Venusaur", "Venusaurite"), "Venusaur-Mega")
+
+    def test_mega_stone_x_variant(self) -> None:
+        self.assertEqual(
+            _form_from_item("Charizard", "Charizardite X"), "Charizard-Mega-X"
+        )
+
+    def test_mega_stone_y_variant(self) -> None:
+        self.assertEqual(
+            _form_from_item("Charizard", "Charizardite Y"), "Charizard-Mega-Y"
+        )
+
+    def test_mega_stone_z_variant(self) -> None:
+        # Z follows the same shape as X/Y; the stem isn't parsed.
+        self.assertEqual(_form_from_item("Foo", "Fooite Z"), "Foo-Mega-Z")
+
+    def test_eviolite_is_not_a_mega_stone(self) -> None:
+        self.assertIsNone(_form_from_item("Chansey", "Eviolite"))
+
+    def test_primal_orbs(self) -> None:
+        self.assertEqual(_form_from_item("Groudon", "Red Orb"), "Groudon-Primal")
+        self.assertEqual(_form_from_item("Kyogre", "Blue Orb"), "Kyogre-Primal")
+
+    def test_origin_items(self) -> None:
+        self.assertEqual(_form_from_item("Giratina", "Griseous Orb"), "Giratina-Origin")
+        self.assertEqual(
+            _form_from_item("Giratina", "Griseous Core"), "Giratina-Origin"
+        )
+        self.assertEqual(_form_from_item("Dialga", "Adamant Crystal"), "Dialga-Origin")
+        self.assertEqual(_form_from_item("Palkia", "Lustrous Globe"), "Palkia-Origin")
+
+    def test_stat_boosting_orbs_are_not_form_items(self) -> None:
+        # The held `Adamant Orb` / `Lustrous Orb` boost moves; they must NOT
+        # be confused with the form-changing Crystal / Globe.
+        self.assertIsNone(_form_from_item("Dialga", "Adamant Orb"))
+        self.assertIsNone(_form_from_item("Palkia", "Lustrous Orb"))
+
+    def test_crowned_weapons(self) -> None:
+        self.assertEqual(_form_from_item("Zacian", "Rusted Sword"), "Zacian-Crowned")
+        self.assertEqual(
+            _form_from_item("Zamazenta", "Rusted Shield"), "Zamazenta-Crowned"
+        )
+
+    def test_no_item_returns_none(self) -> None:
+        self.assertIsNone(_form_from_item("Pikachu", None))
+        self.assertIsNone(_form_from_item("Pikachu", ""))
+
+    def test_ordinary_item_returns_none(self) -> None:
+        self.assertIsNone(_form_from_item("Pikachu", "Light Ball"))
+
+    def test_case_insensitive(self) -> None:
+        self.assertEqual(
+            _form_from_item("Charizard", "charizardite y"), "Charizard-Mega-Y"
+        )
+
+
+class TestNormalizeSpecies(unittest.TestCase):
+    """Item rules validated against the DEX guard."""
+
+    def test_mega_resolves_when_form_in_dex(self) -> None:
+        self.assertEqual(
+            normalize_species("Charizard", "Charizardite Y", _DEX), "Charizard-Mega-Y"
+        )
+
+    def test_single_mega_resolves(self) -> None:
+        self.assertEqual(
+            normalize_species("Venusaur", "Venusaurite", _DEX), "Venusaur-Mega"
+        )
+
+    def test_primal_resolves(self) -> None:
+        self.assertEqual(
+            normalize_species("Groudon", "Red Orb", _DEX), "Groudon-Primal"
+        )
+
+    def test_origin_resolves(self) -> None:
+        self.assertEqual(
+            normalize_species("Giratina", "Griseous Orb", _DEX), "Giratina-Origin"
+        )
+        self.assertEqual(
+            normalize_species("Dialga", "Adamant Crystal", _DEX), "Dialga-Origin"
+        )
+
+    def test_crowned_resolves(self) -> None:
+        self.assertEqual(
+            normalize_species("Zacian", "Rusted Sword", _DEX), "Zacian-Crowned"
+        )
+
+    def test_form_absent_from_dex_left_unchanged(self) -> None:
+        # `Blastoise` has no `-Mega` in the fixture, so the inferred form is
+        # rejected and the base name is kept.
+        self.assertEqual(
+            normalize_species("Blastoise", "Blastoisinite", _DEX), "Blastoise"
+        )
+
+    def test_eviolite_left_unchanged(self) -> None:
+        self.assertEqual(normalize_species("Charizard", "Eviolite", _DEX), "Charizard")
+
+    def test_no_item_left_unchanged(self) -> None:
+        self.assertEqual(normalize_species("Pikachu", None, _DEX), "Pikachu")
+
+    def test_already_a_form_left_unchanged(self) -> None:
+        self.assertEqual(
+            normalize_species("Charizard-Mega-Y", "Charizardite Y", _DEX),
+            "Charizard-Mega-Y",
+        )
+
+    def test_returns_canonical_casing(self) -> None:
+        self.assertEqual(
+            normalize_species("charizard", "Charizardite Y", _DEX), "Charizard-Mega-Y"
+        )
+
+    def test_unknown_species_left_unchanged(self) -> None:
+        self.assertEqual(
+            normalize_species("Missingno", "Missingnoite", _DEX), "Missingno"
+        )
+
+
+class TestNormalizeTeam(unittest.TestCase):
+    def test_resolves_species_and_preserves_other_fields(self) -> None:
+        target = _mon(
+            "Charizard", ability="Solar Power", item="Charizardite Y", nature="Timid"
+        )
+        team = _team(target, _mon("Pikachu"))
+        out = normalize_team(team, _DEX)
+        self.assertEqual(out.pokemon[0].species, "Charizard-Mega-Y")
+        # Non-species fields are untouched (item still carries the stone).
+        self.assertEqual(out.pokemon[0].item, target.item)
+        self.assertEqual(out.pokemon[0].ability, target.ability)
+        self.assertEqual(out.pokemon[1].species, "Pikachu")
+
+
+class TestFormNormalizationInConverter(unittest.IsolatedAsyncioTestCase):
+    async def _run(
+        self,
+        ots: TeamData,
+        *,
+        bank_teams: list[BankTeam] | None = None,
+        llm_spreads: list[dict] | None = None,
+        get_dex: AsyncMock | None = None,
+    ) -> converter_mod.ConvertResult:
+        sheets = AsyncMock()
+        sheets.get_dex = get_dex or AsyncMock(return_value=_DEX)
+        with patch(
+            "sketch.convert.converter.load_bank_teams",
+            new=AsyncMock(return_value=bank_teams or []),
+        ):
+            return await converter_mod.convert_ots_to_cts(
+                ots,
+                sheets=sheets,
+                sheet_name="Regulation M-A",
+                fmt_name="Reg M-A",
+                anthropic_client=_make_anthropic_client(llm_spreads),
+            )
+
+    async def test_premega_ots_matches_resolved_bank_team(self) -> None:
+        bank_spread = _evs(spa=32, spe=32)
+        ots = _team(
+            _mon(
+                "Charizard",
+                ability="Solar Power",
+                item="Charizardite Y",
+                nature="Timid",
+            ),
+            *[
+                _mon(s)
+                for s in ["Pikachu", "Snorlax", "Gengar", "Blastoise", "Venusaur"]
+            ],
+        )
+        bank = [
+            _bank_team(
+                "u",
+                _mon(
+                    "Charizard-Mega-Y",
+                    ability="Solar Power",
+                    item="Charizardite Y",
+                    nature="Timid",
+                    evs=bank_spread,
+                ),
+                *[
+                    _mon(s)
+                    for s in ["Pikachu", "Snorlax", "Gengar", "Blastoise", "Venusaur"]
+                ],
+            )
+        ]
+        result = await self._run(
+            ots,
+            bank_teams=bank,
+            llm_spreads=[{"slot": s, "evs": _zero_evs()} for s in range(2, 7)],
+        )
+        self.assertEqual(result.team.pokemon[0].species, "Charizard-Mega-Y")
+        self.assertEqual(result.team.pokemon[0].evs, bank_spread)
+        self.assertEqual(result.sources[0], "bank")
+
+    async def test_dex_failure_skips_normalization(self) -> None:
+        ots = _team(
+            _mon(
+                "Charizard",
+                ability="Solar Power",
+                item="Charizardite Y",
+                nature="Timid",
+            ),
+            *[
+                _mon(s)
+                for s in ["Pikachu", "Snorlax", "Gengar", "Blastoise", "Venusaur"]
+            ],
+        )
+        result = await self._run(
+            ots,
+            get_dex=AsyncMock(side_effect=RuntimeError("dex down")),
+            llm_spreads=[{"slot": s, "evs": _zero_evs()} for s in range(1, 7)],
+        )
+        # Normalization skipped: species stays as parsed and the mon falls
+        # through to the LLM estimator rather than failing the conversion.
+        self.assertEqual(result.team.pokemon[0].species, "Charizard")
+        self.assertEqual(result.sources[0], "estimated")
 
 
 if __name__ == "__main__":

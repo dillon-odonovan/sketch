@@ -45,10 +45,12 @@ class BankTeam:
 def _norm_species(name: str) -> str:
     """Casefold a species name for comparison.
 
-    Species in the OTS paste and in the sheet's species columns both
-    originate from the same Showdown render (e.g. `Charizard-Mega-Y`), so
-    a casefold compare is enough to align them — mirrors the matching in
-    `sketch.commands._shared._filter_team_rows`.
+    Both sides are canonical form names by the time they reach here — the
+    sheet's species columns come from the OCR render (e.g.
+    `Charizard-Mega-Y`), and the OTS species are resolved to the same form
+    by `sketch.convert.normalize.normalize_team` in the converter before
+    matching. So a casefold compare is enough to align them — mirrors the
+    matching in `sketch.commands._shared._filter_team_rows`.
     """
     return name.strip().lower()
 
