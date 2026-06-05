@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sketch.convert import converter as converter_mod
+from sketch.convert.bank import BankTeam
 from sketch.convert.ev_model import UnsupportedFormatError
 from sketch.convert.llm_guess import EvGuessError
 from sketch.team import STAT_KEYS, PokemonEntry, TeamData
@@ -147,8 +148,6 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_mixed_bank_and_llm_sources(self) -> None:
-        from sketch.convert.bank import BankTeam
-
         bank_spread = _evs(hp=4, spe=32)
         llm_spread = _evs(atk=32)
         bank_pikachu = _mon(

@@ -165,7 +165,15 @@ async def guess_ev_spreads(
 def _parse_spreads(
     tool_input: dict[str, Any], ev_model: EvModel
 ) -> dict[int, dict[str, int]]:
-    """Pull `{slot: evs}` out of the tool input, clamping defensively."""
+    """Pull ``{slot: evs}`` out of the tool input, clamping defensively.
+
+    Unlike bank spreads (which come from real teams the game already
+    constrains), LLM output can exceed the format's total budget — e.g.
+    the model might invest every stat at 32. Per-stat clamping runs first;
+    if the result still exceeds ``ev_model.max_total``, values are scaled
+    down proportionally so the returned spread is always a legal Champions
+    (or legacy) spread.
+    """
     out: dict[int, dict[str, int]] = {}
     for item in tool_input.get("spreads", []) or []:
         if not isinstance(item, dict):
@@ -175,11 +183,16 @@ def _parse_spreads(
         except (KeyError, TypeError, ValueError):
             continue
         raw = item.get("evs") or {}
-        evs = {
+        evs: dict[str, int] = {
             k: max(0, min(int(raw.get(k, 0) or 0), ev_model.max_per_stat))
             if isinstance(raw, dict)
             else 0
             for k in STAT_KEYS
         }
+        if ev_model.max_total is not None:
+            total = sum(evs.values())
+            if total > ev_model.max_total:
+                ratio = ev_model.max_total / total
+                evs = {k: int(v * ratio) for k, v in evs.items()}
         out[slot] = evs
     return out

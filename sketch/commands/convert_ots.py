@@ -25,6 +25,8 @@ from discord import app_commands
 from sketch import config
 from sketch.champions.showdown_parser import ShowdownParseError, parse_showdown
 from sketch.commands._shared import (
+    GUILD_ONLY_ERROR,
+    UNCONFIGURED_GUILD_ERROR,
     _format_choices,
     _resolve_guild_sheets,
     _with_trace,
@@ -249,17 +251,14 @@ def register(
         guild_id = interaction.guild_id
         if guild_id is None:
             await interaction.response.send_message(
-                "This command can only be used inside a server.", ephemeral=True
+                _with_trace(GUILD_ONLY_ERROR), ephemeral=True
             )
             return
 
         sheets = registry.get(guild_id)
         if sheets is None:
             await interaction.response.send_message(
-                "This server isn't configured to use Sketch. A server admin "
-                "can run `/register-sheet` to set the Google Sheet this server "
-                "writes to.",
-                ephemeral=True,
+                _with_trace(UNCONFIGURED_GUILD_ERROR), ephemeral=True
             )
             return
 

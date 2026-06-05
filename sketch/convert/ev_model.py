@@ -11,7 +11,7 @@ legacy format later is a registry entry, not a code change.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 
 from sketch.pokepaste.validator import ValidationError
@@ -55,7 +55,7 @@ class EvModel:
 
     label: str
     max_per_stat: int
-    max_total: int | None = field(default=None)
+    max_total: int | None = None
 
 
 # Champions: sparse spreads, 32 per stat, ~66 total. The per-stat cap lives
@@ -96,13 +96,22 @@ class UnsupportedFormatError(ValidationError):
 def ev_model_for_format(fmt_name: str) -> EvModel:
     """Return the `EvModel` for `fmt_name`, or raise `UnsupportedFormatError`.
 
-    Accepts a plain ``str`` or a ``Format`` member (they compare equal via
-    ``StrEnum``). Raises ``UnsupportedFormatError`` if `fmt_name` has no
-    registered regime — a fail-loud guard against silently converting under
-    the wrong cap when a new format is added to `config.FORMAT_SHEETS`.
+    Accepts a plain ``str`` or a ``Format`` member. ``Format(fmt_name)``
+    performs the ``StrEnum`` coercion so the dict lookup is fully typed;
+    a ``ValueError`` from an unrecognised string is caught and re-raised
+    as ``UnsupportedFormatError`` — a fail-loud guard against silently
+    converting under the wrong cap when a new format is added to
+    `config.FORMAT_SHEETS`.
     """
-    model = FORMAT_EV_MODELS.get(fmt_name)  # type: ignore[call-overload]
+    try:
+        key = Format(fmt_name)
+    except ValueError:
+        raise UnsupportedFormatError(
+            f"`{fmt_name}` isn't supported by /convert-ots yet."
+        ) from None
+    model = FORMAT_EV_MODELS.get(key)
     if model is None:
+        # Format member exists but has no EvModel wired up — registry gap.
         raise UnsupportedFormatError(
             f"`{fmt_name}` isn't supported by /convert-ots yet."
         )
