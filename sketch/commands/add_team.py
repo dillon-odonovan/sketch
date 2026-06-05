@@ -41,7 +41,6 @@ from sketch.champions.extractor import (
 from sketch.champions.preview_view import ReplicaPreviewView
 from sketch.champions.replica_cache import ReplicaCacheEntry, ReplicaCacheStore
 from sketch.champions.replica_validator import normalize_replica
-from sketch.champions.showdown_parser import extract_species
 from sketch.commands._shared import (
     GENERIC_CACHE_READ_ERROR,
     GENERIC_CACHE_WRITE_ERROR,
@@ -57,16 +56,14 @@ from sketch.commands._shared import (
 )
 from sketch.logging_setup import trace_id_var
 from sketch.pokepaste.fetcher import PokepasteFetchError, fetch_pokepaste_raw
-from sketch.pokepaste.renderer import (
-    PokepasteUploadError,
-    post_to_pokepaste,
-    render_showdown,
-)
+from sketch.pokepaste.uploader import PokepasteUploadError, post_to_pokepaste
 from sketch.pokepaste.validator import (
     ValidationError,
     canonicalize_pokepaste_url,
     validate_pokepaste_url,
 )
+from sketch.showdown.parser import extract_species
+from sketch.showdown.renderer import render_showdown
 from sketch.storage.guild_config import GuildConfigStore
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
 from sketch.team import TeamData

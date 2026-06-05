@@ -1,7 +1,7 @@
 """Parse a Showdown / PokePaste export back into a TeamData.
 
-Strict inverse of `render_showdown` in `pokepaste_renderer` — accepts the
-same line-oriented format the renderer emits, plus reasonable variations
+Strict inverse of `render_showdown` in `sketch.showdown.renderer` — accepts
+the same line-oriented format the renderer emits, plus reasonable variations
 (LF or CRLF line endings, case-insensitive stat labels, lenient spacing
 around `@`). Used by the `/add-team` Edit flow to round-trip a
 user-edited paste back into the structured `TeamData` the cache writer
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 
-from sketch.champions.extractor import _NATURE_MAP, _NEUTRAL_NATURE
+from sketch.natures import NATURE_MAP, NEUTRAL_NATURE
 from sketch.team import CHAMPIONS_EV_MAX_PER_STAT, STAT_KEYS, PokemonEntry, TeamData
 
 
@@ -34,9 +34,9 @@ class ShowdownParseError(Exception):
 
 
 # Single source of truth for the canonical nature names this bot will
-# accept and emit. Derived from `_NATURE_MAP` so renderer and parser
+# accept and emit. Derived from `NATURE_MAP` so renderer and parser
 # never drift on which set of natures is supported.
-_VALID_NATURES: frozenset[str] = frozenset(_NATURE_MAP.values()) | {_NEUTRAL_NATURE}
+_VALID_NATURES: frozenset[str] = frozenset(NATURE_MAP.values()) | {NEUTRAL_NATURE}
 
 # Stat-label -> internal key. Renderer emits `HP / Atk / Def / SpA / SpD /
 # Spe`; we accept any case so a user typing `hp` or `ATK` round-trips
@@ -231,7 +231,7 @@ def _parse_block(block: str, slot: int, max_ev_per_stat: int) -> PokemonEntry:
 def _parse_species_header(line: str, slot: int) -> tuple[str, str | None, str | None]:
     """Pull species / gender / item out of the first line of a block.
 
-    Header shape (from `pokepaste_renderer._render_mon`):
+    Header shape (from `sketch.showdown.renderer._render_mon`):
         `{species}[ ({M|F})][ @ {item}]`
 
     `_SPECIES_HEADER_RE` carves all three fields in one anchored match —

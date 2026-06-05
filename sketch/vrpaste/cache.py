@@ -50,7 +50,7 @@ class VRPasteCacheEntry:
     """One cached VRPaste id -> Pokepaste URL mapping.
 
     `pokepaste_url` is the canonical (https, no trailing slash) form
-    that `sketch.pokepaste.renderer.post_to_pokepaste` returns after
+    that `sketch.pokepaste.uploader.post_to_pokepaste` returns after
     `canonicalize_pokepaste_url`. Always set — unlike the Champions
     replica cache, we don't allow None URLs because there's no
     multi-step flow to recover from; the cache is only written *after*

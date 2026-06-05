@@ -8,7 +8,7 @@ the same slot order:
     carry arrow indicators — a red ↑ on the nature-boosted stat and a blue ↓
     on the nature-reduced stat. The nature itself is never spelled out; we
     resolve it deterministically from those two arrow positions via
-    `_NATURE_MAP` below.
+    `NATURE_MAP` (in `sketch.natures`).
 
 Pokemon Champions uses a much smaller EV pool than mainline Pokemon — totals
 around 66 EVs across all six stats, max 32 per stat — so the schema caps at
@@ -47,6 +47,7 @@ from typing import Any
 import anthropic
 
 from sketch import config
+from sketch.natures import NATURE_MAP, NEUTRAL_NATURE
 from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
 logger = logging.getLogger(__name__)
@@ -77,40 +78,6 @@ _SHOWDOWN_STAT_KEY = {
     "Speed": "spe",
 }
 
-# (boosted_stat, reduced_stat) -> canonical nature name. Mirrors the table
-# in the user's reference build_pokepaste.py exactly; the deterministic
-# 20-entry mapping is the only safe way to translate the share-screen
-# arrows since the screen never spells the nature out.
-_NATURE_MAP: dict[tuple[str, str], str] = {
-    ("Attack", "Defense"): "Lonely",
-    ("Attack", "Sp. Atk"): "Adamant",
-    ("Attack", "Sp. Def"): "Naughty",
-    ("Attack", "Speed"): "Brave",
-    ("Defense", "Attack"): "Bold",
-    ("Defense", "Sp. Atk"): "Impish",
-    ("Defense", "Sp. Def"): "Lax",
-    ("Defense", "Speed"): "Relaxed",
-    ("Sp. Atk", "Attack"): "Modest",
-    ("Sp. Atk", "Defense"): "Mild",
-    ("Sp. Atk", "Sp. Def"): "Rash",
-    ("Sp. Atk", "Speed"): "Quiet",
-    ("Sp. Def", "Attack"): "Calm",
-    ("Sp. Def", "Defense"): "Gentle",
-    ("Sp. Def", "Sp. Atk"): "Careful",
-    ("Sp. Def", "Speed"): "Sassy",
-    ("Speed", "Attack"): "Timid",
-    ("Speed", "Defense"): "Hasty",
-    ("Speed", "Sp. Atk"): "Jolly",
-    ("Speed", "Sp. Def"): "Naive",
-}
-
-# "Serious" is the canonical Showdown / PokePaste neutral — by convention,
-# pastes that didn't specify a nature use Serious, while Hardy implies the
-# mon was actually drawn from in-game wild encounters with a Hardy nature.
-# Our extractor sees "no arrows" on the share screen, which carries no
-# information either way, so the canonical-neutral output is the honest one.
-_NEUTRAL_NATURE = "Serious"
-
 
 def _resolve_nature(boosted: str | None, reduced: str | None) -> str:
     """Translate share-screen arrow indicators into the canonical nature name.
@@ -120,8 +87,8 @@ def _resolve_nature(boosted: str | None, reduced: str | None) -> str:
     no-explicit-nature output.
     """
     if boosted is None or reduced is None or boosted == reduced:
-        return _NEUTRAL_NATURE
-    return _NATURE_MAP.get((boosted, reduced), _NEUTRAL_NATURE)
+        return NEUTRAL_NATURE
+    return NATURE_MAP.get((boosted, reduced), NEUTRAL_NATURE)
 
 
 # --- JSON schema for the submit_team tool ----------------------------------

@@ -18,7 +18,7 @@ from sketch.champions.preview_view import (
     ReplicaPreviewView,
     team_to_embed,
 )
-from sketch.pokepaste.renderer import render_showdown
+from sketch.showdown.renderer import render_showdown
 from sketch.team import PokemonEntry, TeamData
 
 
@@ -164,7 +164,7 @@ class TestTeamToEmbed:
         # The species line in the rendered paste should be just "Klefki".
         # The rendered paste uses CRLF line endings (required by
         # pokepast.es' block-splitter — see _LINE_END in
-        # pokepaste_renderer) while the surrounding embed code fence
+        # sketch.showdown.renderer) while the surrounding embed code fence
         # uses LF, so the assertion targets the species line bounded by
         # the code fence on the LF side and the next CRLF-terminated
         # line on the other.

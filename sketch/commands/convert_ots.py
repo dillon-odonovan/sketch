@@ -23,7 +23,6 @@ import discord
 from discord import app_commands
 
 from sketch import config
-from sketch.champions.showdown_parser import ShowdownParseError, parse_showdown
 from sketch.commands._shared import (
     GUILD_ONLY_ERROR,
     UNCONFIGURED_GUILD_ERROR,
@@ -36,12 +35,10 @@ from sketch.convert.ev_model import UnsupportedFormatError
 from sketch.convert.llm_guess import EvGuessError
 from sketch.logging_setup import trace_id_var
 from sketch.pokepaste.fetcher import PokepasteFetchError
-from sketch.pokepaste.renderer import (
-    PokepasteUploadError,
-    post_to_pokepaste,
-    render_showdown,
-)
+from sketch.pokepaste.uploader import PokepasteUploadError, post_to_pokepaste
 from sketch.pokepaste.validator import ValidationError
+from sketch.showdown.parser import ShowdownParseError, parse_showdown
+from sketch.showdown.renderer import render_showdown
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
 from sketch.team import TeamData
 from sketch.teamsource import fetch_team_from_url
