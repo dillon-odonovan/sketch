@@ -13,10 +13,13 @@ Stage 1 — nature gate:
 
 Stage 2 — ranking (within the selected pool):
   Rank by a single lexicographic key so the comparator lives in one place:
-    1. ability match                (highest-precedence set signal)
-    2. item match
-    3. move-overlap count           (desc)
-    4. team-composition overlap     (desc — more of the OTS's six mons on
+    1. known-stat matches           (count of the target's pinned stats the
+                                     candidate honors — an established stat
+                                     outranks any inferred set signal)
+    2. ability match
+    3. item match
+    4. move-overlap count           (desc)
+    5. team-composition overlap     (desc — more of the OTS's six mons on
                                      the source team ⇒ more representative)
 
 Frequency tiebreak:
@@ -79,15 +82,40 @@ class _Candidate:
     url: str  # Pokepaste URL of the bank team this entry came from
 
 
-def _score(target: PokemonEntry, cand: _Candidate) -> tuple[int, int, int, int]:
+def _known_match(
+    cand: _Candidate, pins: dict[str, int] | None, ev_model: EvModel
+) -> int:
+    """Count the pinned stats this candidate's clamped spread satisfies.
+
+    `pins` are stats already established for the target (lifted from the
+    partial EVs on its paste). A higher count means the candidate honors
+    more known facts; it is the highest-precedence scoring element so a
+    spread that contradicts a broadcast-confirmed stat loses to one that
+    matches it, even when its ability/item/moves look better.
+    """
+    if not pins:
+        return 0
+    clamped = _clamp(cand.entry.evs, ev_model)
+    return sum(1 for k, v in pins.items() if clamped.get(k) == v)
+
+
+def _score(
+    target: PokemonEntry,
+    cand: _Candidate,
+    pins: dict[str, int] | None,
+    ev_model: EvModel,
+) -> tuple[int, int, int, int, int]:
     """Lexicographic ranking key (higher is better) for one candidate.
 
     Nature is not part of this key — it is handled as a pool gate before
     scoring runs, so all candidates in the pool have already cleared the
     nature filter (or nature matching is being skipped as a fallback).
+    Known-stat matches lead the key: an established stat is stronger
+    evidence than any inferred set signal.
     """
     target_moves = _move_set(target.moves)
     return (
+        _known_match(cand, pins, ev_model),
         int(_norm(cand.entry.ability) == _norm(target.ability)),
         int(_norm(cand.entry.item) == _norm(target.item)),
         len(target_moves & _move_set(cand.entry.moves)),
@@ -114,12 +142,20 @@ def choose_evs(
     bank_teams: list[BankTeam],
     ots_species: set[str],
     ev_model: EvModel,
+    pins: dict[str, int] | None = None,
 ) -> EvChoice | None:
     """Return the best bank spread for `target`, or None if no bank match.
 
     `ots_species` is the normalized set of the OTS's species (used to
     compute each candidate team's composition overlap). The returned
     spread is clamped to `ev_model.max_per_stat` per stat.
+
+    `pins` are stats already known for the target (its non-zero paste
+    EVs). When given, candidates honoring more pins rank highest, biasing
+    selection toward spreads consistent with the known stats. This is a
+    soft preference, not a filter: if no candidate honors a pin, the best
+    available spread is still returned (the caller treats the result as
+    best-effort).
 
     Returns None when:
     - No bank team contains a Pokemon of the same species, OR
@@ -158,8 +194,8 @@ def choose_evs(
     pool = same_nature if same_nature else trained_candidates
     nature_gated = bool(same_nature)
 
-    best_key = max(_score(target, c) for c in pool)
-    top = [c for c in pool if _score(target, c) == best_key]
+    best_key = max(_score(target, c, pins, ev_model) for c in pool)
+    top = [c for c in pool if _score(target, c, pins, ev_model) == best_key]
 
     # Frequency tiebreak: count the most common *full spread* (6-tuple) among
     # the top candidates. Picks the consensus spread rather than a one-off;
@@ -181,8 +217,9 @@ def choose_evs(
         None,
     )
 
-    ability_ok, item_ok, move_overlap, overlap = best_key
+    known_ok, ability_ok, item_ok, move_overlap, overlap = best_key
     detail = (
+        f"pins_matched={known_ok}/{len(pins or {})} "
         f"nature_gated={nature_gated} ability={'y' if ability_ok else 'n'} "
         f"item={'y' if item_ok else 'n'} moves={move_overlap} "
         f"composition={overlap} (from {len(trained_candidates)} trained "

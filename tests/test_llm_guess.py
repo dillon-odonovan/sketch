@@ -6,8 +6,13 @@ import unittest
 from typing import Any
 
 from sketch.convert.ev_model import CHAMPIONS
-from sketch.convert.llm_guess import _parse_spreads, _trim_to_budget
-from sketch.team import STAT_KEYS
+from sketch.convert.llm_guess import (
+    _describe,
+    _parse_spreads,
+    _system_prompt,
+    _trim_to_budget,
+)
+from sketch.team import STAT_KEYS, PokemonEntry
 
 
 def _evs(**kwargs: int) -> dict[str, int]:
@@ -51,6 +56,14 @@ class TestTrimToBudget(unittest.TestCase):
             self.assertGreaterEqual(v, 0)
             self.assertLessEqual(v, 32)
 
+    def test_protected_stat_not_trimmed(self) -> None:
+        # hp is the smallest stat but pinned — the trim must take the
+        # excess from an unprotected stat instead, leaving hp intact.
+        evs = _evs(hp=4, atk=32, spe=32)  # 68, two over budget
+        result = _trim_to_budget(evs, 66, protected={"hp"})
+        self.assertEqual(result["hp"], 4)
+        self.assertEqual(sum(result.values()), 66)
+
 
 class TestParseSpreads(unittest.TestCase):
     """_parse_spreads should respect inclusive bounds and trim correctly."""
@@ -91,6 +104,46 @@ class TestParseSpreads(unittest.TestCase):
         result = _parse_spreads(tool, CHAMPIONS)
         total = sum(result[1].values())
         self.assertLessEqual(total, CHAMPIONS.max_total)
+
+    def test_pinned_stat_protected_during_trim(self) -> None:
+        # hp=4 is the smallest stat but pinned for this slot; the over-budget
+        # trim should preserve it and cut an unpinned stat instead.
+        tool = {"spreads": [self._spread(hp=4, atk=32, spe=32)]}  # 68
+        result = _parse_spreads(tool, CHAMPIONS, pins_by_slot={1: {"hp": 4}})
+        self.assertEqual(result[1]["hp"], 4)
+        self.assertLessEqual(sum(result[1].values()), CHAMPIONS.max_total)
+
+
+def _mon(**kwargs: Any) -> PokemonEntry:
+    base: dict[str, Any] = {
+        "species": "Pikachu",
+        "gender": None,
+        "item": "Light Ball",
+        "ability": "Static",
+        "nature": "Timid",
+        "evs": {k: 0 for k in STAT_KEYS},
+        "moves": ["Thunderbolt"],
+    }
+    base.update(kwargs)
+    return PokemonEntry(**base)
+
+
+class TestDescribe(unittest.TestCase):
+    def test_no_pins_omits_known_evs(self) -> None:
+        line = _describe(1, _mon())
+        self.assertNotIn("Known EVs", line)
+
+    def test_pins_rendered_with_display_names(self) -> None:
+        line = _describe(1, _mon(), pins={"hp": 32, "spe": 16})
+        self.assertIn("Known EVs (fixed, keep exactly):", line)
+        self.assertIn("HP=32", line)
+        self.assertIn("Spe=16", line)
+
+
+class TestSystemPrompt(unittest.TestCase):
+    def test_mentions_fixed_known_evs(self) -> None:
+        prompt = _system_prompt("Reg M-A", CHAMPIONS)
+        self.assertIn("Known EVs (fixed)", prompt)
 
 
 if __name__ == "__main__":

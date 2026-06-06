@@ -4,15 +4,19 @@ Coordinates `bank`, `ev_matcher`, and `llm_guess` into a finished
 `TeamData` with EVs assigned.
 
 Flow per Pokemon:
-  1. Already trained (any non-zero EV) → keep as-is (`"kept"`).
-  2. Bank match → copy the chosen spread (`"bank"`).
-  3. No bank match → batch with other unmatched mons for one LLM call
-     (`"estimated"`).
+  1. Complete spread (EVs already sum to the format budget) → keep as-is
+     (`"kept"`).
+  2. Otherwise fill the missing stats, pinning any non-zero EVs already on
+     the paste as known constraints (e.g. an HP total read off the
+     broadcast, a speed tier confirmed in-game):
+       a. Bank match → copy the chosen spread, biased toward the pins
+          (`"bank"`).
+       b. No bank match → batch with other unmatched mons for one LLM call
+          that pins the known stats (`"estimated"`).
 
-# TODO(issue #52): accept per-mon known-stat hints (e.g. confirmed HP
-# from broadcast/spectator mode, speed tier from in-game interactions)
-# to pin or bias the chosen spread rather than treating every untracked
-# stat as fully unknown.
+Pins are best-effort: selection/generation is biased toward honoring them,
+but a chosen spread is never overwritten. `SlotSource.pinned` records which
+pinned stats the final spread actually honors.
 """
 
 from __future__ import annotations
@@ -41,14 +45,17 @@ _ZERO_EVS = {k: 0 for k in STAT_KEYS}
 class SlotSource:
     """Where one slot's EV spread came from.
 
-    `label` is the coarse provenance — "kept" (already trained), "bank"
-    (lifted from a bank team), or "estimated" (LLM fallback). `url` is the
-    Pokepaste URL of the bank team the spread was lifted from, or None for
-    estimated/kept slots.
+    `label` is the coarse provenance — "kept" (already a complete spread),
+    "bank" (lifted from a bank team), or "estimated" (LLM fallback). `url`
+    is the Pokepaste URL of the bank team the spread was lifted from, or
+    None for estimated/kept slots. `pinned` lists the stat keys that were
+    pinned from the paste's partial EVs and that the final spread honors
+    (empty when nothing was pinned, e.g. a blank OTS mon or a kept spread).
     """
 
     label: str
     url: str | None = None
+    pinned: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -87,9 +94,10 @@ async def convert_ots_to_cts(
     Parameters
     ----------
     ots:
-        The parsed OTS team. Pokemon with all-zero EVs are treated as
-        needing spreads; Pokemon already carrying non-zero EVs (i.e. the
-        caller passed a CTS) are left untouched.
+        The parsed OTS team. Pokemon whose EVs already sum to the format
+        budget are left untouched. Pokemon with no EVs get a full spread;
+        Pokemon with a *partial* spread keep their non-zero stats pinned as
+        known constraints and have the remaining stats filled in.
     sheets / sheet_name:
         The guild's `SheetsClient` and the sheet tab to mine for
         candidates. `load_bank_teams` is best-effort — a fetch failure
@@ -130,21 +138,40 @@ async def convert_ots_to_cts(
         sheets, sheet_name, ots_species, ev_model
     )
 
-    # First pass: match from the bank; collect unmatched slots for LLM.
+    # First pass: classify each mon, match the fillable ones from the bank,
+    # and collect what's left for the LLM. `pins_per_slot` is index-aligned
+    # with `ots.pokemon`; `pins_by_slot` carries pins (1-based) to the LLM.
     choices: list[EvChoice | None] = []
-    unmatched_entries: list[tuple[int, object]] = []  # (1-based slot, PokemonEntry)
+    pins_per_slot: list[dict[str, int] | None] = []
+    unmatched_entries: list[tuple[int, PokemonEntry]] = []
+    pins_by_slot: dict[int, dict[str, int]] = {}
 
     for slot, mon in enumerate(ots.pokemon, start=1):
-        # Already trained: preserve the existing spread.
-        if any(v != 0 for v in mon.evs.values()):
+        # A spread is "complete" once its EVs reach the format budget (or
+        # there's no zero stat left to fill). Such mons are real CTS input —
+        # preserve them verbatim. Without a known budget (unwired format) any
+        # non-zero spread is treated as complete, matching prior behavior.
+        nonzero = {k: v for k, v in mon.evs.items() if v != 0}
+        total = sum(nonzero.values())
+        complete = (
+            ev_model.max_total is None
+            or total >= ev_model.max_total
+            or all(mon.evs.get(k, 0) != 0 for k in STAT_KEYS)
+        )
+        if nonzero and complete:
             choices.append(
                 EvChoice(
-                    evs=dict(mon.evs), source="kept", detail="non-zero EVs in input"
+                    evs=dict(mon.evs), source="kept", detail="complete spread in input"
                 )
             )
+            pins_per_slot.append(None)
             continue
 
-        choice = choose_evs(mon, bank_teams, ots_species, ev_model)
+        # Blank mon → no pins; partial mon → pin its non-zero stats.
+        pins = nonzero or None
+        pins_per_slot.append(pins)
+
+        choice = choose_evs(mon, bank_teams, ots_species, ev_model, pins=pins)
         if choice is not None:
             logger.info(
                 "EV match for %s (slot %d): %s", mon.species, slot, choice.detail
@@ -153,8 +180,11 @@ async def convert_ots_to_cts(
         else:
             choices.append(None)
             unmatched_entries.append((slot, mon))
+            if pins:
+                pins_by_slot[slot] = pins
 
-    # Second pass: LLM for unmatched mons (one batched call).
+    # Second pass: LLM for unmatched mons (one batched call), pinning each
+    # slot's known stats so the guess builds around them.
     guessed: dict[int, dict[str, int]] = {}
     if unmatched_entries:
         logger.info(
@@ -168,23 +198,32 @@ async def convert_ots_to_cts(
             fmt_name=fmt_name,
             ev_model=ev_model,
             model=llm_model,
+            pins_by_slot=pins_by_slot,
         )
 
     # Build the trained team: each slot pairs the EV-filled Pokemon with
-    # the provenance of its spread.
+    # the provenance of its spread and the pinned stats it honors.
     slots: list[ConvertedSlot] = []
 
-    for slot, (mon, choice) in enumerate(
-        zip(ots.pokemon, choices, strict=False), start=1
-    ):
+    for idx, (mon, choice) in enumerate(zip(ots.pokemon, choices, strict=False)):
+        slot = idx + 1
+        pins = pins_per_slot[idx]
         if choice is not None:
-            source = SlotSource(label=choice.source, url=choice.source_url)
-            trained_mon = dataclasses.replace(mon, evs=choice.evs)
+            evs = choice.evs
+            label = choice.source
+            url = choice.source_url
         else:
             evs = guessed.get(slot, _ZERO_EVS.copy())
             logger.info("EV guess for %s (slot %d): %s", mon.species, slot, evs)
-            source = SlotSource(label="estimated")
-            trained_mon = dataclasses.replace(mon, evs=evs)
+            label = "estimated"
+            url = None
+        pinned = (
+            tuple(k for k in STAT_KEYS if k in pins and evs.get(k) == pins[k])
+            if pins
+            else ()
+        )
+        source = SlotSource(label=label, url=url, pinned=pinned)
+        trained_mon = dataclasses.replace(mon, evs=evs)
         slots.append(ConvertedSlot(pokemon=trained_mon, source=source))
 
     return ConvertResult(slots=slots, team_id=ots.team_id)
