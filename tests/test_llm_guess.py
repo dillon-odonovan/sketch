@@ -163,12 +163,12 @@ class TestSystemPrompt(unittest.TestCase):
         self.assertIn("Timid", prompt)
         self.assertIn("Speed", prompt)
 
-    def test_warns_against_singles_style_spreads(self) -> None:
-        # Doubles/VGC framing: discourage the singles 252/252 (here 32/32)
-        # two-maxed-stats pattern.
+    def test_discourages_thin_and_maxed_extremes(self) -> None:
+        # Steer between the two failure modes: a thin sprinkle across every
+        # stat, and a mechanical two-stats-maxed singles spread.
         prompt = _system_prompt("Reg M-A", CHAMPIONS)
-        self.assertIn("252/252", prompt)
-        self.assertIn("not singles", prompt)
+        self.assertIn("0 is normal", prompt)  # leaving stats empty is fine
+        self.assertIn("max two stats", prompt)  # but don't mechanically max two
 
 
 if __name__ == "__main__":
