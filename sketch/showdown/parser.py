@@ -72,6 +72,17 @@ _ABILITY_RE = re.compile(r"^Ability:\s*(?P<ability>.+?)\s*$")
 _EVS_RE = re.compile(r"^EVs:\s*(?P<body>.+?)\s*$")
 _MOVE_RE = re.compile(r"^-\s*(?P<move>.+?)\s*$")
 
+# Informational lines emitted by Showdown / PokePaste exports that the
+# Champions format doesn't model (see the renderer's docstring: no
+# Tera Type / Level / IVs). We skip them in the header section rather than
+# erroring, so a standard VGC/OTS paste (e.g. reportworm's "Copy" output)
+# round-trips. Kept as an explicit allowlist — unrecognized lines still
+# surface as an error so typos in Ability/EVs/Nature aren't silently lost.
+_IGNORED_LINE_RE = re.compile(
+    r"^(?:Level|Tera Type|IVs|Shiny|Happiness|Gigantamax|Dynamax Level|Pokeball)\s*:",
+    re.IGNORECASE,
+)
+
 # Trailing marker on a nature line, e.g. `Modest Nature`. We locate the
 # line by suffix match (`endswith _NATURE_SUFFIX`) rather than regex so
 # the lookup is obvious — the nature name is whatever sits before it,
@@ -175,6 +186,9 @@ def _parse_block(block: str, slot: int, max_ev_per_stat: int) -> PokemonEntry:
         if line.startswith("-"):
             break
 
+        if _IGNORED_LINE_RE.match(line):
+            idx += 1
+            continue
         if (m := _ABILITY_RE.match(line)) and ability is None:
             ability = m.group("ability").strip()
         elif (m := _EVS_RE.match(line)) and evs is None:
