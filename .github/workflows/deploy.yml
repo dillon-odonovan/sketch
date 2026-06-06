@@ -108,6 +108,13 @@ jobs:
           # deploy instead of silently going green: a pull that can't extract
           # (full disk), a service that won't come up, or — the bug this guards
           # against — a container still running a stale image after restart.
+          #
+          # Heredoc pattern: `<<'REMOTE'` / `REMOTE` passes the lines between
+          # the two markers as stdin to `bash -seuo pipefail` on the remote
+          # host over the SSH session that --command opens. Single-quoting the
+          # delimiter ('REMOTE') prevents the GitHub Actions runner from
+          # expanding $-variables locally — they're resolved on the VM instead,
+          # after CURRENT_IMAGE is injected into the remote environment.
           gcloud compute ssh "$VM_NAME" \
             --zone="$VM_ZONE" \
             --tunnel-through-iap \
