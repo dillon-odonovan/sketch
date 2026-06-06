@@ -203,8 +203,9 @@ async def convert_ots_to_cts(
     # the provenance of its spread and the pinned stats it honors.
     slots: list[ConvertedSlot] = []
 
-    for idx, (mon, choice) in enumerate(zip(ots.pokemon, choices, strict=False)):
-        slot = idx + 1
+    for slot, (mon, choice) in enumerate(
+        zip(ots.pokemon, choices, strict=False), start=1
+    ):
         pins = pins_by_slot.get(slot)
         if choice is not None:
             evs = choice.evs
