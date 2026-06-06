@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from discord import app_commands
+
+from sketch import config
+from sketch.commands import convert_ots
 from sketch.commands.convert_ots import _source_summary
 from sketch.convert.converter import ConvertedSlot, ConvertResult, SlotSource
-from sketch.team import STAT_KEYS, PokemonEntry
+from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
 
 def _zero_evs() -> dict[str, int]:
@@ -99,6 +104,75 @@ class TestSourceSummary(unittest.TestCase):
         r, _ = _result([])
         out = _source_summary(r)
         self.assertIn("0 matched", out)
+
+
+def _capture_convert_ots_callback(registry, anthropic_client):
+    """Register `/convert-ots` on a stub tree and return the raw callback.
+
+    The real `@app_commands.choices` / `@app_commands.describe` decorators run
+    against the coroutine and return it unchanged; the stub `tree.command`
+    captures it so the handler body can be invoked directly.
+    """
+    captured: dict[str, object] = {}
+
+    class _Tree:
+        def command(self, **_kwargs):
+            def deco(fn):
+                captured["fn"] = fn
+                return fn
+
+            return deco
+
+    convert_ots.register(_Tree(), registry, anthropic_client=anthropic_client)
+    return captured["fn"]
+
+
+class TestConvertOtsVRPasteRouting:
+    """The URL path must route a VRPaste URL through the shared dispatcher.
+
+    Regression guard: an earlier convert-ots validated the input as a
+    Pokepaste URL and rejected VRPaste links with "doesn't look like a
+    Pokepaste URL". The handler now defers to `fetch_team_from_url`, which
+    classifies and fetches both sources.
+    """
+
+    async def test_vrpaste_url_is_fetched_and_converted(self) -> None:
+        registry = MagicMock()
+        anthropic_client = MagicMock()
+        callback = _capture_convert_ots_callback(registry, anthropic_client)
+
+        interaction = MagicMock()
+        interaction.user.id = 111
+        interaction.guild_id = 222
+        interaction.response.defer = AsyncMock()
+        interaction.followup.send = AsyncMock()
+
+        fmt_name = next(iter(config.FORMAT_SHEETS))
+        choice = app_commands.Choice(name=fmt_name, value=fmt_name)
+
+        ots = TeamData(pokemon=[_mon(f"Mon{i}") for i in range(6)])
+        url = "https://www.vrpastes.com/rHYxiZMf"
+        sheets = MagicMock()
+
+        with (
+            patch.object(
+                convert_ots, "_resolve_guild_sheets", AsyncMock(return_value=sheets)
+            ),
+            patch.object(
+                convert_ots, "fetch_team_from_url", AsyncMock(return_value=ots)
+            ) as fetch,
+            patch.object(convert_ots, "_run_conversion", AsyncMock()) as run,
+        ):
+            await callback(interaction, choice, url=url)
+
+        # The VRPaste URL goes through the shared classifier/fetcher, not a
+        # Pokepaste-only validator, and flows into the conversion pipeline.
+        fetch.assert_awaited_once_with(url)
+        run.assert_awaited_once()
+        assert run.call_args.kwargs["ots"] is ots
+        # No user-facing validation error was emitted.
+        interaction.followup.send.assert_not_called()
+        interaction.response.defer.assert_awaited_once()
 
 
 if __name__ == "__main__":
