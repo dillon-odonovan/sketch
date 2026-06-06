@@ -155,11 +155,20 @@ class TestSystemPrompt(unittest.TestCase):
         self.assertIn("Known EVs (fixed)", prompt)
 
     def test_directs_investment_in_nature_boosted_stat(self) -> None:
-        # The prompt must steer the model toward investing in the stat the
-        # nature boosts (the Froslass under-investment fix).
+        # The prompt must steer the model toward the nature-boosted stat and,
+        # in particular, real Speed for speed-boosting natures (the Hydreigon
+        # / Froslass under-investment fix).
         prompt = _system_prompt("Reg M-A", CHAMPIONS)
         self.assertIn("nature boosts", prompt)
-        self.assertIn("Special Attack", prompt)
+        self.assertIn("Timid", prompt)
+        self.assertIn("Speed", prompt)
+
+    def test_warns_against_singles_style_spreads(self) -> None:
+        # Doubles/VGC framing: discourage the singles 252/252 (here 32/32)
+        # two-maxed-stats pattern.
+        prompt = _system_prompt("Reg M-A", CHAMPIONS)
+        self.assertIn("252/252", prompt)
+        self.assertIn("not singles", prompt)
 
 
 if __name__ == "__main__":

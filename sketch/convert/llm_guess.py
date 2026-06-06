@@ -37,45 +37,52 @@ def _system_prompt(fmt_name: str, ev_model: EvModel) -> str:
     max_s = ev_model.max_per_stat
     max_t = ev_model.max_total
     if max_t is not None:
-        # Remainder after maxing two stats — the third stat in the bare
-        # fallback spread (e.g. 2/32/32 = 66 for Champions). This is only a
-        # last resort; real spreads are tuned to benchmarks, so we lead with
-        # role/nature guidance and demote the two-maxed-stats shape to a
-        # fallback rather than presenting it as the norm.
-        third = max_t - 2 * max_s
+        # Budget guidance without concrete numbers: spelling out a "two stats
+        # at max" example anchors the model on the singles-style 252/252
+        # (here 32/32) spread we are trying to steer it away from.
         budget_note = (
             f"The six values must sum to exactly {max_t} — a hard, fixed "
-            f"budget, not an approximation; spend all of it. Real spreads are "
-            f"tuned to specific benchmarks, so they are rarely just two maxed "
-            f"stats: weigh the Pokemon's role and moves first. Only when "
-            f"nothing more specific is implied, fall back to two stats at "
-            f"{max_s} plus the remaining {third} on a third — a special "
-            f"attacker as {third} HP / {max_s} SpA / {max_s} Spe, a physical "
-            f"attacker as {third} HP / {max_s} Atk / {max_s} Spe = {max_t}. "
+            f"budget, not an approximation; spend all of it. With only {max_t} "
+            f"points and a per-stat cap of {max_s}, distribute them across the "
+            f"stats the set actually needs rather than dumping everything into "
+            f"one or two stats and leaving the rest at 0. "
         )
     else:
         budget_note = (
-            "Real spreads are tuned to specific benchmarks, so weigh the "
-            "Pokemon's role and moves rather than reflexively maxing two "
-            "stats. "
+            "Distribute EVs across the stats the set actually needs rather "
+            "than dumping everything into one or two stats. "
         )
     return (
         "You are a competitive Pokemon team builder assigning EV spreads for "
-        f"the VGC / doubles (bring-6, pick-4) format {fmt_name}. You are given "
-        "each Pokemon's species, ability, held item, nature, and moves, but "
-        "its EVs are unknown. Return a plausible, competitively sensible EV "
-        "spread for each Pokemon, tuned to its role, moves, and likely "
-        "benchmarks. Almost always invest in the stat its nature boosts "
-        "(+Atk wants Attack, +SpA wants Special Attack, +Spe wants Speed): a "
-        "+nature with no investment in the boosted stat is usually a mistake. "
-        "Rare benchmark-driven exceptions exist, but they are the exception, "
-        "not the default.\n\n"
+        f"the VGC / doubles (bring-6, pick-4) format {fmt_name}. This is "
+        "DOUBLES (VGC), not singles: do NOT reach for singles-style spreads "
+        "that pour everything into two stats (the 252/252 pattern, or its "
+        "equivalent under this format's budget). Real VGC spreads are bulkier "
+        "and benchmark-driven — they balance offense, Speed control, and "
+        "survivability (HP + defenses) across several stats.\n\n"
+        "You are given each Pokemon's species, ability, held item, nature, "
+        "and moves, but its EVs are unknown. Return a plausible, competitively "
+        "sensible spread for each, tuned to its role and moves:\n"
+        "- Invest meaningfully in the stat its nature boosts. A speed-boosting "
+        "nature (Jolly, Timid, Hasty, Naive) signals real Speed investment — "
+        "give Speed substantial EVs, NOT leftovers, even when the moves point "
+        "at an attacking stat (a Timid special attacker still wants Speed, not "
+        "just Special Attack). An attack-boosting nature (Adamant, Modest, "
+        "Brave, Quiet) wants its attacking stat. Neglecting the nature-boosted "
+        "stat is almost always a mistake.\n"
+        "- A defensive or support Pokemon — few or no attacking moves, or a "
+        "supportive item/ability/movepool (e.g. Tailwind, Protect, screens, "
+        "redirection) — wants bulk (HP + Def/SpD), not maxed offense, even if "
+        "its nature boosts an attacking stat.\n"
+        "- Don't pour the whole budget into a single offensive stat; spread it "
+        "across the stats the set genuinely needs.\n\n"
         f"This format uses '{ev_model.label}'. Each stat takes an integer from "
         f"0 to {max_s} inclusive. "
         f"{budget_note}"
         "If a Pokemon lists 'Known EVs (fixed)', those stats are already "
         "confirmed — keep them at exactly those values and spend the rest of "
-        "the budget on the remaining stats, favoring the nature-boosted stat. "
+        "the budget on the remaining stats, prioritizing the nature-boosted "
+        "stat and the set's role. "
         "Call submit_spreads with one entry per Pokemon slot."
     )
 
