@@ -100,25 +100,39 @@ jobs:
             "${{ steps.tags.outputs.source_image }}" \
             "${{ vars.GCP_ARTIFACT_REPO }}/bot:current"
 
-      - name: Restart sketch service on the VM
+      - name: Pull, restart, and verify the running image on the VM
+        env:
+          CURRENT_IMAGE: ${{ vars.GCP_ARTIFACT_REPO }}/bot:current
         run: |
+          # One SSH session under `set -euo pipefail`, so any failure fails the
+          # deploy instead of silently going green: a pull that can't extract
+          # (full disk), a service that won't come up, or — the bug this guards
+          # against — a container still running a stale image after restart.
           gcloud compute ssh "$VM_NAME" \
             --zone="$VM_ZONE" \
             --tunnel-through-iap \
-            --command="sudo systemctl restart sketch"
-
-      - name: Wait for service to settle
-        run: sleep 15
-
-      - name: Smoke check service is active
-        run: |
-          STATUS=$(gcloud compute ssh "$VM_NAME" \
-            --zone="$VM_ZONE" \
-            --tunnel-through-iap \
-            --command="sudo systemctl is-active sketch" \
-            --quiet)
-          echo "Service status: $STATUS"
-          test "$STATUS" = "active"
+            --quiet \
+            --command="CURRENT_IMAGE='$CURRENT_IMAGE' bash -seuo pipefail" <<'REMOTE'
+          echo "Disk before:"; df -h / | tail -n1
+          # Explicit, non-best-effort pull: a failed pull (e.g. "no space left on
+          # device") aborts here rather than falling back to the cached image the
+          # way the unit's best-effort ExecStartPre pull does on cold boot.
+          sudo docker pull "$CURRENT_IMAGE"
+          sudo systemctl restart sketch
+          sleep 15
+          test "$(sudo systemctl is-active sketch)" = "active"
+          # Verify the container actually runs the image we just pulled, not a
+          # stale cached one. Compare image IDs (exact, tag-independent).
+          EXPECTED_ID=$(sudo docker image inspect --format='{{.Id}}' "$CURRENT_IMAGE")
+          RUNNING_ID=$(sudo docker inspect --format='{{.Image}}' sketch)
+          echo "Expected image: $EXPECTED_ID"
+          echo "Running image:  $RUNNING_ID"
+          test "$RUNNING_ID" = "$EXPECTED_ID"
+          # Reclaim disk so accumulated :sha- images can't fill the boot disk and
+          # break the next deploy's pull.
+          sudo docker image prune -af
+          echo "Disk after:"; df -h / | tail -n1
+          REMOTE
 
       - name: Report deploy result
         if: always()
