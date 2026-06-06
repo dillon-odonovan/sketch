@@ -9,6 +9,7 @@ from sketch.convert import converter as converter_mod
 from sketch.convert.bank import BankTeam
 from sketch.convert.ev_model import UnsupportedFormatError
 from sketch.convert.llm_guess import EvGuessError
+from sketch.convert.usage_priors import SpreadEntry, UsagePriors
 from sketch.search.dex import DexIndex
 from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
@@ -89,9 +90,14 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         llm_spreads: list[dict] | None = None,
     ) -> converter_mod.ConvertResult:
         sheets = AsyncMock()
-        with patch(
-            "sketch.convert.converter.load_bank_teams",
-            new=AsyncMock(return_value=bank_teams or []),
+        # The usage-stats tier (Tier 2) is exercised in TestUsageTier; here it
+        # is patched off so these tests isolate the bank → LLM behavior.
+        with (
+            patch(
+                "sketch.convert.converter.load_bank_teams",
+                new=AsyncMock(return_value=bank_teams or []),
+            ),
+            patch("sketch.convert.converter.load_usage_priors", return_value=None),
         ):
             return await converter_mod.convert_ots_to_cts(
                 ots,
@@ -138,9 +144,12 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         )
         ots = _ots(_mon("Pikachu", evs=_evs(hp=32)), *[_mon(s) for s in _FILLERS])
         sheets = AsyncMock()
-        with patch(
-            "sketch.convert.converter.load_bank_teams",
-            new=AsyncMock(return_value=[]),
+        with (
+            patch(
+                "sketch.convert.converter.load_bank_teams",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("sketch.convert.converter.load_usage_priors", return_value=None),
         ):
             await converter_mod.convert_ots_to_cts(
                 ots,
@@ -292,6 +301,111 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result.slots[1].source.url)
 
 
+class TestUsageTier(unittest.IsolatedAsyncioTestCase):
+    """Tier 2 (Showdown usage stats) sits between the bank and the LLM."""
+
+    @staticmethod
+    def _priors(
+        *species: str,
+        nature: str = "Timid",
+        evs: dict[str, int] | None = None,
+        weight: float = 50.0,
+    ) -> UsagePriors:
+        evs = evs or _evs(spa=32, spe=32)
+        return UsagePriors(
+            spreads={
+                s.lower(): [SpreadEntry(nature=nature, evs=dict(evs), weight=weight)]
+                for s in species
+            }
+        )
+
+    async def _run(
+        self,
+        ots: TeamData,
+        *,
+        bank_teams: list | None = None,
+        usage_priors: UsagePriors | None = None,
+        client: MagicMock | None = None,
+    ) -> tuple[converter_mod.ConvertResult, MagicMock]:
+        sheets = AsyncMock()
+        client = client or _make_anthropic_client()
+        with (
+            patch(
+                "sketch.convert.converter.load_bank_teams",
+                new=AsyncMock(return_value=bank_teams or []),
+            ),
+            patch(
+                "sketch.convert.converter.load_usage_priors",
+                return_value=usage_priors,
+            ),
+        ):
+            result = await converter_mod.convert_ots_to_cts(
+                ots,
+                sheets=sheets,
+                sheet_name="Regulation M-A",
+                fmt_name="Reg M-A",
+                anthropic_client=client,
+            )
+        return result, client
+
+    async def test_usage_fills_when_bank_empty_and_llm_not_called(self) -> None:
+        # All six species are in the usage priors → every slot is filled from
+        # usage stats and the LLM is never invoked.
+        priors = self._priors("Pikachu", *_FILLERS)
+        result, client = await self._run(_SIX_FILLER_OTS, usage_priors=priors)
+        self.assertTrue(all(s.source.label == "usage" for s in result.slots))
+        self.assertTrue(all(s.source.confidence == "high" for s in result.slots))
+        self.assertEqual(result.team.pokemon[0].evs, _evs(spa=32, spe=32))
+        client.messages.create.assert_not_called()
+
+    async def test_usage_miss_falls_through_to_llm(self) -> None:
+        # No OTS species is in the priors → the usage tier returns None and
+        # every mon falls through to the LLM.
+        priors = self._priors("Raichu")
+        client = _make_anthropic_client(_all_llm_spreads(_evs(atk=32)))
+        result, client = await self._run(
+            _SIX_FILLER_OTS, usage_priors=priors, client=client
+        )
+        self.assertTrue(all(s.source.label == "estimated" for s in result.slots))
+        client.messages.create.assert_called_once()
+
+    async def test_bank_takes_precedence_over_usage(self) -> None:
+        # A bank match wins even when usage priors also cover the species.
+        bank_spread = _evs(hp=4, spe=32)
+        bank_team = BankTeam(
+            url="https://pokepast.es/test",
+            team=TeamData(
+                pokemon=[
+                    _mon(
+                        "Pikachu",
+                        nature="Timid",
+                        ability="Static",
+                        item="Light Ball",
+                        evs=bank_spread,
+                    ),
+                    *[_mon(s) for s in _FILLERS],
+                ]
+            ),
+        )
+        priors = self._priors("Pikachu", *_FILLERS)
+        ots = _ots(
+            _mon("Pikachu", nature="Timid", ability="Static", item="Light Ball"),
+            *[_mon(s) for s in _FILLERS],
+        )
+        result, _ = await self._run(ots, bank_teams=[bank_team], usage_priors=priors)
+        self.assertEqual(result.slots[0].source.label, "bank")
+        self.assertEqual(result.team.pokemon[0].evs, bank_spread)
+
+    async def test_usage_skipped_when_no_artifact(self) -> None:
+        # load_usage_priors returning None (no committed artifact) reduces to
+        # the prior behavior: bank → LLM.
+        client = _make_anthropic_client(_all_llm_spreads(_evs(spe=32)))
+        result, client = await self._run(
+            _SIX_FILLER_OTS, usage_priors=None, client=client
+        )
+        self.assertTrue(all(s.source.label == "estimated" for s in result.slots))
+
+
 _FORM_DEX = DexIndex(
     [
         "Charizard",
@@ -320,9 +434,12 @@ class TestFormNormalizationInConverter(unittest.IsolatedAsyncioTestCase):
     ) -> converter_mod.ConvertResult:
         sheets = AsyncMock()
         sheets.get_dex = get_dex or AsyncMock(return_value=_FORM_DEX)
-        with patch(
-            "sketch.convert.converter.load_bank_teams",
-            new=AsyncMock(return_value=bank_teams or []),
+        with (
+            patch(
+                "sketch.convert.converter.load_bank_teams",
+                new=AsyncMock(return_value=bank_teams or []),
+            ),
+            patch("sketch.convert.converter.load_usage_priors", return_value=None),
         ):
             return await converter_mod.convert_ots_to_cts(
                 ots,

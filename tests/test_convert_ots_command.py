@@ -35,16 +35,19 @@ def _result(
     source_urls: list[str | None] | None = None,
     species: list[str] | None = None,
     pinned: list[tuple[str, ...]] | None = None,
+    confidence: list[str | None] | None = None,
 ) -> tuple[ConvertResult, list[str]]:
     n = len(sources)
     sp = species or [f"Mon{i}" for i in range(n)]
     urls = source_urls or [None] * n
     pins = pinned or [()] * n
+    conf = confidence or [None] * n
     slots = [
         ConvertedSlot(
-            pokemon=_mon(name), source=SlotSource(label=label, url=url, pinned=pin)
+            pokemon=_mon(name),
+            source=SlotSource(label=label, url=url, pinned=pin, confidence=c),
         )
-        for name, label, url, pin in zip(sp, sources, urls, pins, strict=True)
+        for name, label, url, pin, c in zip(sp, sources, urls, pins, conf, strict=True)
     ]
     return ConvertResult(slots=slots), sp
 
@@ -103,6 +106,17 @@ class TestSourceSummary(unittest.TestCase):
         self.assertIn("https://pokepast.es/a2", out)
         self.assertIn("https://pokepast.es/a3", out)
         self.assertIn("• Garchomp — estimated", out)
+
+    def test_usage_rendered_with_confidence(self) -> None:
+        r, _ = _result(
+            ["usage", "usage"],
+            species=["Incineroar", "Rillaboom"],
+            confidence=["high", "low"],
+        )
+        out = _source_summary(r)
+        self.assertIn("2 from usage stats", out)
+        self.assertIn("• Incineroar — usage stats (high)", out)
+        self.assertIn("• Rillaboom — usage stats (low)", out)
 
     def test_empty(self) -> None:
         r, _ = _result([])

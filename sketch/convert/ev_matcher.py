@@ -64,17 +64,20 @@ class EvChoice:
     """A chosen EV spread plus where it came from.
 
     `source` is the coarse provenance for the user-facing summary
-    (`"bank"` here; the converter uses `"estimated"` for LLM guesses and
-    `"kept"` for already-trained mons). `source_url` is the Pokepaste URL
-    of the bank team the spread was lifted from (None for non-bank
-    sources). `detail` is a short log-only note on how strong the match
-    was.
+    (`"bank"` here; the converter uses `"usage"` for the usage-stats tier,
+    `"estimated"` for LLM guesses, and `"kept"` for already-trained mons).
+    `source_url` is the Pokepaste URL of the bank team the spread was lifted
+    from (None for non-bank sources). `detail` is a short log-only note on
+    how strong the match was. `confidence` is a coarse band ("high" /
+    "medium" / "low") surfaced to the user for tiers that estimate rather
+    than copy a spread; None when no band applies.
     """
 
     evs: dict[str, int]
     source: str
     detail: str
     source_url: str | None = None
+    confidence: str | None = None
 
 
 def _norm(value: str | None) -> str:
