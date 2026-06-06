@@ -373,10 +373,10 @@ class TestChooseEvsClamping(unittest.TestCase):
 
 
 class TestChooseEvsPins(unittest.TestCase):
-    def test_pin_outranks_better_set_match(self) -> None:
+    def test_pin_excludes_better_set_match(self) -> None:
         # Candidate A: perfect ability/item/move match but contradicts the
-        # HP pin. Candidate B: weaker set signal but honors the pin. The
-        # pin leads the ranking key, so B wins.
+        # HP pin. Candidate B: weaker set signal but honors the pin. The pin
+        # is a hard filter, so A is excluded and B wins.
         target = _mon("Pikachu", ability="Static", item="Light Ball", evs=_evs(hp=32))
         cand_a = _mon("Pikachu", ability="Static", item="Light Ball", evs=_evs(spe=32))
         cand_b = _mon(
@@ -392,16 +392,35 @@ class TestChooseEvsPins(unittest.TestCase):
         self.assertEqual(result.evs["hp"], 32)
         self.assertEqual(result.source_url, "u_b")
 
-    def test_no_honoring_candidate_still_returns_best(self) -> None:
-        # When nothing honors the pin, selection falls back to the best
-        # available spread (best-effort — the caller won't mark it pinned).
+    def test_no_honoring_candidate_returns_none(self) -> None:
+        # Pins are confirmed ground truth: when no candidate honors the pin,
+        # there is no valid bank match, so choose_evs returns None and the
+        # caller falls back to the LLM (which keeps the pin).
         target = _mon("Pikachu", evs=_evs(hp=32))
         cand = _mon("Pikachu", evs=_evs(spe=32))
         bank = [_bank_team("u", cand)]
-        result = _choose(target, bank, pins={"hp": 32})
+        self.assertIsNone(_choose(target, bank, pins={"hp": 32}))
+
+    def test_partial_pin_match_excluded(self) -> None:
+        # Two pins (hp + spe). A candidate honoring only one is excluded;
+        # only a candidate honoring *all* pins is eligible.
+        target = _mon("Pikachu", evs=_evs(hp=32, spe=16))
+        partial = _mon("Pikachu", item="Focus Sash", evs=_evs(hp=32, spe=32))
+        full = _mon("Pikachu", item="Choice Scarf", evs=_evs(hp=32, atk=18, spe=16))
+        bank = [_bank_team("u_partial", partial), _bank_team("u_full", full)]
+        result = _choose(target, bank, pins={"hp": 32, "spe": 16})
         assert result is not None
-        self.assertEqual(result.evs, _evs(spe=32))
-        self.assertEqual(result.evs["hp"], 0)
+        self.assertEqual(result.source_url, "u_full")
+        self.assertEqual(result.evs["hp"], 32)
+        self.assertEqual(result.evs["spe"], 16)
+
+    def test_no_candidate_honors_all_pins_returns_none(self) -> None:
+        # Each candidate honors one pin but not both → none eligible → None.
+        target = _mon("Pikachu", evs=_evs(hp=32, spe=16))
+        only_hp = _mon("Pikachu", evs=_evs(hp=32, spe=32))
+        only_spe = _mon("Pikachu", evs=_evs(hp=8, spe=16))
+        bank = [_bank_team("u_hp", only_hp), _bank_team("u_spe", only_spe)]
+        self.assertIsNone(_choose(target, bank, pins={"hp": 32, "spe": 16}))
 
 
 if __name__ == "__main__":

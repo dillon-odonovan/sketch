@@ -113,6 +113,15 @@ class TestParseSpreads(unittest.TestCase):
         self.assertEqual(result[1]["hp"], 4)
         self.assertLessEqual(sum(result[1].values()), CHAMPIONS.max_total)
 
+    def test_pin_value_enforced_when_model_violates_it(self) -> None:
+        # Pins are confirmed ground truth: even if the model returns a
+        # different value for a pinned stat, _parse_spreads overlays the pin
+        # and re-trims the rest so the output honors it exactly.
+        tool = {"spreads": [self._spread(hp=0, atk=32, spe=32)]}  # ignores HP pin
+        result = _parse_spreads(tool, CHAMPIONS, pins_by_slot={1: {"hp": 32}})
+        self.assertEqual(result[1]["hp"], 32)
+        self.assertLessEqual(sum(result[1].values()), CHAMPIONS.max_total)
+
 
 def _mon(**kwargs: Any) -> PokemonEntry:
     base: dict[str, Any] = {
@@ -144,6 +153,22 @@ class TestSystemPrompt(unittest.TestCase):
     def test_mentions_fixed_known_evs(self) -> None:
         prompt = _system_prompt("Reg M-A", CHAMPIONS)
         self.assertIn("Known EVs (fixed)", prompt)
+
+    def test_directs_investment_in_nature_boosted_stat(self) -> None:
+        # The prompt must steer the model toward the nature-boosted stat and,
+        # in particular, real Speed for speed-boosting natures (the Hydreigon
+        # / Froslass under-investment fix).
+        prompt = _system_prompt("Reg M-A", CHAMPIONS)
+        self.assertIn("nature boosts", prompt)
+        self.assertIn("Timid", prompt)
+        self.assertIn("Speed", prompt)
+
+    def test_discourages_thin_and_maxed_extremes(self) -> None:
+        # Steer between the two failure modes: a thin sprinkle across every
+        # stat, and a mechanical two-stats-maxed singles spread.
+        prompt = _system_prompt("Reg M-A", CHAMPIONS)
+        self.assertIn("0 is normal", prompt)  # leaving stats empty is fine
+        self.assertIn("max two stats", prompt)  # but don't mechanically max two
 
 
 if __name__ == "__main__":

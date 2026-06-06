@@ -2,7 +2,15 @@
 
 Pure, side-effect-free scoring over the candidate `BankTeam`s loaded by
 `sketch.convert.bank`. Given one target OTS Pokemon, gather every bank
-Pokemon of the same species and select the best EV spread in two stages:
+Pokemon of the same species and select the best EV spread:
+
+Pin gate (hard filter):
+  Pins are confirmed stats (lifted from the target's partial paste EVs —
+  e.g. an HP total read off a broadcast). A candidate is eligible only if
+  its clamped spread honors *every* pin; one that contradicts a confirmed
+  stat is a different EV configuration and is excluded, not merely
+  down-ranked. If no candidate honors all pins, `choose_evs` returns None
+  and the caller falls back to the LLM (which keeps the pins exactly).
 
 Stage 1 — nature gate:
   Prefer candidates whose nature matches the OTS mon's nature (same stat
@@ -14,8 +22,10 @@ Stage 1 — nature gate:
 Stage 2 — ranking (within the selected pool):
   Rank by a single lexicographic key so the comparator lives in one place:
     1. known-stat matches           (count of the target's pinned stats the
-                                     candidate honors — an established stat
-                                     outranks any inferred set signal)
+                                     candidate honors; after the pin gate this
+                                     is constant — every candidate honors all
+                                     pins — and only differentiates when there
+                                     are no pins)
     2. ability match
     3. item match
     4. move-overlap count           (desc)
@@ -88,10 +98,10 @@ def _known_match(
     """Count the pinned stats this candidate's clamped spread satisfies.
 
     `pins` are stats already established for the target (lifted from the
-    partial EVs on its paste). A higher count means the candidate honors
-    more known facts; it is the highest-precedence scoring element so a
-    spread that contradicts a broadcast-confirmed stat loses to one that
-    matches it, even when its ability/item/moves look better.
+    partial EVs on its paste). `choose_evs` uses this as a hard pin gate —
+    only candidates honoring *all* pins (count == len(pins)) stay eligible —
+    so by the time the result feeds the ranking key the count is constant.
+    It remains in the key for the no-pins path, where it is uniformly 0.
     """
     if not pins:
         return 0
@@ -151,16 +161,17 @@ def choose_evs(
     spread is clamped to `ev_model.max_per_stat` per stat.
 
     `pins` are stats already known for the target (its non-zero paste
-    EVs). When given, candidates honoring more pins rank highest, biasing
-    selection toward spreads consistent with the known stats. This is a
-    soft preference, not a filter: if no candidate honors a pin, the best
-    available spread is still returned (the caller treats the result as
-    best-effort).
+    EVs), treated as confirmed ground truth. They act as a hard filter:
+    only candidates whose clamped spread honors *every* pin are eligible.
+    A spread that contradicts a confirmed stat is excluded outright, so a
+    returned bank spread always honors all pins.
 
     Returns None when:
     - No bank team contains a Pokemon of the same species, OR
     - All same-species bank entries have zero EVs (stored as OTS pastes,
-      not useful for CTS conversion — fall through to the LLM instead).
+      not useful for CTS conversion — fall through to the LLM instead), OR
+    - No same-species candidate honors all of the pins (fall through to the
+      LLM, which keeps the pins exactly).
     """
     target_species = _norm_species(target.species)
     all_candidates: list[_Candidate] = []
@@ -185,6 +196,24 @@ def choose_evs(
     ]
     if not trained_candidates:
         return None
+
+    # Pin gate: pins are confirmed ground truth (a stat read off the
+    # broadcast). A candidate is eligible only if its clamped spread honors
+    # *every* pinned stat — a spread that contradicts a confirmed stat is a
+    # different EV configuration, so it is excluded outright rather than
+    # down-ranked. This is per-Pokemon: a bank team that overlaps on other
+    # species still loses its candidacy *for this mon* if its spread for this
+    # mon disagrees with a pin. If nothing honors all pins, return None so the
+    # caller falls back to the LLM (which keeps the pins exactly).
+    if pins:
+        pin_consistent = [
+            c
+            for c in trained_candidates
+            if _known_match(c, pins, ev_model) == len(pins)
+        ]
+        if not pin_consistent:
+            return None
+        trained_candidates = pin_consistent
 
     # Stage 1: gate by nature. Prefer same-nature candidates; fall back to
     # all candidates if none exist with the matching nature.

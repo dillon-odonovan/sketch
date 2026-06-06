@@ -37,38 +37,56 @@ def _system_prompt(fmt_name: str, ev_model: EvModel) -> str:
     max_s = ev_model.max_per_stat
     max_t = ev_model.max_total
     if max_t is not None:
-        # Remainder after maxing two stats — the third stat in the
-        # canonical default spread (e.g. 2/32/32 = 66 for Champions). The
-        # per-stat cap plus the exact-total budget already force a sparse
-        # spread, so we don't tell the model how many stats to invest in.
-        third = max_t - 2 * max_s
+        # Concentration guidance, no concrete spread numbers: naming a "two
+        # stats at max" example anchors the singles 252/252 (here 32/32)
+        # shape, while telling the model to "fill every stat" makes it
+        # sprinkle wasted single-digit EVs. The budget is small, so stress
+        # concentrating on the few stats that matter.
         budget_note = (
             f"The six values must sum to exactly {max_t} — a hard, fixed "
-            f"budget, not an approximation; spend all of it. Distribute it the "
-            f"way a strong VGC player would for this Pokemon's role and moves; "
-            f"when nothing more specific is implied, two stats at {max_s} plus "
-            f"the remaining {third} on a third (e.g. {third} HP / {max_s} Atk / "
-            f"{max_s} Spe = {max_t}) is a sensible default. "
+            f"budget, not an approximation; spend all of it. {max_t} points "
+            f"is a small budget (per-stat cap {max_s}), so concentrate it on "
+            f"the two or three stats that matter for the set; a few points "
+            f"dropped into a stat are wasted. "
         )
     else:
         budget_note = (
-            "Distribute EVs the way a strong VGC player would for this "
-            "Pokemon's role and moves. "
+            "Concentrate EVs on the few stats the set actually uses rather "
+            "than spreading them thin across stats that don't need them. "
         )
     return (
         "You are a competitive Pokemon team builder assigning EV spreads for "
         f"the VGC / doubles (bring-6, pick-4) format {fmt_name}. You are given "
         "each Pokemon's species, ability, held item, nature, and moves, but "
-        "its EVs are unknown. Return a plausible, competitively sensible EV "
-        "spread for each Pokemon, consistent with its nature (invest in the "
-        "stats the nature and moves imply — e.g. a physical attacker with a "
-        f"+Spe nature wants Attack and Speed).\n\n"
+        "its EVs are unknown. Return a plausible, competitively sensible "
+        "spread for each, tuned to its role and moves.\n\n"
+        "Spread shape:\n"
+        "- Invest purposefully in the FEW stats the set actually uses — "
+        "usually two or three — in chunks big enough to matter. Leaving the "
+        "other stats at 0 is normal and correct.\n"
+        "- Do NOT sprinkle small leftover EVs across stats that don't need "
+        "them: a handful of points (single digits) rarely moves a stat enough "
+        "to matter, so fold them into a stat that does.\n"
+        "- Equally, do NOT mechanically max two stats and ignore the rest; let "
+        "the role and moves decide which stats earn investment.\n\n"
+        "Which stats:\n"
+        "- Always give real investment to the stat the nature boosts. A "
+        "speed-boosting nature (Jolly, Timid, Hasty, Naive) wants substantial "
+        "Speed — not leftovers — even when the moves point at an attacking "
+        "stat (a Timid special attacker still wants Speed, not just Special "
+        "Attack). An attack-boosting nature (Adamant, Modest, Brave, Quiet) "
+        "wants its attacking stat.\n"
+        "- A defensive or support Pokemon — few or no attacking moves, or a "
+        "supportive item/ability/movepool (Tailwind, Protect, screens, "
+        "redirection) — wants bulk (HP + Def/SpD) over offense, even if its "
+        "nature boosts an attacking stat.\n\n"
         f"This format uses '{ev_model.label}'. Each stat takes an integer from "
         f"0 to {max_s} inclusive. "
         f"{budget_note}"
         "If a Pokemon lists 'Known EVs (fixed)', those stats are already "
         "confirmed — keep them at exactly those values and spend the rest of "
-        "the budget on the remaining stats. "
+        "the budget on the stats that matter most for the set, prioritizing "
+        "the nature-boosted stat and the role. "
         "Call submit_spreads with one entry per Pokemon slot."
     )
 
@@ -277,9 +295,14 @@ def _parse_spreads(
             else 0
             for k in STAT_KEYS
         }
+        # Pins are confirmed ground truth — overlay them onto the model's
+        # spread so a disobedient value is corrected, not merely shielded from
+        # the trim. Overlaying before the trim lets `_trim_to_budget` account
+        # for the pinned totals while protecting the pins themselves.
+        pins = pins_by_slot.get(slot, {})
+        for k, v in pins.items():
+            evs[k] = max(0, min(int(v), ev_model.max_per_stat))
         if ev_model.max_total is not None:
-            evs = _trim_to_budget(
-                evs, ev_model.max_total, protected=set(pins_by_slot.get(slot, {}))
-            )
+            evs = _trim_to_budget(evs, ev_model.max_total, protected=set(pins))
         out[slot] = evs
     return out
