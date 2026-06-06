@@ -17,6 +17,18 @@ from dataclasses import dataclass
 
 STAT_KEYS = ("hp", "atk", "def", "spa", "spd", "spe")
 
+# Display capitalization for each stat key (the canonical Showdown EV-line
+# tags). Shared by the Showdown renderer and the `/convert-ots` provenance
+# summary so both spell stats the same way ("SpA", not "spa").
+STAT_DISPLAY = {
+    "hp": "HP",
+    "atk": "Atk",
+    "def": "Def",
+    "spa": "SpA",
+    "spd": "SpD",
+    "spe": "Spe",
+}
+
 # Per-stat EV cap for Pokemon Champions formats (Reg M-A, M-B, …). Mainline
 # VGC formats cap at 252; that difference is what the format-driven `EvModel`
 # in `sketch.convert.ev_model` exists to express. This constant is the single

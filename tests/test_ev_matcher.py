@@ -53,10 +53,11 @@ def _choose(
     bank_teams: list[BankTeam],
     ots_species: set[str] | None = None,
     ev_model: EvModel = CHAMPIONS,
+    pins: dict[str, int] | None = None,
 ) -> EvChoice | None:
     if ots_species is None:
         ots_species = {_norm_species(target.species)}
-    return choose_evs(target, bank_teams, ots_species, ev_model)
+    return choose_evs(target, bank_teams, ots_species, ev_model, pins=pins)
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +370,38 @@ class TestChooseEvsClamping(unittest.TestCase):
         assert result is not None
         for v in result.evs.values():
             self.assertLessEqual(v, CHAMPIONS.max_per_stat)
+
+
+class TestChooseEvsPins(unittest.TestCase):
+    def test_pin_outranks_better_set_match(self) -> None:
+        # Candidate A: perfect ability/item/move match but contradicts the
+        # HP pin. Candidate B: weaker set signal but honors the pin. The
+        # pin leads the ranking key, so B wins.
+        target = _mon("Pikachu", ability="Static", item="Light Ball", evs=_evs(hp=32))
+        cand_a = _mon("Pikachu", ability="Static", item="Light Ball", evs=_evs(spe=32))
+        cand_b = _mon(
+            "Pikachu",
+            ability="Lightning Rod",
+            item="Focus Sash",
+            moves=["Tackle"],
+            evs=_evs(hp=32, spe=32),
+        )
+        bank = [_bank_team("u_a", cand_a), _bank_team("u_b", cand_b)]
+        result = _choose(target, bank, pins={"hp": 32})
+        assert result is not None
+        self.assertEqual(result.evs["hp"], 32)
+        self.assertEqual(result.source_url, "u_b")
+
+    def test_no_honoring_candidate_still_returns_best(self) -> None:
+        # When nothing honors the pin, selection falls back to the best
+        # available spread (best-effort — the caller won't mark it pinned).
+        target = _mon("Pikachu", evs=_evs(hp=32))
+        cand = _mon("Pikachu", evs=_evs(spe=32))
+        bank = [_bank_team("u", cand)]
+        result = _choose(target, bank, pins={"hp": 32})
+        assert result is not None
+        self.assertEqual(result.evs, _evs(spe=32))
+        self.assertEqual(result.evs["hp"], 0)
 
 
 if __name__ == "__main__":

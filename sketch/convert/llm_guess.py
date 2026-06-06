@@ -19,7 +19,7 @@ from typing import Any
 import anthropic
 
 from sketch.convert.ev_model import EvModel
-from sketch.team import STAT_KEYS, PokemonEntry
+from sketch.team import STAT_DISPLAY, STAT_KEYS, PokemonEntry
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,9 @@ def _system_prompt(fmt_name: str, ev_model: EvModel) -> str:
         f"This format uses '{ev_model.label}'. Each stat takes an integer from "
         f"0 to {max_s} inclusive. "
         f"{budget_note}"
+        "If a Pokemon lists 'Known EVs (fixed)', those stats are already "
+        "confirmed — keep them at exactly those values and spend the rest of "
+        "the budget on the remaining stats. "
         "Call submit_spreads with one entry per Pokemon slot."
     )
 
@@ -114,13 +117,19 @@ def _make_tools(ev_model: EvModel) -> list[dict[str, Any]]:
     ]
 
 
-def _describe(slot: int, p: PokemonEntry) -> str:
+def _describe(slot: int, p: PokemonEntry, pins: dict[str, int] | None = None) -> str:
     item = p.item or "(no item)"
     moves = ", ".join(p.moves) if p.moves else "(no moves)"
-    return (
+    line = (
         f"Slot {slot}: {p.species} @ {item} | Ability: {p.ability} | "
         f"Nature: {p.nature} | Moves: {moves}"
     )
+    if pins:
+        known = ", ".join(
+            f"{STAT_DISPLAY[k]}={pins[k]}" for k in STAT_KEYS if k in pins
+        )
+        line += f" | Known EVs (fixed, keep exactly): {known}"
+    return line
 
 
 def _extract_tool_input(message: anthropic.types.Message) -> dict[str, Any] | None:
@@ -143,6 +152,7 @@ async def guess_ev_spreads(
     fmt_name: str,
     ev_model: EvModel,
     model: str,
+    pins_by_slot: dict[int, dict[str, int]] | None = None,
 ) -> dict[int, dict[str, int]]:
     """Guess EV spreads for `entries` (a list of `(slot, PokemonEntry)`).
 
@@ -150,11 +160,18 @@ async def guess_ev_spreads(
     from the model's response are omitted (the caller decides the
     fallback — currently an all-zero spread). Raises `EvGuessError` on
     API failure or a missing/malformed tool call.
+
+    `pins_by_slot` maps a slot to its known (fixed) stats — the non-zero
+    EVs already on the OTS paste. Those values are pinned in the prompt so
+    the guess builds around them, and shielded from the over-budget trim.
     """
     if not entries:
         return {}
 
-    listing = "\n".join(_describe(slot, p) for slot, p in entries)
+    pins_by_slot = pins_by_slot or {}
+    listing = "\n".join(
+        _describe(slot, p, pins_by_slot.get(slot)) for slot, p in entries
+    )
     instruction = (
         "Assign an EV spread for each of the following Pokemon and call "
         f"submit_spreads with one entry per slot:\n\n{listing}"
@@ -195,10 +212,12 @@ async def guess_ev_spreads(
             "Couldn't estimate EV spreads right now — please try again in a moment."
         )
 
-    return _parse_spreads(tool_input, ev_model)
+    return _parse_spreads(tool_input, ev_model, pins_by_slot)
 
 
-def _trim_to_budget(evs: dict[str, int], max_total: int) -> dict[str, int]:
+def _trim_to_budget(
+    evs: dict[str, int], max_total: int, protected: set[str] | None = None
+) -> dict[str, int]:
     """Reduce EVs until total <= max_total by trimming smaller stats first.
 
     Trimming the smallest investments first preserves the larger ones,
@@ -206,15 +225,22 @@ def _trim_to_budget(evs: dict[str, int], max_total: int) -> dict[str, int]:
     matters more than a 4 HP investment). This avoids the rounding error
     of proportional scaling, which can produce totals below the budget
     (e.g. int(32 * 66/67) = 31, leaving 1 point on the table).
+
+    `protected` stats are never trimmed: they are the slot's known (fixed)
+    EVs, so cutting them would silently violate a confirmed value. The
+    excess is taken from the unprotected stats instead.
     """
+    protected = protected or set()
     result = dict(evs)
     excess = sum(result.values()) - max_total
     if excess <= 0:
         return result
-    # Sort ascending so we trim the smallest stats first.
+    # Sort ascending so we trim the smallest stats first; skip protected ones.
     for key in sorted(result, key=lambda k: result[k]):
         if excess <= 0:
             break
+        if key in protected:
+            continue
         cut = min(result[key], excess)
         result[key] -= cut
         excess -= cut
@@ -222,7 +248,9 @@ def _trim_to_budget(evs: dict[str, int], max_total: int) -> dict[str, int]:
 
 
 def _parse_spreads(
-    tool_input: dict[str, Any], ev_model: EvModel
+    tool_input: dict[str, Any],
+    ev_model: EvModel,
+    pins_by_slot: dict[int, dict[str, int]] | None = None,
 ) -> dict[int, dict[str, int]]:
     """Pull ``{slot: evs}`` out of the tool input, clamping defensively.
 
@@ -230,8 +258,10 @@ def _parse_spreads(
     constrains), LLM output can exceed the format's total budget — e.g.
     the model might invest every stat at 32. Per-stat clamping runs first;
     if the result still exceeds ``ev_model.max_total``, the excess is
-    trimmed from the smallest stats first (see `_trim_to_budget`).
+    trimmed from the smallest stats first (see `_trim_to_budget`), leaving
+    the slot's pinned stats untouched.
     """
+    pins_by_slot = pins_by_slot or {}
     out: dict[int, dict[str, int]] = {}
     for item in tool_input.get("spreads", []) or []:
         if not isinstance(item, dict):
@@ -248,6 +278,8 @@ def _parse_spreads(
             for k in STAT_KEYS
         }
         if ev_model.max_total is not None:
-            evs = _trim_to_budget(evs, ev_model.max_total)
+            evs = _trim_to_budget(
+                evs, ev_model.max_total, protected=set(pins_by_slot.get(slot, {}))
+            )
         out[slot] = evs
     return out

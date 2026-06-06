@@ -40,7 +40,7 @@ from sketch.pokepaste.validator import ValidationError
 from sketch.showdown.parser import ShowdownParseError, parse_showdown
 from sketch.showdown.renderer import render_showdown
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry
-from sketch.team import TeamData
+from sketch.team import STAT_DISPLAY, TeamData
 from sketch.teamsource import fetch_team_from_url
 from sketch.vrpaste.fetcher import VRPasteFetchError
 
@@ -51,15 +51,24 @@ logger = logging.getLogger(__name__)
 _PASTE_INPUT_MAX = 4000
 
 
+def _pin_suffix(pinned: tuple[str, ...]) -> str:
+    """Render the ` (HP, Spe pinned)` note for stats kept from the paste."""
+    if not pinned:
+        return ""
+    names = ", ".join(STAT_DISPLAY[k] for k in pinned)
+    return f" ({names} pinned)"
+
+
 def _source_summary(result: ConvertResult) -> str:
     """Build the user-facing provenance reply.
 
     Returns a summary line plus a per-mon attribution block so the user
-    can see exactly which bank team each spread was sourced from.
+    can see exactly which bank team each spread was sourced from, plus any
+    stats pinned from a partial spread the caller supplied.
 
     Example:
         Trained 6 mons (4 from bank, 1 estimated, 1 already trained).
-        • Venusaur — pokepast.es/abc123
+        • Venusaur — pokepast.es/abc123 (HP pinned)
         • Charizard — estimated
         • Garchomp — pokepast.es/def456
         ...
@@ -85,11 +94,12 @@ def _source_summary(result: ConvertResult) -> str:
     lines = [headline]
     for slot in slots:
         name = slot.pokemon.species
+        suffix = _pin_suffix(slot.source.pinned)
         if slot.source.label == "bank" and slot.source.url:
             # Full URL so Discord renders it as a clickable hyperlink.
-            lines.append(f"• {name} — {slot.source.url}")
+            lines.append(f"• {name} — {slot.source.url}{suffix}")
         elif slot.source.label == "estimated":
-            lines.append(f"• {name} — estimated")
+            lines.append(f"• {name} — estimated{suffix}")
         # "kept" mons are not listed to keep the reply concise.
 
     return "\n".join(lines)

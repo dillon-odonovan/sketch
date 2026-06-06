@@ -34,13 +34,17 @@ def _result(
     sources: list[str],
     source_urls: list[str | None] | None = None,
     species: list[str] | None = None,
+    pinned: list[tuple[str, ...]] | None = None,
 ) -> tuple[ConvertResult, list[str]]:
     n = len(sources)
     sp = species or [f"Mon{i}" for i in range(n)]
     urls = source_urls or [None] * n
+    pins = pinned or [()] * n
     slots = [
-        ConvertedSlot(pokemon=_mon(name), source=SlotSource(label=label, url=url))
-        for name, label, url in zip(sp, sources, urls, strict=True)
+        ConvertedSlot(
+            pokemon=_mon(name), source=SlotSource(label=label, url=url, pinned=pin)
+        )
+        for name, label, url, pin in zip(sp, sources, urls, pins, strict=True)
     ]
     return ConvertResult(slots=slots), sp
 
@@ -104,6 +108,23 @@ class TestSourceSummary(unittest.TestCase):
         r, _ = _result([])
         out = _source_summary(r)
         self.assertIn("0 matched", out)
+
+    def test_pinned_stats_rendered_as_suffix(self) -> None:
+        r, _ = _result(
+            ["bank", "estimated"],
+            source_urls=["https://pokepast.es/a1", None],
+            species=["Venusaur", "Charizard"],
+            pinned=[("hp",), ("hp", "spe")],
+        )
+        out = _source_summary(r)
+        self.assertIn("• Venusaur — https://pokepast.es/a1 (HP pinned)", out)
+        self.assertIn("• Charizard — estimated (HP, Spe pinned)", out)
+
+    def test_no_pin_suffix_when_unpinned(self) -> None:
+        r, _ = _result(["estimated"], species=["Garchomp"])
+        out = _source_summary(r)
+        self.assertIn("• Garchomp — estimated", out)
+        self.assertNotIn("pinned", out)
 
 
 def _capture_convert_ots_callback(registry, anthropic_client):

@@ -109,12 +109,81 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.team.pokemon[0].evs, guessed)
         self.assertEqual(result.slots[0].source.label, "estimated")
 
-    async def test_pre_trained_mon_left_untouched(self) -> None:
-        trained = _evs(hp=32, def_=16)
+    async def test_complete_spread_left_untouched(self) -> None:
+        # A spread that already reaches the format budget (66) is real CTS
+        # input — preserved verbatim, nothing pinned.
+        trained = _evs(hp=2, atk=32, spe=32)
         ots = _ots(_mon("Pikachu", evs=trained), *[_mon(s) for s in _FILLERS])
         result = await self._run(ots=ots, llm_spreads=_all_llm_spreads())
         self.assertEqual(result.team.pokemon[0].evs, trained)
         self.assertEqual(result.slots[0].source.label, "kept")
+        self.assertEqual(result.slots[0].source.pinned, ())
+
+    async def test_partial_spread_pinned_and_filled_by_llm(self) -> None:
+        # HP known (32), rest blank → under budget, so the mon is filled.
+        # The LLM keeps HP and the result records it as pinned.
+        filled = _evs(hp=32, spe=32)
+        llm_spreads = [{"slot": 1, "evs": {k: filled[k] for k in STAT_KEYS}}]
+        llm_spreads += [{"slot": i, "evs": _zero_evs()} for i in range(2, 7)]
+        ots = _ots(_mon("Pikachu", evs=_evs(hp=32)), *[_mon(s) for s in _FILLERS])
+        result = await self._run(ots=ots, llm_spreads=llm_spreads)
+        self.assertEqual(result.team.pokemon[0].evs, filled)
+        self.assertEqual(result.slots[0].source.label, "estimated")
+        self.assertEqual(result.slots[0].source.pinned, ("hp",))
+
+    async def test_partial_spread_pins_flow_into_llm_prompt(self) -> None:
+        client = _make_anthropic_client(
+            [{"slot": 1, "evs": {k: _evs(hp=32, spe=32)[k] for k in STAT_KEYS}}]
+            + [{"slot": i, "evs": _zero_evs()} for i in range(2, 7)]
+        )
+        ots = _ots(_mon("Pikachu", evs=_evs(hp=32)), *[_mon(s) for s in _FILLERS])
+        sheets = AsyncMock()
+        with patch(
+            "sketch.convert.converter.load_bank_teams",
+            new=AsyncMock(return_value=[]),
+        ):
+            await converter_mod.convert_ots_to_cts(
+                ots,
+                sheets=sheets,
+                sheet_name="Regulation M-A",
+                fmt_name="Reg M-A",
+                anthropic_client=client,
+            )
+        _, kwargs = client.messages.create.call_args
+        user_msg = kwargs["messages"][0]["content"]
+        self.assertIn("Known EVs (fixed", user_msg)
+        self.assertIn("HP=32", user_msg)
+
+    async def test_partial_spread_bank_match_records_pin(self) -> None:
+        # A bank spread that honors the HP pin is adopted; pin recorded.
+        bank_spread = _evs(hp=32, spe=32)
+        bank_pikachu = _mon(
+            "Pikachu",
+            nature="Timid",
+            ability="Static",
+            item="Light Ball",
+            evs=bank_spread,
+        )
+        bank_team = BankTeam(
+            url="https://pokepast.es/test",
+            team=TeamData(pokemon=[bank_pikachu, *[_mon(s) for s in _FILLERS]]),
+        )
+        ots = _ots(
+            _mon(
+                "Pikachu",
+                nature="Timid",
+                ability="Static",
+                item="Light Ball",
+                evs=_evs(hp=32),
+            ),
+            *[_mon(s) for s in _FILLERS],
+        )
+        result = await self._run(
+            ots=ots, bank_teams=[bank_team], llm_spreads=_all_llm_spreads()
+        )
+        self.assertEqual(result.team.pokemon[0].evs, bank_spread)
+        self.assertEqual(result.slots[0].source.label, "bank")
+        self.assertEqual(result.slots[0].source.pinned, ("hp",))
 
     async def test_non_ev_fields_preserved(self) -> None:
         target = _mon(

@@ -17,19 +17,7 @@ omits them.
 
 from __future__ import annotations
 
-from sketch.team import STAT_KEYS, PokemonEntry, TeamData
-
-# Display capitalization for the EV line. The Showdown / PokePaste parsers
-# accept lowercase too, but the canonical form uses these tags and matching
-# it keeps the resulting paste readable when an operator opens it manually.
-_STAT_DISPLAY = {
-    "hp": "HP",
-    "atk": "Atk",
-    "def": "Def",
-    "spa": "SpA",
-    "spd": "SpD",
-    "spe": "Spe",
-}
+from sketch.team import STAT_DISPLAY, STAT_KEYS, PokemonEntry, TeamData
 
 # CRLF line endings throughout the rendered paste. Pokemon Showdown's
 # clipboard export uses CRLF (authored for Windows clipboard interchange),
@@ -66,7 +54,7 @@ def _render_mon(p: PokemonEntry) -> str:
     lines.append(f"Ability: {p.ability}")
 
     ev_parts = [
-        f"{p.evs[k]} {_STAT_DISPLAY[k]}" for k in STAT_KEYS if p.evs.get(k, 0) > 0
+        f"{p.evs[k]} {STAT_DISPLAY[k]}" for k in STAT_KEYS if p.evs.get(k, 0) > 0
     ]
     if ev_parts:
         lines.append(f"EVs: {' / '.join(ev_parts)}")
