@@ -9,14 +9,17 @@ Flow per Pokemon:
   2. Otherwise fill the missing stats, pinning any non-zero EVs already on
      the paste as known constraints (e.g. an HP total read off the
      broadcast, a speed tier confirmed in-game):
-       a. Bank match → copy the chosen spread, biased toward the pins
-          (`"bank"`).
-       b. No bank match → batch with other unmatched mons for one LLM call
-          that pins the known stats (`"estimated"`).
+       a. Bank match → copy the chosen spread, which must honor every pin
+          (a spread contradicting a pin is not a match) (`"bank"`).
+       b. No bank match (or none consistent with the pins) → batch with
+          other unmatched mons for one LLM call that pins the known stats
+          (`"estimated"`).
 
-Pins are best-effort: selection/generation is biased toward honoring them,
-but a chosen spread is never overwritten. `SlotSource.pinned` records which
-pinned stats the final spread actually honors.
+Pins are confirmed ground truth and are honored exactly: the bank matcher
+only accepts a spread that satisfies every pin (otherwise it falls through
+to the LLM), and the LLM path overlays the pins onto its output. Either way
+the final spread contains each pinned stat, and `SlotSource.pinned` records
+which pinned stats it honors (now always the full pin set).
 """
 
 from __future__ import annotations

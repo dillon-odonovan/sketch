@@ -113,6 +113,15 @@ class TestParseSpreads(unittest.TestCase):
         self.assertEqual(result[1]["hp"], 4)
         self.assertLessEqual(sum(result[1].values()), CHAMPIONS.max_total)
 
+    def test_pin_value_enforced_when_model_violates_it(self) -> None:
+        # Pins are confirmed ground truth: even if the model returns a
+        # different value for a pinned stat, _parse_spreads overlays the pin
+        # and re-trims the rest so the output honors it exactly.
+        tool = {"spreads": [self._spread(hp=0, atk=32, spe=32)]}  # ignores HP pin
+        result = _parse_spreads(tool, CHAMPIONS, pins_by_slot={1: {"hp": 32}})
+        self.assertEqual(result[1]["hp"], 32)
+        self.assertLessEqual(sum(result[1].values()), CHAMPIONS.max_total)
+
 
 def _mon(**kwargs: Any) -> PokemonEntry:
     base: dict[str, Any] = {
@@ -144,6 +153,13 @@ class TestSystemPrompt(unittest.TestCase):
     def test_mentions_fixed_known_evs(self) -> None:
         prompt = _system_prompt("Reg M-A", CHAMPIONS)
         self.assertIn("Known EVs (fixed)", prompt)
+
+    def test_directs_investment_in_nature_boosted_stat(self) -> None:
+        # The prompt must steer the model toward investing in the stat the
+        # nature boosts (the Froslass under-investment fix).
+        prompt = _system_prompt("Reg M-A", CHAMPIONS)
+        self.assertIn("nature boosts", prompt)
+        self.assertIn("Special Attack", prompt)
 
 
 if __name__ == "__main__":

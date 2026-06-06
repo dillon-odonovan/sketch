@@ -185,6 +185,32 @@ class TestConvertOtsToCts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.slots[0].source.label, "bank")
         self.assertEqual(result.slots[0].source.pinned, ("hp",))
 
+    async def test_bank_contradicts_pin_falls_to_llm(self) -> None:
+        # The only bank Pikachu has a spread that contradicts the HP pin, so
+        # it is not a valid match — the mon falls through to the LLM, which
+        # keeps the pin. The slot is labeled "estimated", HP recorded pinned.
+        bank_pikachu = _mon(
+            "Pikachu",
+            nature="Timid",
+            ability="Static",
+            item="Light Ball",
+            evs=_evs(hp=8, spe=32),  # HP=8 contradicts the HP=32 pin
+        )
+        bank_team = BankTeam(
+            url="https://pokepast.es/test",
+            team=TeamData(pokemon=[bank_pikachu, *[_mon(s) for s in _FILLERS]]),
+        )
+        filled = _evs(hp=32, spe=32)
+        llm_spreads = [{"slot": 1, "evs": {k: filled[k] for k in STAT_KEYS}}]
+        llm_spreads += [{"slot": i, "evs": _zero_evs()} for i in range(2, 7)]
+        ots = _ots(_mon("Pikachu", evs=_evs(hp=32)), *[_mon(s) for s in _FILLERS])
+        result = await self._run(
+            ots=ots, bank_teams=[bank_team], llm_spreads=llm_spreads
+        )
+        self.assertEqual(result.slots[0].source.label, "estimated")
+        self.assertEqual(result.slots[0].source.pinned, ("hp",))
+        self.assertEqual(result.team.pokemon[0].evs["hp"], 32)
+
     async def test_non_ev_fields_preserved(self) -> None:
         target = _mon(
             "Pikachu",

@@ -37,38 +37,45 @@ def _system_prompt(fmt_name: str, ev_model: EvModel) -> str:
     max_s = ev_model.max_per_stat
     max_t = ev_model.max_total
     if max_t is not None:
-        # Remainder after maxing two stats — the third stat in the
-        # canonical default spread (e.g. 2/32/32 = 66 for Champions). The
-        # per-stat cap plus the exact-total budget already force a sparse
-        # spread, so we don't tell the model how many stats to invest in.
+        # Remainder after maxing two stats — the third stat in the bare
+        # fallback spread (e.g. 2/32/32 = 66 for Champions). This is only a
+        # last resort; real spreads are tuned to benchmarks, so we lead with
+        # role/nature guidance and demote the two-maxed-stats shape to a
+        # fallback rather than presenting it as the norm.
         third = max_t - 2 * max_s
         budget_note = (
             f"The six values must sum to exactly {max_t} — a hard, fixed "
-            f"budget, not an approximation; spend all of it. Distribute it the "
-            f"way a strong VGC player would for this Pokemon's role and moves; "
-            f"when nothing more specific is implied, two stats at {max_s} plus "
-            f"the remaining {third} on a third (e.g. {third} HP / {max_s} Atk / "
-            f"{max_s} Spe = {max_t}) is a sensible default. "
+            f"budget, not an approximation; spend all of it. Real spreads are "
+            f"tuned to specific benchmarks, so they are rarely just two maxed "
+            f"stats: weigh the Pokemon's role and moves first. Only when "
+            f"nothing more specific is implied, fall back to two stats at "
+            f"{max_s} plus the remaining {third} on a third — a special "
+            f"attacker as {third} HP / {max_s} SpA / {max_s} Spe, a physical "
+            f"attacker as {third} HP / {max_s} Atk / {max_s} Spe = {max_t}. "
         )
     else:
         budget_note = (
-            "Distribute EVs the way a strong VGC player would for this "
-            "Pokemon's role and moves. "
+            "Real spreads are tuned to specific benchmarks, so weigh the "
+            "Pokemon's role and moves rather than reflexively maxing two "
+            "stats. "
         )
     return (
         "You are a competitive Pokemon team builder assigning EV spreads for "
         f"the VGC / doubles (bring-6, pick-4) format {fmt_name}. You are given "
         "each Pokemon's species, ability, held item, nature, and moves, but "
         "its EVs are unknown. Return a plausible, competitively sensible EV "
-        "spread for each Pokemon, consistent with its nature (invest in the "
-        "stats the nature and moves imply — e.g. a physical attacker with a "
-        f"+Spe nature wants Attack and Speed).\n\n"
+        "spread for each Pokemon, tuned to its role, moves, and likely "
+        "benchmarks. Almost always invest in the stat its nature boosts "
+        "(+Atk wants Attack, +SpA wants Special Attack, +Spe wants Speed): a "
+        "+nature with no investment in the boosted stat is usually a mistake. "
+        "Rare benchmark-driven exceptions exist, but they are the exception, "
+        "not the default.\n\n"
         f"This format uses '{ev_model.label}'. Each stat takes an integer from "
         f"0 to {max_s} inclusive. "
         f"{budget_note}"
         "If a Pokemon lists 'Known EVs (fixed)', those stats are already "
         "confirmed — keep them at exactly those values and spend the rest of "
-        "the budget on the remaining stats. "
+        "the budget on the remaining stats, favoring the nature-boosted stat. "
         "Call submit_spreads with one entry per Pokemon slot."
     )
 
@@ -277,9 +284,14 @@ def _parse_spreads(
             else 0
             for k in STAT_KEYS
         }
+        # Pins are confirmed ground truth — overlay them onto the model's
+        # spread so a disobedient value is corrected, not merely shielded from
+        # the trim. Overlaying before the trim lets `_trim_to_budget` account
+        # for the pinned totals while protecting the pins themselves.
+        pins = pins_by_slot.get(slot, {})
+        for k, v in pins.items():
+            evs[k] = max(0, min(int(v), ev_model.max_per_stat))
         if ev_model.max_total is not None:
-            evs = _trim_to_budget(
-                evs, ev_model.max_total, protected=set(pins_by_slot.get(slot, {}))
-            )
+            evs = _trim_to_budget(evs, ev_model.max_total, protected=set(pins))
         out[slot] = evs
     return out
