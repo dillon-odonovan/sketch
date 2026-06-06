@@ -47,6 +47,7 @@ from typing import Any
 import anthropic
 
 from sketch import config
+from sketch.champions import name_lookup
 from sketch.natures import NATURE_MAP, NEUTRAL_NATURE
 from sketch.team import STAT_KEYS, PokemonEntry, TeamData
 
@@ -143,6 +144,34 @@ _NATURE_SCHEMA: dict[str, Any] = {
     },
 }
 
+# Every translatable name is returned as a {raw, en} pair: the exact on-screen
+# glyphs plus the model's canonical-English guess. Python post-processes `raw`
+# through an authoritative localized->English table (see `name_lookup`),
+# overriding `en` on a hit and falling back to `en` on a miss (Champions-custom
+# content the table doesn't know). Echoing `raw` is what makes that correction
+# possible — without it we'd have only the model's guess to trust.
+
+
+def _name_pair(en_description: str) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["raw", "en"],
+        "properties": {
+            "raw": {
+                "type": "string",
+                "description": (
+                    "The name's text EXACTLY as printed on screen, verbatim, in "
+                    "its original language/script (Japanese kana, Korean hangul, "
+                    "Chinese characters, accented Latin, …). Do not translate, "
+                    "transliterate, or normalize spacing here — copy the glyphs."
+                ),
+            },
+            "en": {"type": "string", "description": en_description},
+        },
+    }
+
+
 _POKEMON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -156,15 +185,12 @@ _POKEMON_SCHEMA: dict[str, Any] = {
         "moves",
     ],
     "properties": {
-        "species": {
-            "type": "string",
-            "description": (
-                "Pokemon species in canonical display form, e.g. 'Great Tusk', "
-                "'Calyrex-Shadow', 'Urshifu-Rapid-Strike'. Use the form Pokemon "
-                "Showdown / PokePaste expect. The on-screen name may be localized "
-                "(any game language); output the canonical English name."
-            ),
-        },
+        "species": _name_pair(
+            "Pokemon species in canonical display form, e.g. 'Great Tusk', "
+            "'Calyrex-Shadow', 'Urshifu-Rapid-Strike'. Use the form Pokemon "
+            "Showdown / PokePaste expect. Translate the localized `raw` to its "
+            "canonical English name."
+        ),
         "gender": {
             "oneOf": [
                 {"type": "string", "enum": ["M", "F"]},
@@ -177,20 +203,22 @@ _POKEMON_SCHEMA: dict[str, Any] = {
             ),
         },
         "item": {
-            "type": ["string", "null"],
+            "oneOf": [
+                _name_pair(
+                    "Held item in official English, e.g. 'Assault Vest'. "
+                    "Translate the localized `raw`."
+                ),
+                {"type": "null"},
+            ],
             "description": (
-                "Held item, e.g. 'Assault Vest'. May be localized; translate to "
-                "the official English item name. Use null (not the string 'None') "
+                "Held item as a {raw, en} pair, or null (not the string 'None') "
                 "when the Pokemon is holding nothing — never invent an item."
             ),
         },
-        "ability": {
-            "type": "string",
-            "description": (
-                "e.g. 'Quark Drive'. May be localized; output the official "
-                "English ability name."
-            ),
-        },
+        "ability": _name_pair(
+            "Ability in official English, e.g. 'Quark Drive'. Translate the "
+            "localized `raw`."
+        ),
         "nature": _NATURE_SCHEMA,
         "evs": {
             **_EVS_SCHEMA,
@@ -205,11 +233,12 @@ _POKEMON_SCHEMA: dict[str, Any] = {
             "type": "array",
             "minItems": 1,
             "maxItems": 4,
-            "items": {"type": "string"},
+            "items": _name_pair(
+                "Move name in official English. Translate the localized `raw`."
+            ),
             "description": (
-                "1 to 4 move names from Page 1, in display order. May be "
-                "localized; output official English move names. Output only the "
-                "moves actually shown — never pad to four."
+                "1 to 4 moves from Page 1, in display order, each a {raw, en} "
+                "pair. Output only the moves actually shown — never pad to four."
             ),
         },
     },
@@ -257,6 +286,16 @@ well-established per game language). Do not transliterate phonetically and do \
 not anglicize loosely — map to the exact official English name. For example, \
 the Japanese "こだわりスカーフ" / Korean "구애 스카프" is the official item \
 "Choice Scarf", not "Gooey Scarf" or any phonetic gloss.
+
+Raw + English for every name: species, item, ability, and each move are \
+returned as a {raw, en} pair. Put the on-screen text EXACTLY as printed — \
+verbatim glyphs, original script, no translation or spacing changes — in \
+`raw`, and your canonical English name in `en`. The `raw` text is checked \
+against an authoritative name table downstream, so an accurate transcription \
+can correct a mistranslated `en`; still fill `en` with your best official \
+English name, since custom content not in the table falls back to it. If the \
+screen is already English, `raw` and `en` are the same text. Never leave \
+`raw` blank for a name that is visibly present.
 
 Translation pitfalls (illustrative failure modes seen across languages — \
 the examples are NOT a closed list; apply the principle, not just the named \
@@ -501,29 +540,56 @@ def _image_block(data: bytes) -> dict[str, Any]:
     }
 
 
-def _parse_pokemon(raw: dict) -> PokemonEntry:
+def _name_fields(pair: Any) -> tuple[str | None, str]:
+    """Split a {raw, en} name pair into (on-screen text, English guess).
+
+    Returns an empty/None raw when absent so the lookup falls straight through
+    to the English guess. Tolerates a bare string defensively, though the tool
+    schema always delivers the pair shape.
+    """
+    if not isinstance(pair, dict):
+        text = str(pair)
+        return text, text
+    raw_text = pair.get("raw")
+    return (str(raw_text) if raw_text else None), str(pair.get("en", ""))
+
+
+def _parse_pokemon(mon: dict) -> PokemonEntry:
     """Convert the tool-use input dict for one Pokemon into a PokemonEntry.
 
-    The tool schema enforces shape; this is a thin marshaller plus the
-    nature-arrow → canonical-name lookup, which is deterministic and lives
-    in Python rather than the model because the model can't see the
-    mapping table at inference time.
+    The tool schema enforces shape; this marshals it, resolves the nature
+    arrows to a canonical name, and runs every {raw, en} name pair through the
+    localized→English table (override on a hit, model's English on a miss).
+    Both lookups are deterministic and live in Python because the model can't
+    see the mapping tables at inference time.
     """
-    nature_in = raw.get("nature") or {}
+    nature_in = mon.get("nature") or {}
     nature_name = _resolve_nature(
         nature_in.get("boosted_stat"),
         nature_in.get("reduced_stat"),
     )
-    gender_in = raw.get("gender")
+    gender_in = mon.get("gender")
     gender = gender_in if gender_in in ("M", "F") else None
+
+    species = name_lookup.resolve_species(*_name_fields(mon["species"]))
+    ability = name_lookup.resolve_ability(*_name_fields(mon["ability"]))
+
+    item_in = mon.get("item")
+    item = None
+    if isinstance(item_in, dict):
+        item_raw, item_en = _name_fields(item_in)
+        item = name_lookup.resolve_item(item_raw, item_en) if item_en else None
+
+    moves = [name_lookup.resolve_move(*_name_fields(m)) for m in mon["moves"]]
+
     return PokemonEntry(
-        species=str(raw["species"]),
+        species=species,
         gender=gender,
-        item=str(raw["item"]) if raw.get("item") else None,
-        ability=str(raw["ability"]),
+        item=item,
+        ability=ability,
         nature=nature_name,
-        evs={k: int(raw["evs"][k]) for k in STAT_KEYS},
-        moves=[str(m) for m in raw["moves"]],
+        evs={k: int(mon["evs"][k]) for k in STAT_KEYS},
+        moves=moves,
     )
 
 
@@ -596,8 +662,9 @@ async def extract_team_from_screenshots(
         )
         + " Cross-join by slot order, resolve the nature arrows into "
         "boosted_stat / reduced_stat, and call submit_team with the result."
-        " These screenshots may be in any language — read the localized text "
-        "and output canonical English Showdown names."
+        " These screenshots may be in any language — for every species, item, "
+        "ability, and move return the on-screen text verbatim in `raw` and the "
+        "canonical English Showdown name in `en`."
     )
     user_content.append({"type": "text", "text": instruction})
 
