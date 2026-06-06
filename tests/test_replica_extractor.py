@@ -67,6 +67,28 @@ def _make_client(response: _FakeMessage | Exception) -> MagicMock:
 # --- Sample tool-use payloads ----------------------------------------------
 
 
+def _pair(raw: str, en: str | None = None) -> dict[str, str]:
+    """A {raw, en} name pair; English screenshots have raw == en."""
+    return {"raw": raw, "en": raw if en is None else en}
+
+
+def _wrap_names(team: dict) -> dict:
+    """Convert a plain-English team literal into the {raw, en} tool shape.
+
+    Lets the fixture below stay readable as plain names while matching the
+    schema the model now returns (verbatim `raw` + English `en`). raw == en
+    here models an English screenshot, so the lookup is a no-op and existing
+    value assertions hold.
+    """
+    for mon in team["pokemon"]:
+        mon["species"] = _pair(mon["species"])
+        mon["ability"] = _pair(mon["ability"])
+        if mon.get("item") is not None:
+            mon["item"] = _pair(mon["item"])
+        mon["moves"] = [_pair(m) for m in mon["moves"]]
+    return team
+
+
 def _full_team_input(team_id: str | None = "QBXXWXL05U") -> dict:
     """A well-formed `submit_team` tool input with all six Pokemon.
 
@@ -74,7 +96,7 @@ def _full_team_input(team_id: str | None = "QBXXWXL05U") -> dict:
     arrow-based nature, gender icons present. Anything the model would
     realistically extract from the sample-replica-code.png share screen.
     """
-    return {
+    plain = {
         "team_id": team_id,
         "pokemon": [
             {
@@ -180,6 +202,7 @@ def _full_team_input(team_id: str | None = "QBXXWXL05U") -> dict:
             },
         ],
     }
+    return _wrap_names(plain)
 
 
 def _team_message(input_payload: dict) -> _FakeMessage:
@@ -428,6 +451,58 @@ class TestExtractTeamFromScreenshots:
         assert "language" in text_block["text"].lower()
 
 
+class TestLocalizedLookupPostProcess:
+    """The {raw, en} echo plus the PokeAPI table corrects translation-class
+    misses in Python after the vision call (issue #46). These feed localized
+    `raw` glyphs with a deliberately wrong `en` and assert the canonical name
+    wins — and that table misses / model-resolved forms fall back to `en`.
+    """
+
+    async def _extract_first(self, payload: dict) -> PokemonEntry:
+        client = _make_client(_team_message(payload))
+        team = await extract_team_from_screenshots(client, _TINY_PNG, _TINY_PNG)
+        return team.pokemon[0]
+
+    async def test_localized_move_overrides_wrong_english(self):
+        payload = _full_team_input()
+        # Korean Calm Mind; model mislabeled it the look-alike "Meditate".
+        payload["pokemon"][0]["moves"][0] = {"raw": "명상", "en": "Meditate"}
+        mon = await self._extract_first(payload)
+        assert mon.moves[0] == "Calm Mind"
+
+    async def test_localized_item_overrides_wrong_english(self):
+        payload = _full_team_input()
+        # Korean Choice Scarf with the screen's internal space.
+        payload["pokemon"][0]["item"] = {"raw": "구애 스카프", "en": "Gooey Scarf"}
+        mon = await self._extract_first(payload)
+        assert mon.item == "Choice Scarf"
+
+    async def test_localized_species_overrides_lookalike(self):
+        payload = _full_team_input()
+        # Korean Delphox; model collapsed it onto the look-alike Blaziken.
+        payload["pokemon"][0]["species"] = {"raw": "마폭시", "en": "Blaziken"}
+        mon = await self._extract_first(payload)
+        assert mon.species == "Delphox"
+
+    async def test_species_form_suffix_is_preserved(self):
+        payload = _full_team_input()
+        # Model resolved a regional form from type/ability signals; the base
+        # name in `raw` must not strip the suffix.
+        payload["pokemon"][0]["species"] = {
+            "raw": "바쿠퐁",
+            "en": "Typhlosion-Hisui",
+        }
+        mon = await self._extract_first(payload)
+        assert mon.species == "Typhlosion-Hisui"
+
+    async def test_custom_content_falls_back_to_model_english(self):
+        payload = _full_team_input()
+        # Champions-custom item absent from the table — keep the model's guess.
+        payload["pokemon"][0]["item"] = {"raw": "플로엣타이트", "en": "Floettite"}
+        mon = await self._extract_first(payload)
+        assert mon.item == "Floettite"
+
+
 class TestSystemPromptMultilingualGuidance:
     """Real foreign-language OCR accuracy can't be tested here (the SDK is
     mocked, no images, no network). What we can guard is that the system
@@ -446,6 +521,14 @@ class TestSystemPromptMultilingualGuidance:
         lowered = _SYSTEM_PROMPT.lower()
         assert "canonical english" in lowered or "official english" in lowered
         assert "translate" in lowered
+
+    def test_requires_raw_and_english_name_pair(self):
+        # The post-process lookup (issue #46) depends on the model echoing the
+        # on-screen glyphs in `raw` alongside its English `en`.
+        lowered = _SYSTEM_PROMPT.lower()
+        assert "`raw`" in lowered
+        assert "`en`" in lowered
+        assert "verbatim" in lowered
 
     def test_identifies_pages_by_structure_not_tab_text(self):
         # Tab labels are localized, so page ID must lean on structure.
