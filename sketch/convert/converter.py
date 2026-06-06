@@ -139,10 +139,10 @@ async def convert_ots_to_cts(
     )
 
     # First pass: classify each mon, match the fillable ones from the bank,
-    # and collect what's left for the LLM. `pins_per_slot` is index-aligned
-    # with `ots.pokemon`; `pins_by_slot` carries pins (1-based) to the LLM.
+    # and collect what's left for the LLM. `pins_by_slot` maps a 1-based slot
+    # to its pinned stats; it is the single source of truth for pins, read by
+    # the bank matcher, the LLM call, and the final source labelling.
     choices: list[EvChoice | None] = []
-    pins_per_slot: list[dict[str, int] | None] = []
     unmatched_entries: list[tuple[int, PokemonEntry]] = []
     pins_by_slot: dict[int, dict[str, int]] = {}
 
@@ -164,12 +164,12 @@ async def convert_ots_to_cts(
                     evs=dict(mon.evs), source="kept", detail="complete spread in input"
                 )
             )
-            pins_per_slot.append(None)
             continue
 
         # Blank mon → no pins; partial mon → pin its non-zero stats.
         pins = nonzero or None
-        pins_per_slot.append(pins)
+        if pins:
+            pins_by_slot[slot] = pins
 
         choice = choose_evs(mon, bank_teams, ots_species, ev_model, pins=pins)
         if choice is not None:
@@ -180,8 +180,6 @@ async def convert_ots_to_cts(
         else:
             choices.append(None)
             unmatched_entries.append((slot, mon))
-            if pins:
-                pins_by_slot[slot] = pins
 
     # Second pass: LLM for unmatched mons (one batched call), pinning each
     # slot's known stats so the guess builds around them.
@@ -207,7 +205,7 @@ async def convert_ots_to_cts(
 
     for idx, (mon, choice) in enumerate(zip(ots.pokemon, choices, strict=False)):
         slot = idx + 1
-        pins = pins_per_slot[idx]
+        pins = pins_by_slot.get(slot)
         if choice is not None:
             evs = choice.evs
             label = choice.source
