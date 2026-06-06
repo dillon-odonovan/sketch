@@ -337,6 +337,129 @@ class TestErrorCases:
             parse_showdown(broken)
 
 
+class TestIgnoredLines:
+    """Standard Showdown / PokePaste exports carry informational lines the
+    Champions format doesn't model (Level, Tera Type, IVs, …). The parser
+    skips them rather than erroring, so a real-world OTS paste round-trips."""
+
+    # The reportworm "Copy" output from the bug report: a full 6-mon OTS
+    # paste with a `Level: 50` line on every Pokemon.
+    _REPORTWORM_PASTE = (
+        "Venusaur @ Focus Sash\r\n"
+        "Ability: Chlorophyll\r\n"
+        "Level: 50\r\n"
+        "Timid Nature\r\n"
+        "- Sleep Powder\r\n"
+        "- Sludge Bomb\r\n"
+        "- Earth Power\r\n"
+        "- Protect\r\n"
+        "\r\n"
+        "Charizard @ Charizardite Y\r\n"
+        "Ability: Blaze\r\n"
+        "Level: 50\r\n"
+        "Modest Nature\r\n"
+        "- Heat Wave\r\n"
+        "- Solar Beam\r\n"
+        "- Weather Ball\r\n"
+        "- Protect\r\n"
+        "\r\n"
+        "Garchomp @ Choice Scarf\r\n"
+        "Ability: Rough Skin\r\n"
+        "Level: 50\r\n"
+        "Adamant Nature\r\n"
+        "- Earthquake\r\n"
+        "- Rock Slide\r\n"
+        "- Stomping Tantrum\r\n"
+        "- Dragon Claw\r\n"
+        "\r\n"
+        "Incineroar @ Sitrus Berry\r\n"
+        "Ability: Intimidate\r\n"
+        "Level: 50\r\n"
+        "Careful Nature\r\n"
+        "- Fake Out\r\n"
+        "- Flare Blitz\r\n"
+        "- Parting Shot\r\n"
+        "- Throat Chop\r\n"
+        "\r\n"
+        "Floette-Eternal @ Floettite\r\n"
+        "Ability: Flower Veil\r\n"
+        "Level: 50\r\n"
+        "Modest Nature\r\n"
+        "- Moonblast\r\n"
+        "- Dazzling Gleam\r\n"
+        "- Calm Mind\r\n"
+        "- Protect\r\n"
+        "\r\n"
+        "Sinistcha @ Kasib Berry\r\n"
+        "Ability: Hospitality\r\n"
+        "Level: 50\r\n"
+        "Relaxed Nature\r\n"
+        "- Matcha Gotcha\r\n"
+        "- Rage Powder\r\n"
+        "- Trick Room\r\n"
+        "- Protect\r\n"
+    )
+
+    def test_level_lines_are_skipped(self):
+        team = parse_showdown(self._REPORTWORM_PASTE)
+        assert [p.species for p in team.pokemon] == [
+            "Venusaur",
+            "Charizard",
+            "Garchomp",
+            "Incineroar",
+            "Floette-Eternal",
+            "Sinistcha",
+        ]
+        # The skipped Level lines don't disturb the parsed fields.
+        assert team.pokemon[0].ability == "Chlorophyll"
+        assert team.pokemon[0].nature == "Timid"
+        assert team.pokemon[0].item == "Focus Sash"
+        assert team.pokemon[0].moves == [
+            "Sleep Powder",
+            "Sludge Bomb",
+            "Earth Power",
+            "Protect",
+        ]
+
+    def test_full_informational_set_is_skipped(self):
+        # Tera Type / IVs / Shiny / Happiness all appear before the moves;
+        # each must be skipped without disturbing the parsed fields.
+        block = (
+            "Garganacl @ Sitrus Berry\r\n"
+            "Ability: Purifying Salt\r\n"
+            "Level: 50\r\n"
+            "Tera Type: Poison\r\n"
+            "Shiny: Yes\r\n"
+            "Happiness: 0\r\n"
+            "IVs: 0 Atk\r\n"
+            "EVs: 32 HP / 16 Def / 16 SpD\r\n"
+            "Careful Nature\r\n"
+            "- Salt Cure\r\n"
+            "- Protect\r\n"
+            "- Recover\r\n"
+            "- Iron Defense"
+        )
+        rest = "\r\n\r\n".join(_FULL_PASTE.split("\r\n\r\n")[1:])
+        team = parse_showdown(block + "\r\n\r\n" + rest)
+        first = team.pokemon[0]
+        assert first.species == "Garganacl"
+        assert first.ability == "Purifying Salt"
+        assert first.nature == "Careful"
+        assert first.evs["hp"] == 32
+        assert first.moves == ["Salt Cure", "Protect", "Recover", "Iron Defense"]
+
+    def test_unrecognized_header_line_still_errors(self):
+        # The skip allowlist must not become a catch-all: an unknown
+        # header line still surfaces the explicit "unexpected line" error.
+        broken = _FULL_PASTE.replace(
+            "Ability: Flower Veil\r\n",
+            "Ability: Flower Veil\r\nGarbage: foo\r\n",
+            1,
+        )
+        with pytest.raises(ShowdownParseError, match="unexpected line"):
+            parse_showdown(broken)
+
+
 class TestExtractSpecies:
     """`extract_species` is the lenient, never-raising counterpart to
     `parse_showdown`: it pulls species off each block header and tolerates
@@ -351,9 +474,10 @@ class TestExtractSpecies:
         assert species[1] == "Aerodactyl"
 
     def test_tolerates_standard_vgc_paste(self):
-        # `Level:` / `Tera Type:` lines and EVs above the Champions cap
-        # would make `parse_showdown` raise — `extract_species` ignores
-        # the body entirely and still returns the species.
+        # EVs above the Champions cap would make `parse_showdown` raise —
+        # `extract_species` ignores the body entirely and still returns the
+        # species. (`Level:` / `Tera Type:` lines, by contrast, are now
+        # skipped by `parse_showdown` too — see TestIgnoredLines.)
         paste = (
             "Garganacl @ Sitrus Berry\r\n"
             "Ability: Purifying Salt\r\n"
