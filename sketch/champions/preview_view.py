@@ -36,8 +36,8 @@ from collections.abc import Awaitable, Callable
 
 import discord
 
-from sketch.champions.showdown_parser import ShowdownParseError, parse_showdown
-from sketch.pokepaste.renderer import render_showdown
+from sketch.showdown.parser import ShowdownParseError, parse_showdown
+from sketch.showdown.renderer import render_showdown
 from sketch.team import TeamData
 
 # Discord's embed description maxes out at 4096 chars. A 6-Pokemon paste

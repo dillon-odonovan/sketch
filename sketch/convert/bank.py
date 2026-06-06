@@ -20,9 +20,9 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from sketch.champions.showdown_parser import ShowdownParseError, parse_showdown
 from sketch.convert.ev_model import EvModel
 from sketch.pokepaste.fetcher import fetch_pokepaste_raw
+from sketch.showdown.parser import ShowdownParseError, parse_showdown
 from sketch.storage.sheets_client import SheetsClient
 from sketch.team import TeamData
 

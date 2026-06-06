@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import pytest
 
-from sketch.champions.showdown_parser import (
+from sketch.showdown.parser import (
     ShowdownParseError,
     extract_species,
     parse_showdown,
 )
-from sketch.pokepaste.renderer import render_showdown
+from sketch.showdown.renderer import render_showdown
 from sketch.team import PokemonEntry, TeamData
 
 # Canonical 6-mon paste — hand-written so the parser's contract is

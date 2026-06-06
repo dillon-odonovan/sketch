@@ -15,7 +15,7 @@ team data for those.
 Sidesteps the line-ending caveat in issue #30 (VRPaste's clipboard
 export uses `\\n\\n`, which pokepast.es treats as a single Pokemon
 block): we never touch the exported text, we build a `TeamData`
-directly and let `sketch.pokepaste.renderer.render_showdown` emit
+directly and let `sketch.showdown.renderer.render_showdown` emit
 canonical CRLF separators when it serializes for upload.
 """
 

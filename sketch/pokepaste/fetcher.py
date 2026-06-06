@@ -4,7 +4,7 @@ pokepast.es serves the canonical, parseable export of any paste at
 `<paste-url>/raw` (CRLF line endings preserved). That raw text is exactly
 the Showdown shape the rest of the bot already understands — the in-sheet
 `TEAMDATAFROMPASTE` formula, the replica cache's `paste_text`, and
-`sketch.pokepaste.renderer` all speak it.
+`sketch.showdown.renderer` all speak it.
 
 Used by `/add-team` to seed the global Replica Cache when a user supplies
 a Pokepaste URL alongside a Champions Team ID: rather than OCR screenshots
@@ -18,8 +18,8 @@ import logging
 
 import aiohttp
 
-from sketch.champions.showdown_parser import parse_showdown
 from sketch.pokepaste.validator import canonicalize_pokepaste_url
+from sketch.showdown.parser import parse_showdown
 from sketch.team import TeamData
 
 logger = logging.getLogger(__name__)
