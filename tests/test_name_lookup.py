@@ -1,8 +1,8 @@
 """Tests for the localized→English name lookup (issue #46).
 
-These run against the committed `pokeapi_names.json` table, so they double as a
-smoke test that the build script produced a usable file with the expected
-fixtures from the issue.
+These run against the committed `name_table.json.gz` (built from PKHeX's
+game-text dumps), so they double as a smoke test that the build script produced
+a usable file with the expected fixtures from the issue.
 """
 
 from __future__ import annotations
@@ -60,15 +60,15 @@ class TestResolveOverridesOnHit:
         assert resolve_species("마폭시", "Blaziken") == "Delphox"
 
 
-class TestCuratedOverrideFills:
-    """Newest Gen 9 / DLC moves PokeAPI's CSVs omit in most languages are filled
-    by the hand-curated _OVERRIDES table (build script). Without these, a foreign
-    read falls through to the model's guess and can hit a look-alike — the
-    reported Korean Matcha Gotcha → "Strength Sap" regression.
+class TestRecentGen9Coverage:
+    """Gen 9 names PokeAPI's CSVs omit in Korean / German / Spanish / Simplified
+    Chinese (~76 moves, ~95 abilities) are fully present via PKHeX. Without them
+    a foreign read falls through to the model's guess and can hit a look-alike —
+    the reported Korean Matcha Gotcha → "Strength Sap" regression.
     """
 
     def test_korean_matcha_gotcha(self):
-        # The reported case: Korean reads correctly but PokeAPI lacks the row.
+        # The reported case: Korean reads correctly but PokeAPI lacked the row.
         assert resolve_move("휘적휘적포", "Strength Sap") == "Matcha Gotcha"
 
     def test_matcha_gotcha_other_languages(self):
@@ -81,9 +81,15 @@ class TestCuratedOverrideFills:
         assert resolve_move("시럽봄", "x") == "Syrup Bomb"
         assert resolve_move("덩굴방망이", "x") == "Ivy Cudgel"
 
-    def test_torque_moves(self):
-        assert resolve_move("번액셀", "x") == "Blazing Torque"
-        assert resolve_move("매지컬액셀", "x") == "Magical Torque"
+    def test_korean_gen9_abilities(self):
+        # The high-value win: Paradox / box-legend abilities all over the format.
+        assert resolve_ability("쿼크차지", "x") == "Quark Drive"
+        assert resolve_ability("고대활성", "x") == "Protosynthesis"
+        assert resolve_ability("재앙의그릇", "x") == "Vessel of Ruin"
+
+    def test_korean_gen9_items(self):
+        assert resolve_item("부스트에너지", "x") == "Booster Energy"
+        assert resolve_item("은밀망토", "x") == "Covert Cloak"
 
 
 class TestResolveFallsBackOnMiss:
@@ -97,7 +103,7 @@ class TestResolveFallsBackOnMiss:
         assert resolve_ability(None, "Intimidate") == "Intimidate"
 
     def test_champions_custom_item_kept(self):
-        # Not a real PokeAPI item — the model's guess is all we have.
+        # Champions-custom item, not in the game data — model's guess is all we have.
         assert resolve_item("플로엣타이트", "Floettite") == "Floettite"
 
 

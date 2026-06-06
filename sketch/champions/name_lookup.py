@@ -2,13 +2,13 @@
 
 The vision model echoes the raw on-screen text alongside its English guess for
 every name field (see ``extractor.py``). This module maps that raw text to the
-canonical English name using a committed PokeAPI-derived table, correcting the
+canonical English name using a committed PKHeX-derived table, correcting the
 model's translation-class misses (katakana loanwords, look-alike collisions,
 weakly-recognized recent species). On a miss — Champions-custom content the
 table doesn't know — we fall back to the model's own English guess.
 
-The table is built offline by ``bin/build_pokeapi_names.py`` into
-``data/pokeapi_names.json`` and ships in the image; nothing here touches the
+The table is built offline by ``bin/build_name_table.py`` into
+``data/name_table.json.gz`` and ships in the image; nothing here touches the
 network. ``normalize`` is shared with the build script so the keys written at
 build time and the keys looked up at runtime can never drift.
 """
@@ -24,7 +24,7 @@ from functools import lru_cache
 logger = logging.getLogger(__name__)
 
 _DATA_PACKAGE = "sketch.champions"
-_DATA_RESOURCE = ("data", "pokeapi_names.json.gz")
+_DATA_RESOURCE = ("data", "name_table.json.gz")
 
 # Categories present as top-level keys in the JSON data file.
 _CATEGORIES = ("species", "items", "abilities", "moves")
@@ -54,9 +54,7 @@ def _tables() -> dict[str, dict[str, str]]:
         resource = importlib.resources.files(_DATA_PACKAGE).joinpath(*_DATA_RESOURCE)
         raw = json.loads(gzip.decompress(resource.read_bytes()).decode("utf-8"))
     except (FileNotFoundError, ModuleNotFoundError, OSError, ValueError) as exc:
-        logger.warning(
-            "Could not load PokeAPI name table; OCR lookups disabled: %s", exc
-        )
+        logger.warning("Could not load name table; OCR lookups disabled: %s", exc)
         return {category: {} for category in _CATEGORIES}
     return {category: dict(raw.get(category, {})) for category in _CATEGORIES}
 
