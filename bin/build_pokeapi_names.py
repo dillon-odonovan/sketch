@@ -70,6 +70,82 @@ _SOURCES: dict[str, tuple[str, str]] = {
     "moves": ("move_names.csv", "move_id"),
 }
 
+# Hand-curated localized→English fills for names PokeAPI's CSVs are missing.
+# PokeAPI's localized data lags for the newest content: the Gen 9 / DLC moves
+# below have no Korean (and often no Chinese / German / Spanish / Italian) rows
+# at any ref, so a foreign-language read of one falls through to the model's
+# guess and can land on a look-alike (e.g. Korean Matcha Gotcha → "Strength
+# Sap"). Each value is the official in-game name (sourced from Bulbapedia's
+# "In other languages") keyed by the same language tags as _SOURCE_LANGUAGES;
+# only the languages PokeAPI omits are listed. Revisit when bumping the ref —
+# entries PokeAPI has since filled in become redundant (harmless, but prunable).
+_OVERRIDES: dict[str, dict[str, dict[str, str]]] = {
+    "moves": {
+        "Matcha Gotcha": {
+            "ko": "휘적휘적포",
+            "zh-Hant": "刷刷茶炮",
+            "zh-Hans": "刷刷茶炮",
+            "de": "Quirlschuss",
+            "es": "Cañón Batidor",
+            "it": "Spruzzatè",
+        },
+        "Blood Moon": {
+            "ko": "블러드문",
+            "zh-Hant": "血月",
+            "zh-Hans": "血月",
+            "de": "Blutmond",
+            "es": "Luna Roja",
+            "it": "Luna Rossa",
+        },
+        "Syrup Bomb": {
+            "ko": "시럽봄",
+            "zh-Hant": "糖漿炸彈",
+            "zh-Hans": "糖浆炸弹",
+            "de": "Sirupbombe",
+            "es": "Bomba Caramelo",
+            "it": "Bomba Sciroppata",
+        },
+        "Ivy Cudgel": {
+            "ko": "덩굴방망이",
+            "zh-Hant": "棘藤棒",
+            "zh-Hans": "棘藤棒",
+            "de": "Rankenkeule",
+            "es": "Garrote Liana",
+            "it": "Clava di Liane",
+        },
+        "Blazing Torque": {
+            "ko": "번액셀",
+            "zh-Hans": "灼热暴冲",
+            "de": "Hitzeturbo",
+            "es": "Pirochoque",
+        },
+        "Wicked Torque": {
+            "ko": "다크액셀",
+            "zh-Hans": "黑暗暴冲",
+            "de": "Finsterturbo",
+            "es": "Ominochoque",
+        },
+        "Noxious Torque": {
+            "ko": "포이즌액셀",
+            "zh-Hans": "剧毒暴冲",
+            "de": "Toxiturbo",
+            "es": "Ponzochoque",
+        },
+        "Combat Torque": {
+            "ko": "파이트액셀",
+            "zh-Hans": "格斗暴冲",
+            "de": "Raufturbo",
+            "es": "Pugnachoque",
+        },
+        "Magical Torque": {
+            "ko": "매지컬액셀",
+            "zh-Hans": "魔法暴冲",
+            "de": "Zauberturbo",
+            "es": "Feerichoque",
+        },
+    },
+}
+
 # Gzipped: the raw JSON is ~850 KB (mostly multi-byte CJK), which trips the
 # large-file commit guard; gzip lands it near ~270 KB and the runtime loader
 # decompresses on first use.
@@ -124,6 +200,27 @@ def _build_table(csv_text: str, id_col: str) -> dict[str, str]:
     return table
 
 
+def _apply_overrides(
+    table: dict[str, str], overrides: dict[str, dict[str, str]]
+) -> int:
+    """Merge hand-curated localized→English fills into a built table in place.
+
+    `overrides` maps English name → {language tag: localized name}; each
+    localized name is normalized to a key (same as the CSV path) pointing at the
+    English name. Returns the number of keys newly added (already-present keys,
+    e.g. a language PokeAPI has since filled, are left untouched).
+    """
+    added = 0
+    for english, by_language in overrides.items():
+        for localized in by_language.values():
+            key = normalize(localized)
+            if not key or key in table:
+                continue
+            table[key] = english
+            added += 1
+    return added
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -144,7 +241,9 @@ def main() -> int:
     }
     for category, (filename, id_col) in _SOURCES.items():
         table = _build_table(_fetch_csv(args.ref, filename), id_col)
-        print(f"    {category}: {len(table)} localized names", file=sys.stderr)
+        added = _apply_overrides(table, _OVERRIDES.get(category, {}))
+        suffix = f" (+{added} override fills)" if added else ""
+        print(f"    {category}: {len(table)} localized names{suffix}", file=sys.stderr)
         payload[category] = dict(sorted(table.items()))
 
     os.makedirs(os.path.dirname(_OUTPUT_PATH), exist_ok=True)

@@ -60,6 +60,32 @@ class TestResolveOverridesOnHit:
         assert resolve_species("마폭시", "Blaziken") == "Delphox"
 
 
+class TestCuratedOverrideFills:
+    """Newest Gen 9 / DLC moves PokeAPI's CSVs omit in most languages are filled
+    by the hand-curated _OVERRIDES table (build script). Without these, a foreign
+    read falls through to the model's guess and can hit a look-alike — the
+    reported Korean Matcha Gotcha → "Strength Sap" regression.
+    """
+
+    def test_korean_matcha_gotcha(self):
+        # The reported case: Korean reads correctly but PokeAPI lacks the row.
+        assert resolve_move("휘적휘적포", "Strength Sap") == "Matcha Gotcha"
+
+    def test_matcha_gotcha_other_languages(self):
+        assert resolve_move("刷刷茶炮", "x") == "Matcha Gotcha"  # zh
+        assert resolve_move("Quirlschuss", "x") == "Matcha Gotcha"  # de
+        assert resolve_move("Cañón Batidor", "x") == "Matcha Gotcha"  # es
+
+    def test_other_recent_signature_moves(self):
+        assert resolve_move("블러드문", "x") == "Blood Moon"
+        assert resolve_move("시럽봄", "x") == "Syrup Bomb"
+        assert resolve_move("덩굴방망이", "x") == "Ivy Cudgel"
+
+    def test_torque_moves(self):
+        assert resolve_move("번액셀", "x") == "Blazing Torque"
+        assert resolve_move("매지컬액셀", "x") == "Magical Torque"
+
+
 class TestResolveFallsBackOnMiss:
     def test_unknown_raw_keeps_model_english(self):
         assert resolve_move("ﾅﾆｺﾚ", "Glacial Lance") == "Glacial Lance"
