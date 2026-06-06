@@ -76,10 +76,12 @@ SEARCH_CACHE_TTL_SECONDS = 300.0
 
 # --- OTS → CTS conversion (used by /convert-ots) --------------------------
 
-# Model for the EV-guess LLM fallback. Sonnet handles competitive team
-# knowledge well at reasonable cost; promote to opus if EV-guess quality is
-# unsatisfactory in practice.
-CONVERT_EV_MODEL = "claude-sonnet-4-6"
+# Model for the EV-guess LLM fallback. Opus is used here for its deeper
+# competitive (VGC doubles) knowledge: Sonnet tended toward singles-style
+# spreads (e.g. under-investing the nature-boosted Speed stat on Timid
+# special attackers), so the extra reasoning is worth the cost on this
+# low-volume, quality-sensitive path.
+CONVERT_EV_MODEL = "claude-opus-4-8"
 
 # --- Replica OCR (used by /add-team) ---------------------------------------
 
