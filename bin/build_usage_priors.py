@@ -40,8 +40,8 @@ from sketch.convert.ev_model import Format, ev_model_for_format  # noqa: E402
 from sketch.convert.usage_priors import (  # noqa: E402
     USAGE_PRIOR_FORMATS,
     artifact_resource,
-    normalize_species,
 )
+from sketch.team import norm_species  # noqa: E402
 
 _STATS = ("hp", "atk", "def", "spa", "spd", "spe")
 
@@ -103,7 +103,7 @@ def _build(data: dict, max_per_stat: int) -> tuple[dict[str, list[dict]], int]:
         if not entries:
             continue
         entries.sort(key=lambda e: e["weight"], reverse=True)
-        spreads[normalize_species(species)] = entries[:_TOP_N]
+        spreads[norm_species(species)] = entries[:_TOP_N]
 
     # Scale guard: the Champions ladder stores EVs as 0–32 stat points. A max
     # above the regime cap means the data is on a different scale (e.g. 0–252)

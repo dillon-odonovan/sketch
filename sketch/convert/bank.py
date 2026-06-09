@@ -24,7 +24,7 @@ from sketch.convert.ev_model import EvModel
 from sketch.pokepaste.fetcher import fetch_pokepaste_raw
 from sketch.showdown.parser import ShowdownParseError, parse_showdown
 from sketch.storage.sheets_client import SheetsClient
-from sketch.team import TeamData
+from sketch.team import TeamData, norm_species
 
 logger = logging.getLogger(__name__)
 
@@ -40,19 +40,6 @@ class BankTeam:
 
     url: str
     team: TeamData
-
-
-def _norm_species(name: str) -> str:
-    """Casefold a species name for comparison.
-
-    Both sides are canonical form names by the time they reach here — the
-    sheet's species columns come from the OCR render (e.g.
-    `Charizard-Mega-Y`), and the OTS species are resolved to the same form
-    by `sketch.convert.normalize.normalize_team` in the converter before
-    matching. So a casefold compare is enough to align them — mirrors the
-    matching in `sketch.commands._shared._filter_team_rows`.
-    """
-    return name.strip().lower()
 
 
 async def load_bank_teams(
@@ -86,7 +73,7 @@ async def load_bank_teams(
     for row in snapshot.rows:
         if row.url in seen:
             continue
-        if ots_species & {_norm_species(s) for s in row.species}:
+        if ots_species & {norm_species(s) for s in row.species}:
             seen.add(row.url)
             urls.append(row.url)
 

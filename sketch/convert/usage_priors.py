@@ -12,7 +12,7 @@ from `Items`/`Abilities`), so the realistic conditional prior is
 jointly available. The distribution is distilled offline by
 ``bin/build_usage_priors.py`` into a small committed
 ``data/usage_priors_<slug>.json.gz`` that this module reads at runtime; nothing
-here touches the network. ``normalize_species`` and ``USAGE_PRIOR_FORMATS`` are
+here touches the network. ``USAGE_PRIOR_FORMATS`` and ``team.norm_species`` are
 shared with the build script so the keys/filenames written at build time and
 read at runtime can never drift.
 """
@@ -26,10 +26,9 @@ import logging
 from dataclasses import dataclass
 from functools import lru_cache
 
-from sketch.convert.bank import _norm_species
 from sketch.convert.ev_matcher import EvChoice, clamp_evs
 from sketch.convert.ev_model import EvModel, Format
-from sketch.team import STAT_KEYS, PokemonEntry
+from sketch.team import STAT_KEYS, PokemonEntry, norm_species
 
 logger = logging.getLogger(__name__)
 
@@ -80,16 +79,6 @@ class UsagePriors:
 
     # Normalized species name → spreads, descending by weight.
     spreads: dict[str, list[SpreadEntry]]
-
-
-def normalize_species(name: str) -> str:
-    """Casefold a species name for artifact keys and lookups.
-
-    Delegates to ``bank._norm_species`` (rather than re-deriving the rule) so
-    the keys written at build time and the OTS species looked up at runtime
-    can never drift from how the bank matcher compares species.
-    """
-    return _norm_species(name)
 
 
 def artifact_resource(slug: str) -> str:
@@ -172,7 +161,7 @@ def choose_usage_spread(
     absent from the priors, no spread matches the target's nature, or no spread
     survives the pin gate.
     """
-    entries = priors.spreads.get(normalize_species(target.species))
+    entries = priors.spreads.get(norm_species(target.species))
     if not entries:
         return None
 

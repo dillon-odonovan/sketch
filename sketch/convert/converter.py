@@ -38,7 +38,7 @@ from sketch.convert.llm_guess import guess_ev_spreads
 from sketch.convert.normalize import normalize_team
 from sketch.convert.usage_priors import choose_usage_spread, load_usage_priors
 from sketch.storage.sheets_client import SheetsClient
-from sketch.team import STAT_KEYS, PokemonEntry, TeamData
+from sketch.team import STAT_KEYS, PokemonEntry, TeamData, norm_species
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ async def convert_ots_to_cts(
     except Exception:
         logger.warning("DEX load failed; skipping form normalization", exc_info=True)
 
-    ots_species = {p.species.lower() for p in ots.pokemon}
+    ots_species = {norm_species(p.species) for p in ots.pokemon}
 
     bank_teams: list[BankTeam] = await load_bank_teams(
         sheets, sheet_name, ots_species, ev_model

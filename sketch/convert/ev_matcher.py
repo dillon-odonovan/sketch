@@ -54,9 +54,9 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from sketch.convert.bank import BankTeam, _norm_species
+from sketch.convert.bank import BankTeam
 from sketch.convert.ev_model import EvModel
-from sketch.team import STAT_KEYS, PokemonEntry
+from sketch.team import STAT_KEYS, PokemonEntry, norm_species
 
 
 @dataclass(frozen=True)
@@ -176,12 +176,12 @@ def choose_evs(
     - No same-species candidate honors all of the pins (fall through to the
       LLM, which keeps the pins exactly).
     """
-    target_species = _norm_species(target.species)
+    target_species = norm_species(target.species)
     all_candidates: list[_Candidate] = []
     for bt in bank_teams:
-        overlap = len(ots_species & {_norm_species(p.species) for p in bt.team.pokemon})
+        overlap = len(ots_species & {norm_species(p.species) for p in bt.team.pokemon})
         for entry in bt.team.pokemon:
-            if _norm_species(entry.species) == target_species:
+            if norm_species(entry.species) == target_species:
                 all_candidates.append(
                     _Candidate(entry=entry, overlap=overlap, url=bt.url)
                 )

@@ -38,6 +38,20 @@ STAT_DISPLAY = {
 CHAMPIONS_EV_MAX_PER_STAT = 32
 
 
+def norm_species(name: str) -> str:
+    """Casefold a species name for equality comparison and lookup keys.
+
+    The single source of truth for "are these the same species" across the
+    codebase: the bank matcher, the usage-prior keys, the OTS species set, and
+    the `/search-teams` mon filter all compare species through this so they
+    can never drift. Both sides are expected to already be canonical form
+    names (e.g. `Charizard-Mega-Y`); this only strips surrounding whitespace
+    and lowercases. It is distinct from `convert.normalize.normalize_species`,
+    which *resolves* a base species + item into its battle form.
+    """
+    return name.strip().lower()
+
+
 @dataclass(frozen=True)
 class PokemonEntry:
     species: str
