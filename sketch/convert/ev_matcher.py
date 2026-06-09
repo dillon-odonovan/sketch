@@ -108,7 +108,7 @@ def _known_match(
     """
     if not pins:
         return 0
-    clamped = _clamp(cand.entry.evs, ev_model)
+    clamped = clamp_evs(cand.entry.evs, ev_model)
     return sum(1 for k, v in pins.items() if clamped.get(k) == v)
 
 
@@ -136,14 +136,14 @@ def _score(
     )
 
 
-def _clamp(evs: dict[str, int], ev_model: EvModel) -> dict[str, int]:
+def clamp_evs(evs: dict[str, int], ev_model: EvModel) -> dict[str, int]:
     """Clamp each EV value to the format's per-stat cap.
 
-    No total-budget enforcement is applied here: bank spreads come from
-    real teams stored by the game, which already enforces the aggregate
-    cap, so over-budget totals can't reach the database. The full 6-stat
-    tuple is returned so the frequency counter in `choose_evs` can compare
-    complete spreads rather than individual stats.
+    Shared by every prior tier that needs the feasible per-stat region (the
+    bank matcher here and the usage tier in `usage_priors`). No total-budget
+    enforcement is applied: spreads come from real teams the game already
+    constrains, so over-budget totals can't reach the data. Always returns the
+    full 6-stat dict so callers can compare complete spreads.
     """
     return {
         k: max(0, min(int(evs.get(k, 0)), ev_model.max_per_stat)) for k in STAT_KEYS
@@ -233,7 +233,7 @@ def choose_evs(
     # the top candidates. Picks the consensus spread rather than a one-off;
     # `Counter.most_common` is stable on ties so the first-seen spread wins.
     spread_counts = Counter(
-        tuple(_clamp(c.entry.evs, ev_model)[k] for k in STAT_KEYS) for c in top
+        tuple(clamp_evs(c.entry.evs, ev_model)[k] for k in STAT_KEYS) for c in top
     )
     winning_tuple, freq = spread_counts.most_common(1)[0]
     evs = dict(zip(STAT_KEYS, winning_tuple, strict=False))
@@ -243,7 +243,7 @@ def choose_evs(
         (
             c.url
             for c in top
-            if tuple(_clamp(c.entry.evs, ev_model)[k] for k in STAT_KEYS)
+            if tuple(clamp_evs(c.entry.evs, ev_model)[k] for k in STAT_KEYS)
             == winning_tuple
         ),
         None,

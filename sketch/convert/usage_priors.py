@@ -26,7 +26,8 @@ import logging
 from dataclasses import dataclass
 from functools import lru_cache
 
-from sketch.convert.ev_matcher import EvChoice
+from sketch.convert.bank import _norm_species
+from sketch.convert.ev_matcher import EvChoice, clamp_evs
 from sketch.convert.ev_model import EvModel, Format
 from sketch.team import STAT_KEYS, PokemonEntry
 
@@ -84,10 +85,11 @@ class UsagePriors:
 def normalize_species(name: str) -> str:
     """Casefold a species name for artifact keys and lookups.
 
-    Mirrors ``sketch.convert.bank._norm_species`` so the keys written at build
-    time align with the form-resolved OTS species the converter looks up.
+    Delegates to ``bank._norm_species`` (rather than re-deriving the rule) so
+    the keys written at build time and the OTS species looked up at runtime
+    can never drift from how the bank matcher compares species.
     """
-    return name.strip().lower()
+    return _norm_species(name)
 
 
 def artifact_resource(slug: str) -> str:
@@ -146,13 +148,6 @@ def load_usage_priors(fmt_name: str) -> UsagePriors | None:
     return _load_artifact(spec.slug)
 
 
-def _clamp(evs: dict[str, int], ev_model: EvModel) -> dict[str, int]:
-    """Clamp each EV to the format's per-stat cap (mirrors ev_matcher._clamp)."""
-    return {
-        k: max(0, min(int(evs.get(k, 0)), ev_model.max_per_stat)) for k in STAT_KEYS
-    }
-
-
 def _confidence_band(share: float) -> str:
     if share >= _HIGH_CONFIDENCE:
         return "high"
@@ -192,14 +187,14 @@ def choose_usage_spread(
         eligible = [
             e
             for e in nature_matches
-            if all(_clamp(e.evs, ev_model).get(k) == v for k, v in pins.items())
+            if all(clamp_evs(e.evs, ev_model).get(k) == v for k, v in pins.items())
         ]
         if not eligible:
             return None
 
     # MAP estimate: the highest-weight eligible spread.
     chosen = max(eligible, key=lambda e: e.weight)
-    evs = _clamp(chosen.evs, ev_model)
+    evs = clamp_evs(chosen.evs, ev_model)
 
     # Confidence from the chosen spread's share of this species+nature usage.
     nature_total = sum(e.weight for e in nature_matches) or 1.0
