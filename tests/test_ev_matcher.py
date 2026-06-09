@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import unittest
 
-from sketch.convert.bank import BankTeam, _norm_species
+from sketch.convert.bank import BankTeam
 from sketch.convert.ev_matcher import EvChoice, choose_evs
 from sketch.convert.ev_model import CHAMPIONS, EvModel
-from sketch.team import STAT_KEYS, PokemonEntry, TeamData
+from sketch.team import STAT_KEYS, PokemonEntry, TeamData, norm_species
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -56,7 +56,7 @@ def _choose(
     pins: dict[str, int] | None = None,
 ) -> EvChoice | None:
     if ots_species is None:
-        ots_species = {_norm_species(target.species)}
+        ots_species = {norm_species(target.species)}
     return choose_evs(target, bank_teams, ots_species, ev_model, pins=pins)
 
 

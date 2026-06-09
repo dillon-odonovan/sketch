@@ -36,8 +36,9 @@ from sketch.convert.ev_matcher import EvChoice, choose_evs
 from sketch.convert.ev_model import EvModel, ev_model_for_format
 from sketch.convert.llm_guess import guess_ev_spreads
 from sketch.convert.normalize import normalize_team
+from sketch.convert.usage_priors import choose_usage_spread, load_usage_priors
 from sketch.storage.sheets_client import SheetsClient
-from sketch.team import STAT_KEYS, PokemonEntry, TeamData
+from sketch.team import STAT_KEYS, PokemonEntry, TeamData, norm_species
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +50,20 @@ class SlotSource:
     """Where one slot's EV spread came from.
 
     `label` is the coarse provenance — "kept" (already a complete spread),
-    "bank" (lifted from a bank team), or "estimated" (LLM fallback). `url`
-    is the Pokepaste URL of the bank team the spread was lifted from, or
-    None for estimated/kept slots. `pinned` lists the stat keys that were
-    pinned from the paste's partial EVs and that the final spread honors
-    (empty when nothing was pinned, e.g. a blank OTS mon or a kept spread).
+    "bank" (lifted from a bank team), "usage" (most-used spread from Showdown
+    usage stats), or "estimated" (LLM fallback). `url` is the Pokepaste URL
+    of the bank team the spread was lifted from, or None for usage/estimated/
+    kept slots. `pinned` lists the stat keys that were pinned from the paste's
+    partial EVs and that the final spread honors (empty when nothing was
+    pinned, e.g. a blank OTS mon or a kept spread). `confidence` is a coarse
+    band ("high"/"medium"/"low") for the estimating tiers (bank/usage/
+    estimated); None for "kept".
     """
 
     label: str
     url: str | None = None
     pinned: tuple[str, ...] = ()
+    confidence: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,11 +140,15 @@ async def convert_ots_to_cts(
     except Exception:
         logger.warning("DEX load failed; skipping form normalization", exc_info=True)
 
-    ots_species = {p.species.lower() for p in ots.pokemon}
+    ots_species = {norm_species(p.species) for p in ots.pokemon}
 
     bank_teams: list[BankTeam] = await load_bank_teams(
         sheets, sheet_name, ots_species, ev_model
     )
+
+    # Tier 2 prior: format-native Showdown usage stats. None when the format
+    # has no committed artifact — the usage tier is simply skipped.
+    usage_priors = load_usage_priors(fmt_name)
 
     # First pass: classify each mon, match the fillable ones from the bank,
     # and collect what's left for the LLM. `pins_by_slot` maps a 1-based slot
@@ -174,7 +183,11 @@ async def convert_ots_to_cts(
         if pins:
             pins_by_slot[slot] = pins
 
+        # Tier 1 (bank) → Tier 2 (usage stats) → Tier 3 (LLM). Each tier honors
+        # the pins; a tier that can't returns None and we fall through.
         choice = choose_evs(mon, bank_teams, ots_species, ev_model, pins=pins)
+        if choice is None and usage_priors is not None:
+            choice = choose_usage_spread(mon, usage_priors, ev_model, pins=pins)
         if choice is not None:
             logger.info(
                 "EV match for %s (slot %d): %s", mon.species, slot, choice.detail
@@ -214,17 +227,26 @@ async def convert_ots_to_cts(
             evs = choice.evs
             label = choice.source
             url = choice.source_url
+            # "kept" is verbatim input (no band); "bank" copies a real team's
+            # spread (high); "usage" carries its own band from the weight share.
+            if label == "kept":
+                confidence = None
+            elif label == "bank":
+                confidence = "high"
+            else:
+                confidence = choice.confidence
         else:
             evs = guessed.get(slot, _ZERO_EVS.copy())
             logger.info("EV guess for %s (slot %d): %s", mon.species, slot, evs)
             label = "estimated"
             url = None
+            confidence = "low"
         pinned = (
             tuple(k for k in STAT_KEYS if k in pins and evs.get(k) == pins[k])
             if pins
             else ()
         )
-        source = SlotSource(label=label, url=url, pinned=pinned)
+        source = SlotSource(label=label, url=url, pinned=pinned, confidence=confidence)
         trained_mon = dataclasses.replace(mon, evs=evs)
         slots.append(ConvertedSlot(pokemon=trained_mon, source=source))
 

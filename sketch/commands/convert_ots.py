@@ -67,8 +67,9 @@ def _source_summary(result: ConvertResult) -> str:
     stats pinned from a partial spread the caller supplied.
 
     Example:
-        Trained 6 mons (4 from bank, 1 estimated, 1 already trained).
+        Trained 6 mons (3 from bank, 1 from usage stats, 1 estimated, 1 kept).
         • Venusaur — pokepast.es/abc123 (HP pinned)
+        • Incineroar — usage stats (high)
         • Charizard — estimated
         • Garchomp — pokepast.es/def456
         ...
@@ -76,12 +77,15 @@ def _source_summary(result: ConvertResult) -> str:
     slots = result.slots
 
     from_bank = sum(1 for s in slots if s.source.label == "bank")
+    from_usage = sum(1 for s in slots if s.source.label == "usage")
     estimated = sum(1 for s in slots if s.source.label == "estimated")
     kept = sum(1 for s in slots if s.source.label == "kept")
 
     parts: list[str] = []
     if from_bank:
         parts.append(f"{from_bank} from bank")
+    if from_usage:
+        parts.append(f"{from_usage} from usage stats")
     if estimated:
         parts.append(f"{estimated} estimated")
     if kept:
@@ -98,6 +102,9 @@ def _source_summary(result: ConvertResult) -> str:
         if slot.source.label == "bank" and slot.source.url:
             # Full URL so Discord renders it as a clickable hyperlink.
             lines.append(f"• {name} — {slot.source.url}{suffix}")
+        elif slot.source.label == "usage":
+            band = f" ({slot.source.confidence})" if slot.source.confidence else ""
+            lines.append(f"• {name} — usage stats{band}{suffix}")
         elif slot.source.label == "estimated":
             lines.append(f"• {name} — estimated{suffix}")
         # "kept" mons are not listed to keep the reply concise.
@@ -209,8 +216,7 @@ def register(
     @app_commands.describe(
         format="Format/regulation (determines the EV regime)",
         url=(
-            "Pokepaste or VRPaste URL of the OTS. "
-            "Omit to paste Showdown text directly."
+            "Pokepaste or VRPaste URL of the OTS. Omit to paste Showdown text directly."
         ),
     )
     @app_commands.choices(format=_format_choices())

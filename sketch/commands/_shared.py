@@ -27,6 +27,7 @@ from sketch import config
 from sketch.logging_setup import trace_id_var
 from sketch.pokepaste.validator import ValidationError, canonicalize_pokepaste_url
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry, TeamRow
+from sketch.team import norm_species
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +147,10 @@ def _filter_team_rows(
         return []
     matches = []
     for idx, row in enumerate(rows):
-        species_lower = {s.lower() for s in row.species}
+        row_species = {norm_species(s) for s in row.species}
         mons_ok = all(
-            any(m.lower() in species_lower for m in group) for group in resolved_groups
+            any(norm_species(m) in row_species for m in group)
+            for group in resolved_groups
         )
         desc_ok = description_match_indices is None or idx in description_match_indices
         if mons_ok and desc_ok:

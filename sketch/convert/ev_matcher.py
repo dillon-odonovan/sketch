@@ -54,9 +54,9 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from sketch.convert.bank import BankTeam, _norm_species
+from sketch.convert.bank import BankTeam
 from sketch.convert.ev_model import EvModel
-from sketch.team import STAT_KEYS, PokemonEntry
+from sketch.team import STAT_KEYS, PokemonEntry, norm_species
 
 
 @dataclass(frozen=True)
@@ -64,17 +64,20 @@ class EvChoice:
     """A chosen EV spread plus where it came from.
 
     `source` is the coarse provenance for the user-facing summary
-    (`"bank"` here; the converter uses `"estimated"` for LLM guesses and
-    `"kept"` for already-trained mons). `source_url` is the Pokepaste URL
-    of the bank team the spread was lifted from (None for non-bank
-    sources). `detail` is a short log-only note on how strong the match
-    was.
+    (`"bank"` here; the converter uses `"usage"` for the usage-stats tier,
+    `"estimated"` for LLM guesses, and `"kept"` for already-trained mons).
+    `source_url` is the Pokepaste URL of the bank team the spread was lifted
+    from (None for non-bank sources). `detail` is a short log-only note on
+    how strong the match was. `confidence` is a coarse band ("high" /
+    "medium" / "low") surfaced to the user for tiers that estimate rather
+    than copy a spread; None when no band applies.
     """
 
     evs: dict[str, int]
     source: str
     detail: str
     source_url: str | None = None
+    confidence: str | None = None
 
 
 def _norm(value: str | None) -> str:
@@ -105,7 +108,7 @@ def _known_match(
     """
     if not pins:
         return 0
-    clamped = _clamp(cand.entry.evs, ev_model)
+    clamped = clamp_evs(cand.entry.evs, ev_model)
     return sum(1 for k, v in pins.items() if clamped.get(k) == v)
 
 
@@ -133,14 +136,14 @@ def _score(
     )
 
 
-def _clamp(evs: dict[str, int], ev_model: EvModel) -> dict[str, int]:
+def clamp_evs(evs: dict[str, int], ev_model: EvModel) -> dict[str, int]:
     """Clamp each EV value to the format's per-stat cap.
 
-    No total-budget enforcement is applied here: bank spreads come from
-    real teams stored by the game, which already enforces the aggregate
-    cap, so over-budget totals can't reach the database. The full 6-stat
-    tuple is returned so the frequency counter in `choose_evs` can compare
-    complete spreads rather than individual stats.
+    Shared by every prior tier that needs the feasible per-stat region (the
+    bank matcher here and the usage tier in `usage_priors`). No total-budget
+    enforcement is applied: spreads come from real teams the game already
+    constrains, so over-budget totals can't reach the data. Always returns the
+    full 6-stat dict so callers can compare complete spreads.
     """
     return {
         k: max(0, min(int(evs.get(k, 0)), ev_model.max_per_stat)) for k in STAT_KEYS
@@ -173,12 +176,12 @@ def choose_evs(
     - No same-species candidate honors all of the pins (fall through to the
       LLM, which keeps the pins exactly).
     """
-    target_species = _norm_species(target.species)
+    target_species = norm_species(target.species)
     all_candidates: list[_Candidate] = []
     for bt in bank_teams:
-        overlap = len(ots_species & {_norm_species(p.species) for p in bt.team.pokemon})
+        overlap = len(ots_species & {norm_species(p.species) for p in bt.team.pokemon})
         for entry in bt.team.pokemon:
-            if _norm_species(entry.species) == target_species:
+            if norm_species(entry.species) == target_species:
                 all_candidates.append(
                     _Candidate(entry=entry, overlap=overlap, url=bt.url)
                 )
@@ -230,7 +233,7 @@ def choose_evs(
     # the top candidates. Picks the consensus spread rather than a one-off;
     # `Counter.most_common` is stable on ties so the first-seen spread wins.
     spread_counts = Counter(
-        tuple(_clamp(c.entry.evs, ev_model)[k] for k in STAT_KEYS) for c in top
+        tuple(clamp_evs(c.entry.evs, ev_model)[k] for k in STAT_KEYS) for c in top
     )
     winning_tuple, freq = spread_counts.most_common(1)[0]
     evs = dict(zip(STAT_KEYS, winning_tuple, strict=False))
@@ -240,7 +243,7 @@ def choose_evs(
         (
             c.url
             for c in top
-            if tuple(_clamp(c.entry.evs, ev_model)[k] for k in STAT_KEYS)
+            if tuple(clamp_evs(c.entry.evs, ev_model)[k] for k in STAT_KEYS)
             == winning_tuple
         ),
         None,
