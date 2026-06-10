@@ -29,7 +29,6 @@ def register(tree: app_commands.CommandTree) -> None:
         logger.info("help invoked by user_id=%s", interaction.user.id)
         formats = ", ".join(config.FORMAT_SHEETS.keys())
         msg = (
-            "**Sketch** — Pokepaste team bank\n\n"
             "`/add-team [url:<paste>] [replica:<code>] description:<text> "
             "format:Reg M-A [paste_type:Exact|Recreated|Unspecified] "
             "[page1:<image>] [page2:<image>]`\n"
@@ -84,4 +83,9 @@ def register(tree: app_commands.CommandTree) -> None:
             "announcements.\n"
             "`/show-config` — display this server's current configuration."
         )
-        await interaction.response.send_message(msg, ephemeral=True)
+        embed = discord.Embed(
+            title="Sketch — Pokepaste team bank",
+            description=msg,
+            color=discord.Color.blue(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
