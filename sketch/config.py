@@ -35,6 +35,7 @@ DEV_GUILD_ID = _optional("DEV_GUILD_ID")
 
 FORMAT_SHEETS: dict[str, str] = {
     "Reg M-A": "Regulation M-A",
+    "Reg M-B": "Regulation M-B",
 }
 
 DEX_SHEET_NAME = "DEX"
