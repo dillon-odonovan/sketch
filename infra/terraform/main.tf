@@ -161,15 +161,16 @@ resource "google_artifact_registry_repository" "sketch" {
   format        = "DOCKER"
 
   # KEEP rules ALWAYS take precedence over DELETE rules. So the :current tag
-  # and the 5 most-recent images are protected even if they're older than 30
-  # days. Only images that match the DELETE condition AND no KEEP rule are
-  # actually removed.
+  # and the 5 most-recent images are protected no matter their age. The
+  # delete-rest rule below has no older_than/newer_than condition, so it
+  # matches every image with tag_state = ANY — i.e. it deletes anything not
+  # already protected by a KEEP rule, immediately, regardless of age.
   #
   # Net effect: :current is safe (it's a moving pointer, and whichever image
   # carries it is kept). The 5 most-recent SHA-tagged builds are safe for
-  # rollback. Older orphaned tags get garbage-collected after 30 days. This
-  # stays well under the Artifact Registry 0.5 GB free tier (each image is
-  # ~80 MB compressed, so 5 + current ≈ 480 MB peak).
+  # rollback. Everything else is removed as soon as it falls out of the top
+  # 5. This stays well under the Artifact Registry 0.5 GB free tier (each
+  # image is ~80 MB compressed, so 5 + current ≈ 480 MB peak).
   #
   # To preview without deleting, set `cleanup_policy_dry_run = true` below;
   # AR will log what it would delete to Cloud Logging instead of acting.
@@ -191,11 +192,10 @@ resource "google_artifact_registry_repository" "sketch" {
   }
 
   cleanup_policies {
-    id     = "delete-old"
+    id     = "delete-rest"
     action = "DELETE"
     condition {
-      older_than = "2592000s" # 30 days
-      tag_state  = "ANY"
+      tag_state = "ANY"
     }
   }
 
