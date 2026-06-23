@@ -51,6 +51,7 @@ from sketch.commands._shared import (
     _enrich_broadcast_with_species,
     _format_choices,
     _paste_type_choices,
+    _resolve_format,
     _resolve_guild_sheets,
     _with_trace,
 )
@@ -102,7 +103,7 @@ async def _normalize_inputs(
     interaction: discord.Interaction,
     *,
     description: str,
-    format_choice: app_commands.Choice[str],
+    format_choice: app_commands.Choice[str] | None,
     url: str | None,
     replica: str | None,
     paste_type: app_commands.Choice[str],
@@ -133,7 +134,7 @@ async def _normalize_inputs(
             await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
             return None
 
-    fmt_name = format_choice.value
+    fmt_name = _resolve_format(format_choice)
     return _AddTeamInputs(
         description=description,
         fmt_name=fmt_name,
@@ -936,7 +937,7 @@ def register(
             "unless you provide a URL instead."
         ),
         description="Short description of the team (e.g., 'Calyrex-S balance')",
-        format="Format/regulation",
+        format=f"Format/regulation. Defaults to {config.DEFAULT_FORMAT} if omitted.",
         paste_type="Whether this paste is exact, recreated, or unspecified",
         page1=(
             "Page 1 of the Champions Replica share screen. Only needed if "
@@ -957,8 +958,8 @@ def register(
     async def add_team(
         interaction: discord.Interaction,
         description: str,
-        format: app_commands.Choice[str],
         paste_type: app_commands.Choice[str],
+        format: app_commands.Choice[str] | None = None,
         url: str | None = None,
         replica: str | None = None,
         page1: discord.Attachment | None = None,

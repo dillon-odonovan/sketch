@@ -24,6 +24,7 @@ from sketch.commands._shared import (
     GENERIC_SHEET_DELETE_ERROR,
     _broadcast_team_removed,
     _format_choices,
+    _resolve_format,
     _resolve_guild_sheets,
     _with_trace,
 )
@@ -60,7 +61,7 @@ class _DeleteTeamInputs:
 async def _normalize_inputs(
     interaction: discord.Interaction,
     *,
-    format_choice: app_commands.Choice[str],
+    format_choice: app_commands.Choice[str] | None,
     url: str | None,
     replica: str | None,
 ) -> _DeleteTeamInputs | None:
@@ -82,7 +83,7 @@ async def _normalize_inputs(
             await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
             return None
 
-    fmt_name = format_choice.value
+    fmt_name = _resolve_format(format_choice)
     return _DeleteTeamInputs(
         fmt_name=fmt_name,
         sheet_name=config.FORMAT_SHEETS[fmt_name],
@@ -254,7 +255,7 @@ def register(
         ),
     )
     @app_commands.describe(
-        format="Format/regulation",
+        format=f"Format/regulation. Defaults to {config.DEFAULT_FORMAT} if omitted.",
         url=(
             "Pokepaste URL (e.g., https://pokepast.es/abc123) or VRPaste "
             "URL. Required unless you provide a Team ID instead."
@@ -267,7 +268,7 @@ def register(
     @app_commands.choices(format=_format_choices())
     async def delete_team(
         interaction: discord.Interaction,
-        format: app_commands.Choice[str],
+        format: app_commands.Choice[str] | None = None,
         url: str | None = None,
         replica: str | None = None,
     ) -> None:

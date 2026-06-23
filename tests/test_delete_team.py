@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from discord import app_commands
 
+from sketch import config
 from sketch.commands import delete_team as dt
 from sketch.commands._shared import GENERIC_SHEET_DELETE_ERROR
 from sketch.storage.guild_config import GuildConfig, StaticGuildConfigStore
@@ -122,6 +123,18 @@ class TestNormalizeInputs:
         )
         assert result is None
         interaction.followup.send.assert_called_once()
+
+    async def test_omitted_format_defaults_to_current_regulation(self):
+        interaction = _make_interaction()
+        result = await dt._normalize_inputs(
+            interaction,
+            format_choice=None,
+            url="https://pokepast.es/abc",
+            replica=None,
+        )
+        assert result is not None
+        assert result.fmt_name == config.DEFAULT_FORMAT
+        assert result.sheet_name == config.FORMAT_SHEETS[config.DEFAULT_FORMAT]
 
 
 # --- _resolve_target_url ----------------------------------------------------
@@ -271,6 +284,7 @@ class TestDeleteAndAnnounce:
         (content,), kwargs = interaction.followup.send.call_args
         assert "No team matching" in content
         assert "`https://pokepast.es/abc`" in content
+        assert "Reg M-A" in content
         assert kwargs["ephemeral"] is True
 
     async def test_row_shifted_skips_broadcast(self):

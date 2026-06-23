@@ -82,6 +82,15 @@ def _format_choices() -> list[app_commands.Choice[str]]:
     return [app_commands.Choice(name=k, value=k) for k in config.FORMAT_SHEETS]
 
 
+def _resolve_format(format_choice: app_commands.Choice[str] | None) -> str:
+    """Resolve an optional format choice to its name.
+
+    None -> config.DEFAULT_FORMAT (the current regulation), so the team
+    commands can leave `format` off for the common case.
+    """
+    return config.DEFAULT_FORMAT if format_choice is None else format_choice.value
+
+
 def _paste_type_choices() -> list[app_commands.Choice[str]]:
     return [app_commands.Choice(name=v, value=v) for v in config.PASTE_TYPE_CHOICES]
 

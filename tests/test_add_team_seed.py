@@ -16,7 +16,9 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from aioresponses import aioresponses
+from discord import app_commands
 
+from sketch import config
 from sketch.champions.replica_cache import (
     InMemoryReplicaCacheStore,
     ReplicaCacheEntry,
@@ -24,6 +26,7 @@ from sketch.champions.replica_cache import (
 from sketch.commands.add_team import (
     _AddTeamInputs,
     _check_replica_already_in_sheet,
+    _normalize_inputs,
     _seed_replica_cache_from_pokepaste_url,
 )
 from sketch.storage.sheets_client import SheetsClient, TeamRow
@@ -60,6 +63,40 @@ def _inputs(*, replica: str | None = "QBXXWXL05U") -> _AddTeamInputs:
         page1=None,
         page2=None,
     )
+
+
+class TestNormalizeInputs:
+    async def test_omitted_format_defaults_to_current_regulation(self):
+        interaction = _make_interaction()
+        result = await _normalize_inputs(
+            interaction,
+            description="desc",
+            format_choice=None,
+            url="https://pokepast.es/abc123",
+            replica=None,
+            paste_type=app_commands.Choice(name="Exact", value="Exact"),
+            page1=None,
+            page2=None,
+        )
+        assert result is not None
+        assert result.fmt_name == config.DEFAULT_FORMAT
+        assert result.sheet_name == config.FORMAT_SHEETS[config.DEFAULT_FORMAT]
+
+    async def test_explicit_format_is_respected(self):
+        interaction = _make_interaction()
+        result = await _normalize_inputs(
+            interaction,
+            description="desc",
+            format_choice=app_commands.Choice(name="Reg M-A", value="Reg M-A"),
+            url="https://pokepast.es/abc123",
+            replica=None,
+            paste_type=app_commands.Choice(name="Exact", value="Exact"),
+            page1=None,
+            page2=None,
+        )
+        assert result is not None
+        assert result.fmt_name == "Reg M-A"
+        assert result.sheet_name == config.FORMAT_SHEETS["Reg M-A"]
 
 
 class TestSeedReplicaCacheFromUrl:
