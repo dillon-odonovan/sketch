@@ -284,10 +284,7 @@ class TestDeleteAndAnnounce:
         (content,), kwargs = interaction.followup.send.call_args
         assert "No team matching" in content
         assert "`https://pokepast.es/abc`" in content
-        # Names the searched regulation and nudges toward `format:` so a user
-        # who missed in one reg knows the team may live in another.
         assert "Reg M-A" in content
-        assert "format:" in content
         assert kwargs["ephemeral"] is True
 
     async def test_row_shifted_skips_broadcast(self):

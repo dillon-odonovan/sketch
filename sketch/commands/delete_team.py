@@ -24,7 +24,6 @@ from sketch.commands._shared import (
     GENERIC_SHEET_DELETE_ERROR,
     _broadcast_team_removed,
     _format_choices,
-    _other_regulations_hint,
     _resolve_format,
     _resolve_guild_sheets,
     _with_trace,
@@ -179,10 +178,7 @@ async def _delete_and_announce(
             interaction.guild_id,
         )
         await interaction.followup.send(
-            _with_trace(
-                f"No team matching {key} found in *{inputs.fmt_name}*. "
-                + _other_regulations_hint(inputs.fmt_name)
-            ),
+            _with_trace(f"No team matching {key} found in *{inputs.fmt_name}*."),
             ephemeral=True,
         )
         return
@@ -259,7 +255,7 @@ def register(
         ),
     )
     @app_commands.describe(
-        format="Format/regulation. Defaults to the current regulation if omitted.",
+        format=f"Format/regulation. Defaults to {config.DEFAULT_FORMAT} if omitted.",
         url=(
             "Pokepaste URL (e.g., https://pokepast.es/abc123) or VRPaste "
             "URL. Required unless you provide a Team ID instead."

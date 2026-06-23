@@ -937,7 +937,7 @@ def register(
             "unless you provide a URL instead."
         ),
         description="Short description of the team (e.g., 'Calyrex-S balance')",
-        format="Format/regulation. Defaults to the current regulation if omitted.",
+        format=f"Format/regulation. Defaults to {config.DEFAULT_FORMAT} if omitted.",
         paste_type="Whether this paste is exact, recreated, or unspecified",
         page1=(
             "Page 1 of the Champions Replica share screen. Only needed if "

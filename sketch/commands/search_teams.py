@@ -21,7 +21,6 @@ from sketch.commands._shared import (
     GENERIC_SHEET_READ_ERROR,
     _filter_team_rows,
     _format_choices,
-    _other_regulations_hint,
     _resolve_format,
     _resolve_guild_sheets,
     _with_trace,
@@ -49,7 +48,7 @@ def register(
         ),
     )
     @app_commands.describe(
-        format="Format/regulation. Defaults to the current regulation if omitted.",
+        format=f"Format/regulation. Defaults to {config.DEFAULT_FORMAT} if omitted.",
         mon1="First Pokémon",
         mon2="Second Pokémon",
         mon3="Third Pokémon",
@@ -221,8 +220,7 @@ def register(
 
         if not matches:
             await interaction.followup.send(
-                f"No teams found in *{fmt_name}* matching *{query_label}*. "
-                + _other_regulations_hint(fmt_name),
+                f"No teams found in *{fmt_name}* matching *{query_label}*.",
                 ephemeral=True,
             )
             return

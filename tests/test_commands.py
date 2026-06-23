@@ -20,7 +20,7 @@ from discord import app_commands
 
 from sketch import config
 from sketch.commands import _SPREADSHEET_ID_RE, _filter_team_rows, _spreadsheet_link
-from sketch.commands._shared import _other_regulations_hint, _resolve_format
+from sketch.commands._shared import _resolve_format
 from sketch.search.text_search import DescriptionIndex
 from sketch.storage.sheets_client import TeamRow
 
@@ -494,10 +494,3 @@ class TestResolveFormat:
         # Guards against bumping DEFAULT_FORMAT to a value with no sheet
         # mapping, which would KeyError on FORMAT_SHEETS[fmt_name].
         assert config.DEFAULT_FORMAT in config.FORMAT_SHEETS
-
-
-class TestOtherRegulationsHint:
-    def test_names_the_searched_format_and_points_at_format_param(self):
-        hint = _other_regulations_hint("Reg M-B")
-        assert "Reg M-B" in hint
-        assert "format:" in hint

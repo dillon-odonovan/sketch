@@ -1,8 +1,8 @@
-"""Tests for the `/search-teams` handler's format defaulting + miss hint.
+"""Tests for the `/search-teams` handler's format defaulting.
 
 Captures the registered callback via a minimal CommandTree stub (the
 test_convert_ots_command.py pattern) and drives it directly, so we exercise
-the real defaulting and zero-result messaging without standing up Discord.
+the real defaulting without standing up Discord.
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ def _make_interaction() -> MagicMock:
     return interaction
 
 
-class TestSearchMissHint:
-    async def test_no_match_defaulted_format_names_reg_and_hints(self):
+class TestSearchFormatDefaulting:
+    async def test_omitted_format_searches_the_default_regulation(self):
         registry = MagicMock()
         callback = _capture_callback(registry)
         interaction = _make_interaction()
@@ -63,8 +63,5 @@ class TestSearchMissHint:
         interaction.followup.send.assert_awaited_once()
         (content,), kwargs = interaction.followup.send.call_args
         assert "No teams found" in content
-        # Names the searched regulation and nudges toward `format:` so the
-        # user knows the team may live in another regulation.
         assert config.DEFAULT_FORMAT in content
-        assert "format:" in content
         assert kwargs["ephemeral"] is True
