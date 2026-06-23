@@ -82,6 +82,29 @@ def _format_choices() -> list[app_commands.Choice[str]]:
     return [app_commands.Choice(name=k, value=k) for k in config.FORMAT_SHEETS]
 
 
+def _resolve_format(format_choice: app_commands.Choice[str] | None) -> str:
+    """Resolve an optional format choice to its name.
+
+    None -> config.DEFAULT_FORMAT (the current regulation), so the team
+    commands can leave `format` off for the common case.
+    """
+    return config.DEFAULT_FORMAT if format_choice is None else format_choice.value
+
+
+def _other_regulations_hint(fmt_name: str) -> str:
+    """Nudge shown when a lookup finds nothing in `fmt_name`.
+
+    Teams are filed per regulation, so a miss in one doesn't mean the team
+    isn't banked at all — it may live under a different regulation. Names the
+    searched regulation but deliberately does NOT enumerate the others, so the
+    message stays short as more regulations accumulate.
+    """
+    return (
+        f"Only *{fmt_name}* was checked — teams are filed per regulation, "
+        "so pass `format:` to look in another."
+    )
+
+
 def _paste_type_choices() -> list[app_commands.Choice[str]]:
     return [app_commands.Choice(name=v, value=v) for v in config.PASTE_TYPE_CHOICES]
 

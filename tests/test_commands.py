@@ -16,8 +16,11 @@ composition stays a pure boolean operation. The matcher itself is covered by
 """
 
 import pytest
+from discord import app_commands
 
+from sketch import config
 from sketch.commands import _SPREADSHEET_ID_RE, _filter_team_rows, _spreadsheet_link
+from sketch.commands._shared import _other_regulations_hint, _resolve_format
 from sketch.search.text_search import DescriptionIndex
 from sketch.storage.sheets_client import TeamRow
 
@@ -477,3 +480,24 @@ class TestSpreadsheetLink:
             _spreadsheet_link("abc123")
             == "https://docs.google.com/spreadsheets/d/abc123"
         )
+
+
+class TestResolveFormat:
+    def test_none_resolves_to_current_default(self):
+        assert _resolve_format(None) == config.DEFAULT_FORMAT
+
+    def test_explicit_choice_resolves_to_its_value(self):
+        choice = app_commands.Choice(name="Reg M-A", value="Reg M-A")
+        assert _resolve_format(choice) == "Reg M-A"
+
+    def test_default_is_a_registered_format(self):
+        # Guards against bumping DEFAULT_FORMAT to a value with no sheet
+        # mapping, which would KeyError on FORMAT_SHEETS[fmt_name].
+        assert config.DEFAULT_FORMAT in config.FORMAT_SHEETS
+
+
+class TestOtherRegulationsHint:
+    def test_names_the_searched_format_and_points_at_format_param(self):
+        hint = _other_regulations_hint("Reg M-B")
+        assert "Reg M-B" in hint
+        assert "format:" in hint

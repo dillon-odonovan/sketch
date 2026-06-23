@@ -21,6 +21,8 @@ from sketch.commands._shared import (
     GENERIC_SHEET_READ_ERROR,
     _filter_team_rows,
     _format_choices,
+    _other_regulations_hint,
+    _resolve_format,
     _resolve_guild_sheets,
     _with_trace,
 )
@@ -47,7 +49,7 @@ def register(
         ),
     )
     @app_commands.describe(
-        format="Format/regulation",
+        format="Format/regulation. Defaults to the current regulation if omitted.",
         mon1="First Pokémon",
         mon2="Second Pokémon",
         mon3="Third Pokémon",
@@ -69,7 +71,7 @@ def register(
     @app_commands.choices(format=_format_choices())
     async def search_teams(
         interaction: discord.Interaction,
-        format: app_commands.Choice[str],
+        format: app_commands.Choice[str] | None = None,
         mon1: str | None = None,
         mon2: str | None = None,
         mon3: str | None = None,
@@ -87,7 +89,7 @@ def register(
         if sheets is None:
             return
 
-        fmt_name = format.value
+        fmt_name = _resolve_format(format)
         sheet_name = config.FORMAT_SHEETS[fmt_name]
         queries = [m for m in [mon1, mon2, mon3, mon4, mon5, mon6] if m]
         description_query = (description or "").strip() or None
@@ -219,7 +221,8 @@ def register(
 
         if not matches:
             await interaction.followup.send(
-                f"No teams found in *{fmt_name}* matching *{query_label}*.",
+                f"No teams found in *{fmt_name}* matching *{query_label}*. "
+                + _other_regulations_hint(fmt_name),
                 ephemeral=True,
             )
             return

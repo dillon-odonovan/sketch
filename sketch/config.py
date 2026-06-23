@@ -38,6 +38,12 @@ FORMAT_SHEETS: dict[str, str] = {
     "Reg M-B": "Regulation M-B",
 }
 
+# Regulation /add-team, /delete-team, and /search-teams assume when `format` is
+# omitted. Bump this DELIBERATELY on rotation — separately from registering the
+# new format in FORMAT_SHEETS above — so the default never moves the instant a
+# not-yet-live regulation is registered.
+DEFAULT_FORMAT = "Reg M-B"
+
 DEX_SHEET_NAME = "DEX"
 DEX_NAME_RANGE = f"{DEX_SHEET_NAME}!B3:B"
 
