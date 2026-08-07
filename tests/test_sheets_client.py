@@ -374,6 +374,7 @@ class _RoutingService:
             "sheets": [{"properties": {"title": "Reg M-A Sheet", "sheetId": 7}}]
         }
         self.batch_update_bodies: list[dict] = []
+        self.values_batch_update_bodies: list[dict] = []
         self.get_calls: list[dict] = []
 
     def spreadsheets(self):
@@ -405,6 +406,13 @@ class _RoutingValues:
         rng = kwargs.get("range", "")
         payload = self._parent.get_responses.get(rng, {"values": []})
         return _CannedRequest(payload)
+
+    def batchUpdate(self, *, spreadsheetId, body):
+        # update_row's field write (and add_row's initial write) go through
+        # values().batchUpdate — distinct from the deleteDimension call that
+        # goes through spreadsheets().batchUpdate above.
+        self._parent.values_batch_update_bodies.append(body)
+        return _CannedRequest({})
 
 
 class _CannedRequest:
@@ -706,3 +714,165 @@ class TestDeleteBy:
             await client.delete_by_replica(_SHEET, "QBXXWXL05U")
 
         assert svc.batch_update_bodies == []
+
+
+# -- update_row ----------------------------------------------------------
+
+
+class TestUpdateRow:
+    async def test_update_with_no_fields_is_noop(self):
+        svc = _RoutingService()
+        client = SheetsClient(svc, "ssid")
+
+        updated = await client.update_row(_SHEET, 5)
+        assert updated is True
+        assert svc.values_batch_update_bodies == []
+
+    async def test_update_description_only_writes_column_g(self):
+        svc = _RoutingService()
+        client = SheetsClient(svc, "ssid")
+
+        updated = await client.update_row(_SHEET, 5, description="new desc")
+        assert updated is True
+        assert len(svc.values_batch_update_bodies) == 1
+        data = svc.values_batch_update_bodies[0]["data"]
+        assert data == [{"range": f"{_SHEET}!G5", "values": [["new desc"]]}]
+
+    async def test_update_paste_type_only_writes_column_e(self):
+        svc = _RoutingService()
+        client = SheetsClient(svc, "ssid")
+
+        updated = await client.update_row(_SHEET, 5, paste_type="Recreated")
+        assert updated is True
+        data = svc.values_batch_update_bodies[0]["data"]
+        assert data == [{"range": f"{_SHEET}!E5", "values": [["Recreated"]]}]
+
+    async def test_update_both_fields_writes_both_columns(self):
+        svc = _RoutingService()
+        client = SheetsClient(svc, "ssid")
+
+        await client.update_row(_SHEET, 5, description="new desc", paste_type="Exact")
+        data = svc.values_batch_update_bodies[0]["data"]
+        ranges = {d["range"] for d in data}
+        assert ranges == {f"{_SHEET}!E5", f"{_SHEET}!G5"}
+
+    async def test_update_with_expected_url_mismatch_does_not_write(self):
+        svc = _RoutingService()
+        svc.get_responses[f"{_SHEET}!A5:G5"] = {
+            "values": [
+                [
+                    "https://pokepast.es/somethingelse",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "desc",
+                ]
+            ]
+        }
+        client = SheetsClient(svc, "ssid")
+
+        updated = await client.update_row(
+            _SHEET, 5, description="new", expected_url="https://pokepast.es/abc"
+        )
+        assert updated is False
+        assert svc.values_batch_update_bodies == []
+
+    async def test_update_with_expected_replica_match_writes(self):
+        svc = _RoutingService()
+        svc.get_responses[f"{_SHEET}!A5:G5"] = {
+            "values": [
+                ["https://pokepast.es/abc", "", "", "qbxxwxl05u", "", "", "desc"]
+            ]
+        }
+        client = SheetsClient(svc, "ssid")
+
+        updated = await client.update_row(
+            _SHEET, 5, description="new", expected_replica="QBXXWXL05U"
+        )
+        assert updated is True
+        assert len(svc.values_batch_update_bodies) == 1
+
+
+# -- update_by_url / update_by_replica ----------------------------------------
+
+
+class TestUpdateBy:
+    async def test_update_by_url_returns_updated_row(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        svc.get_responses[_CAS_RANGE] = _cas_response()
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.update_by_url(
+            _SHEET, "https://pokepast.es/aaaa1111", description="fixed desc"
+        )
+
+        assert row.url == "https://pokepast.es/aaaa1111"
+        assert row.description == "fixed desc"
+        assert len(svc.values_batch_update_bodies) == 1
+
+    async def test_update_by_url_raises_team_not_found(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(TeamNotFoundError):
+            await client.update_by_url(
+                _SHEET, "https://pokepast.es/does-not-exist", description="x"
+            )
+
+        assert svc.values_batch_update_bodies == []
+
+    async def test_update_by_url_raises_row_shifted(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        svc.get_responses[_CAS_RANGE] = _cas_response(
+            url="https://pokepast.es/shifted-in"
+        )
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(RowShiftedError):
+            await client.update_by_url(
+                _SHEET, "https://pokepast.es/aaaa1111", description="x"
+            )
+
+        assert svc.values_batch_update_bodies == []
+
+    async def test_update_by_replica_returns_updated_row(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        svc.get_responses[_CAS_RANGE] = _cas_response()
+        client = SheetsClient(svc, "ssid")
+
+        row = await client.update_by_replica(
+            _SHEET, "QBXXWXL05U", paste_type="Recreated"
+        )
+
+        assert row.url == "https://pokepast.es/aaaa1111"
+        # paste_type isn't tracked on TeamRow; description is unchanged
+        # since only paste_type was passed.
+        assert row.description == "jsmithvgc — Calyrex-S balance"
+        assert len(svc.values_batch_update_bodies) == 1
+
+    async def test_update_by_replica_raises_team_not_found(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(TeamNotFoundError):
+            await client.update_by_replica(_SHEET, "NOTINSHEET0", description="x")
+
+        assert svc.values_batch_update_bodies == []
+
+    async def test_update_by_replica_raises_row_shifted(self):
+        svc = _RoutingService()
+        svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
+        svc.get_responses[_CAS_RANGE] = _cas_response(replica="DIFFERENTT0")
+        client = SheetsClient(svc, "ssid")
+
+        with pytest.raises(RowShiftedError):
+            await client.update_by_replica(_SHEET, "QBXXWXL05U", description="x")
+
+        assert svc.values_batch_update_bodies == []

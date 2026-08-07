@@ -32,6 +32,7 @@ _API_RETRIES = 3
 # truth so the per-column lookup methods and `search_rows` agree on layout.
 URL_COL = 0
 REPLICA_COL = 3
+PASTE_TYPE_COL = 4
 DESCRIPTION_COL = 6
 SPECIES_COLS = slice(7, 13)
 _ROW_WIDTH = 13
@@ -443,6 +444,58 @@ class SheetsClient:
             sheet_name, REPLICA_COL, replica, normalize=str.upper
         )
 
+    async def _verify_row_guard(
+        self,
+        sheet_name: str,
+        row_number: int,
+        *,
+        expected_url: str | None,
+        expected_replica: str | None,
+    ) -> bool:
+        """Re-read `row_number` and verify it still matches `expected_*`.
+
+        Shared compare-and-swap guard behind `delete_row` and `update_row`:
+        both mutate a row found via an earlier `find_row_by_*` call, and both
+        need to detect a concurrent delete/update that shifted rows or
+        changed the cell out from under the cached row number. Returns True
+        when neither `expected_url` nor `expected_replica` is provided (no
+        guard requested).
+        """
+        if expected_url is None and expected_replica is None:
+            return True
+
+        resp = await self._run(
+            self._service.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=self._spreadsheet_id,
+                range=f"{sheet_name}!A{row_number}:G{row_number}",
+                valueRenderOption="FORMATTED_VALUE",
+            )
+            .execute,
+            num_retries=_API_RETRIES,
+        )
+        rows = resp.get("values", [])
+        if not rows:
+            return False
+        # Pad to 7 columns (A–G) so URL_COL=0 and REPLICA_COL=3 are
+        # always safe, even when Sheets omits trailing empty cells.
+        row = rows[0] + [""] * (7 - len(rows[0]))
+        if expected_url is not None:
+            cell_url = (row[URL_COL] or "").strip()
+            try:
+                if not cell_url or canonicalize_pokepaste_url(
+                    cell_url
+                ) != canonicalize_pokepaste_url(expected_url):
+                    return False
+            except ValidationError:
+                return False
+        if expected_replica is not None:
+            cell_replica = (row[REPLICA_COL] or "").strip()
+            if not cell_replica or cell_replica.upper() != expected_replica.upper():
+                return False
+        return True
+
     async def delete_row(
         self,
         sheet_name: str,
@@ -463,37 +516,13 @@ class SheetsClient:
 
         Sheets' `deleteDimension` automatically shifts subsequent rows up.
         """
-        if expected_url is not None or expected_replica is not None:
-            resp = await self._run(
-                self._service.spreadsheets()
-                .values()
-                .get(
-                    spreadsheetId=self._spreadsheet_id,
-                    range=f"{sheet_name}!A{row_number}:G{row_number}",
-                    valueRenderOption="FORMATTED_VALUE",
-                )
-                .execute,
-                num_retries=_API_RETRIES,
-            )
-            rows = resp.get("values", [])
-            if not rows:
-                return False
-            # Pad to 7 columns (A–G) so URL_COL=0 and REPLICA_COL=3 are
-            # always safe, even when Sheets omits trailing empty cells.
-            row = rows[0] + [""] * (7 - len(rows[0]))
-            if expected_url is not None:
-                cell_url = (row[URL_COL] or "").strip()
-                try:
-                    if not cell_url or canonicalize_pokepaste_url(
-                        cell_url
-                    ) != canonicalize_pokepaste_url(expected_url):
-                        return False
-                except ValidationError:
-                    return False
-            if expected_replica is not None:
-                cell_replica = (row[REPLICA_COL] or "").strip()
-                if not cell_replica or cell_replica.upper() != expected_replica.upper():
-                    return False
+        if not await self._verify_row_guard(
+            sheet_name,
+            row_number,
+            expected_url=expected_url,
+            expected_replica=expected_replica,
+        ):
+            return False
 
         sheet_id = await self._get_sheet_id(sheet_name)
         await self._run(
@@ -565,6 +594,130 @@ class SheetsClient:
         )
         if not deleted:
             raise RowShiftedError(row.row_number)
+        return row
+
+    async def update_row(
+        self,
+        sheet_name: str,
+        row_number: int,
+        *,
+        description: str | None = None,
+        paste_type: str | None = None,
+        expected_url: str | None = None,
+        expected_replica: str | None = None,
+    ) -> bool:
+        """Update `description` and/or `paste_type` on `row_number`.
+
+        Compare-and-swap guard identical to `delete_row` — see
+        `_verify_row_guard`. Only the columns for the fields actually passed
+        are written (`G` for description, `E` for paste_type); passing
+        neither is a no-op that still returns True without an API call.
+        Column A (URL) and the species formulas in H–M are untouched, so no
+        species re-poll is needed after an update.
+        """
+        if description is None and paste_type is None:
+            return True
+
+        if not await self._verify_row_guard(
+            sheet_name,
+            row_number,
+            expected_url=expected_url,
+            expected_replica=expected_replica,
+        ):
+            return False
+
+        raw_data = []
+        if paste_type is not None:
+            raw_data.append(
+                {"range": f"{sheet_name}!E{row_number}", "values": [[paste_type]]}
+            )
+        if description is not None:
+            raw_data.append(
+                {"range": f"{sheet_name}!G{row_number}", "values": [[description]]}
+            )
+        await self._run(
+            self._service.spreadsheets()
+            .values()
+            .batchUpdate(
+                spreadsheetId=self._spreadsheet_id,
+                body={"valueInputOption": "RAW", "data": raw_data},
+            )
+            .execute,
+            num_retries=_API_RETRIES,
+        )
+        return True
+
+    async def update_by_url(
+        self,
+        sheet_name: str,
+        url: str,
+        *,
+        description: str | None = None,
+        paste_type: str | None = None,
+    ) -> TeamRow:
+        """Find the row with `url` and update it, returning the updated TeamRow.
+
+        Combines the lookup and the compare-and-swap update so the command
+        handler has a single call per path, mirroring `delete_by_url`.
+
+        Raises:
+            TeamNotFoundError: no row in `sheet_name` matches `url`.
+            RowShiftedError: the row was found but shifted before the update
+                could fire (concurrent /delete-team or /edit-team); caller
+                should ask the user to retry.
+            ValidationError: `url` isn't a valid Pokepaste URL.
+            Exception: any Sheets API transport failure propagates unchanged.
+        """
+        row = await self.find_row_by_url(sheet_name, url)
+        if row is None:
+            raise TeamNotFoundError(url)
+        updated = await self.update_row(
+            sheet_name,
+            row.row_number,
+            description=description,
+            paste_type=paste_type,
+            expected_url=url,
+        )
+        if not updated:
+            raise RowShiftedError(row.row_number)
+        if description is not None:
+            row.description = description
+        return row
+
+    async def update_by_replica(
+        self,
+        sheet_name: str,
+        replica: str,
+        *,
+        description: str | None = None,
+        paste_type: str | None = None,
+    ) -> TeamRow:
+        """Find the row with `replica` and update it, returning the updated TeamRow.
+
+        Same semantics as `update_by_url`, keyed by the replica/team-ID
+        column instead. Match is case-insensitive; `replica` is typically
+        already normalized by the command handler via `normalize_replica`.
+
+        Raises:
+            TeamNotFoundError: no row in `sheet_name` matches `replica`.
+            RowShiftedError: the row was found but shifted before the update
+                could fire; caller should ask the user to retry.
+            Exception: any Sheets API transport failure propagates unchanged.
+        """
+        row = await self.find_row_by_replica(sheet_name, replica)
+        if row is None:
+            raise TeamNotFoundError(replica)
+        updated = await self.update_row(
+            sheet_name,
+            row.row_number,
+            description=description,
+            paste_type=paste_type,
+            expected_replica=replica,
+        )
+        if not updated:
+            raise RowShiftedError(row.row_number)
+        if description is not None:
+            row.description = description
         return row
 
     async def get_search_snapshot(self, sheet_name: str) -> SearchSnapshot:
