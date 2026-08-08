@@ -45,6 +45,7 @@ class TeamRow:
     description: str
     species: list[str]
     replica: str | None = None
+    paste_type: str | None = None
 
 
 class TeamNotFoundError(Exception):
@@ -415,6 +416,7 @@ class SheetsClient:
                 url=(row[URL_COL] or "").strip(),
                 description=(row[DESCRIPTION_COL] or "").strip(),
                 species=self._parse_species_cells(row[SPECIES_COLS]),
+                paste_type=(row[PASTE_TYPE_COL] or "").strip() or None,
             )
         return None
 
@@ -655,10 +657,15 @@ class SheetsClient:
         description: str | None = None,
         paste_type: str | None = None,
     ) -> TeamRow:
-        """Find the row with `url` and update it, returning the updated TeamRow.
+        """Find the row with `url` and update it, returning its PRE-update state.
 
         Combines the lookup and the compare-and-swap update so the command
-        handler has a single call per path, mirroring `delete_by_url`.
+        handler has a single call per path, mirroring `delete_by_url`. Like
+        `delete_by_url` returns the row as it existed right before the
+        mutation — here, the old description/paste_type — so the caller can
+        report an old-value-to-new-value diff without a second read. The
+        caller already has the new values (they're the arguments it passed
+        in), so there's nothing to gain from mutating the returned object.
 
         Raises:
             TeamNotFoundError: no row in `sheet_name` matches `url`.
@@ -680,8 +687,6 @@ class SheetsClient:
         )
         if not updated:
             raise RowShiftedError(row.row_number)
-        if description is not None:
-            row.description = description
         return row
 
     async def update_by_replica(
@@ -692,9 +697,10 @@ class SheetsClient:
         description: str | None = None,
         paste_type: str | None = None,
     ) -> TeamRow:
-        """Find the row with `replica` and update it, returning the updated TeamRow.
+        """Find the row with `replica` and update it, returning its PRE-update state.
 
-        Same semantics as `update_by_url`, keyed by the replica/team-ID
+        Same semantics as `update_by_url` — including returning the row as
+        it existed right before the mutation — keyed by the replica/team-ID
         column instead. Match is case-insensitive; `replica` is typically
         already normalized by the command handler via `normalize_replica`.
 
@@ -716,8 +722,6 @@ class SheetsClient:
         )
         if not updated:
             raise RowShiftedError(row.row_number)
-        if description is not None:
-            row.description = description
         return row
 
     async def get_search_snapshot(self, sheet_name: str) -> SearchSnapshot:
@@ -813,6 +817,7 @@ class SheetsClient:
             row = row + [""] * (13 - len(row))
             url = (row[0] or "").strip()
             replica = (row[3] or "").strip() or None
+            paste_type = (row[4] or "").strip() or None
             description = (row[6] or "").strip()
             species = [(c or "").strip() for c in row[7:13]]
             if not url:
@@ -826,6 +831,7 @@ class SheetsClient:
                     description=description,
                     species=species,
                     replica=replica,
+                    paste_type=paste_type,
                 )
             )
         return out

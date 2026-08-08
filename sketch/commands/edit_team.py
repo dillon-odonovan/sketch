@@ -183,15 +183,22 @@ async def _edit_and_announce(
     # picks up any other change made concurrently.
     sheets.invalidate_snapshot(inputs.sheet_name)
 
-    changed = []
+    # `row` is the PRE-update snapshot (see update_by_url/update_by_replica) —
+    # pair its old values with `inputs`' new ones for an old-to-new diff.
+    lines = [f"Updated row {row.row_number} in *{inputs.fmt_name}*:"]
     if inputs.description is not None:
-        changed.append(f'description to "{inputs.description}"')
+        old_description = row.description or "(no description)"
+        lines.append(f'• description: "{old_description}" → "{inputs.description}"')
     if inputs.paste_type is not None:
-        changed.append(f"paste type to {inputs.paste_type}")
-    await interaction.followup.send(
-        f"Updated row {row.row_number} in *{inputs.fmt_name}*: "
-        f"set {' and '.join(changed)}.",
-        ephemeral=True,
+        old_paste_type = row.paste_type or config.PASTE_TYPE_DEFAULT
+        lines.append(f"• paste type: {old_paste_type} → {inputs.paste_type}")
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    # The broadcast embed shows the team's resulting description regardless
+    # of which field(s) changed — fall back to the pre-edit value when only
+    # paste_type was touched.
+    final_description = (
+        inputs.description if inputs.description is not None else row.description
     )
 
     guild_cfg = (
@@ -203,7 +210,7 @@ async def _edit_and_announce(
             guild_cfg.broadcast_channel_id,
             fmt_name=inputs.fmt_name,
             url=row.url,
-            description=row.description,
+            description=final_description,
         )
     else:
         logger.info(
