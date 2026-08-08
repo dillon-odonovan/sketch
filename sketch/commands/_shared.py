@@ -28,6 +28,12 @@ from sketch.logging_setup import trace_id_var
 from sketch.pokepaste.validator import ValidationError, canonicalize_pokepaste_url
 from sketch.storage.sheets_client import SheetsClient, SheetsClientRegistry, TeamRow
 from sketch.team import norm_species
+from sketch.teamsource import (
+    TeamUrlSource,
+    classify_team_url,
+    unsupported_team_url_message,
+)
+from sketch.vrpaste.cache import VRPasteCacheStore, lookup_pokepaste_url
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +59,9 @@ GENERIC_SHEET_WRITE_ERROR = (
 )
 GENERIC_SHEET_DELETE_ERROR = (
     "Couldn't delete the team right now — please try again in a moment."
+)
+GENERIC_SHEET_UPDATE_ERROR = (
+    "Couldn't update the team right now — please try again in a moment."
 )
 GENERIC_CACHE_READ_ERROR = (
     "Couldn't check the replica-code cache right now — please try again in a moment."
@@ -93,6 +102,61 @@ def _resolve_format(format_choice: app_commands.Choice[str] | None) -> str:
 
 def _paste_type_choices() -> list[app_commands.Choice[str]]:
     return [app_commands.Choice(name=v, value=v) for v in config.PASTE_TYPE_CHOICES]
+
+
+async def _resolve_target_url(
+    interaction: discord.Interaction,
+    *,
+    url: str,
+    vrpaste_cache: VRPasteCacheStore,
+) -> str | None:
+    """Turn a user-supplied `url` into the canonical Pokepaste URL stored
+    in the sheet.
+
+    Explicit switch over URL shape — VRPaste / Pokepaste / unknown — so a
+    third source can be added without touching the implicit "else assume
+    Pokepaste" branch. Shared by `/delete-team` and `/edit-team`, both of
+    which identify their target row by URL or Replica code.
+
+    Returns the canonical URL on success, `None` if the user already got
+    an ephemeral response (cache miss, malformed URL, transport error).
+    Callers that only have a replica skip this helper entirely.
+    """
+    kind = classify_team_url(url)
+    if kind is TeamUrlSource.VRPASTE:
+        try:
+            resolved = await asyncio.to_thread(lookup_pokepaste_url, url, vrpaste_cache)
+        except ValidationError as e:
+            await interaction.followup.send(_with_trace(str(e)), ephemeral=True)
+            return None
+        except Exception:
+            logger.exception("VRPaste cache read failed for url=%s", url)
+            await interaction.followup.send(
+                _with_trace(GENERIC_CACHE_READ_ERROR), ephemeral=True
+            )
+            return None
+        if resolved is None:
+            await interaction.followup.send(
+                _with_trace(
+                    f"We don't have a record of `{url}` — that team isn't "
+                    "in the sheet. If you know the Pokepaste URL, submit that "
+                    "directly."
+                ),
+                ephemeral=True,
+            )
+            return None
+        return resolved
+
+    if kind is TeamUrlSource.POKEPASTE:
+        # is_pokepaste_url and canonicalize share one regex, so this
+        # won't raise once the URL is classified as a Pokepaste.
+        return canonicalize_pokepaste_url(url)
+
+    await interaction.followup.send(
+        _with_trace(unsupported_team_url_message(url)),
+        ephemeral=True,
+    )
+    return None
 
 
 def _filter_team_rows(
@@ -279,6 +343,25 @@ async def _broadcast_team_removed(
         url=url,
         description=description,
         species=species,
+    )
+
+
+async def _broadcast_team_updated(
+    interaction: discord.Interaction,
+    channel_id: int,
+    *,
+    fmt_name: str,
+    url: str,
+    description: str,
+) -> discord.Message | None:
+    """Post the public 'team updated' embed to the configured channel."""
+    return await _broadcast_team_event(
+        interaction,
+        channel_id,
+        title=f"Team updated in {fmt_name}",
+        color=discord.Color.gold(),
+        url=url,
+        description=description,
     )
 
 
