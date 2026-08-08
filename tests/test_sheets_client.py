@@ -458,6 +458,7 @@ class TestFindRow:
         assert row.row_number == config.FIRST_DATA_ROW
         assert row.url == "https://pokepast.es/aaaa1111"
         assert row.description == "jsmithvgc — Calyrex-S balance"
+        assert row.paste_type == "Exact"
         assert "Calyrex-Shadow" in row.species
 
     async def test_find_row_by_url_skips_malformed_stored_url(self):
@@ -799,7 +800,7 @@ class TestUpdateRow:
 
 
 class TestUpdateBy:
-    async def test_update_by_url_returns_updated_row(self):
+    async def test_update_by_url_returns_pre_update_row(self):
         svc = _RoutingService()
         svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
         svc.get_responses[_CAS_RANGE] = _cas_response()
@@ -810,8 +811,17 @@ class TestUpdateBy:
         )
 
         assert row.url == "https://pokepast.es/aaaa1111"
-        assert row.description == "fixed desc"
+        # Returns the row as it looked right before the write (old value) —
+        # the caller already knows the new value it just passed in, and
+        # combines the two for an old-to-new diff. See update_by_url's
+        # docstring.
+        assert row.description == "jsmithvgc — Calyrex-S balance"
+        assert row.paste_type == "Exact"
         assert len(svc.values_batch_update_bodies) == 1
+        data = svc.values_batch_update_bodies[0]["data"]
+        assert data == [
+            {"range": f"{_SHEET}!G{config.FIRST_DATA_ROW}", "values": [["fixed desc"]]}
+        ]
 
     async def test_update_by_url_raises_team_not_found(self):
         svc = _RoutingService()
@@ -840,7 +850,7 @@ class TestUpdateBy:
 
         assert svc.values_batch_update_bodies == []
 
-    async def test_update_by_replica_returns_updated_row(self):
+    async def test_update_by_replica_returns_pre_update_row(self):
         svc = _RoutingService()
         svc.get_responses[_SCAN_RANGE] = {"values": [_bank_row()]}
         svc.get_responses[_CAS_RANGE] = _cas_response()
@@ -851,9 +861,10 @@ class TestUpdateBy:
         )
 
         assert row.url == "https://pokepast.es/aaaa1111"
-        # paste_type isn't tracked on TeamRow; description is unchanged
-        # since only paste_type was passed.
+        # Old (pre-update) values on both fields, regardless of which one
+        # was actually passed to update_by_replica.
         assert row.description == "jsmithvgc — Calyrex-S balance"
+        assert row.paste_type == "Exact"
         assert len(svc.values_batch_update_bodies) == 1
 
     async def test_update_by_replica_raises_team_not_found(self):

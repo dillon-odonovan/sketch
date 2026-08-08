@@ -44,9 +44,18 @@ def _row(
     *,
     row_number: int = 4,
     url: str = "https://pokepast.es/abc",
-    description: str = "new team desc",
+    description: str = "old team desc",
+    paste_type: str | None = "Exact",
 ) -> TeamRow:
-    return TeamRow(row_number=row_number, url=url, description=description, species=[])
+    # Represents the row's PRE-update state — update_by_url/update_by_replica
+    # return the row as it looked before the write (see their docstrings).
+    return TeamRow(
+        row_number=row_number,
+        url=url,
+        description=description,
+        species=[],
+        paste_type=paste_type,
+    )
 
 
 def _inputs(
@@ -178,7 +187,8 @@ class TestEditAndAnnounce:
         interaction = _make_interaction()
         broadcast_channel = _make_channel(555)
         interaction.client.get_channel.return_value = broadcast_channel
-        row = _row(row_number=8, description="fixed desc")
+        # sheets.update_by_url returns the PRE-update row (old description).
+        row = _row(row_number=8, description="old desc")
         sheets = AsyncMock(spec=SheetsClient)
         sheets.update_by_url.return_value = row
         store = _store_with_broadcast(555)
@@ -203,15 +213,18 @@ class TestEditAndAnnounce:
         interaction.followup.send.assert_called_once()
         (content,), _ = interaction.followup.send.call_args
         assert "Updated row 8" in content
-        assert "fixed desc" in content
+        assert '"old desc" → "fixed desc"' in content
 
         broadcast_channel.send.assert_called_once()
         embed = broadcast_channel.send.call_args.kwargs["embed"]
         assert embed.title == "Team updated in Reg M-A"
+        # Broadcast shows the resulting (new) description, not the old one.
         assert embed.description == "fixed desc"
 
     async def test_happy_path_replica_paste_type_only(self):
         interaction = _make_interaction()
+        # Old paste_type is "Exact" (the _row default); description is
+        # untouched by this edit, so it's irrelevant to the diff shown.
         row = _row(row_number=9)
         sheets = AsyncMock(spec=SheetsClient)
         sheets.update_by_replica.return_value = row
@@ -236,7 +249,32 @@ class TestEditAndAnnounce:
         interaction.followup.send.assert_called_once()
         (content,), _ = interaction.followup.send.call_args
         assert "Updated row 9" in content
-        assert "paste type to Recreated" in content
+        assert "paste type: Exact → Recreated" in content
+        # Only paste_type changed — no description line in the diff.
+        assert "description:" not in content
+
+    async def test_diff_falls_back_to_placeholders_when_old_values_unset(self):
+        interaction = _make_interaction()
+        row = _row(row_number=10, description="", paste_type=None)
+        sheets = AsyncMock(spec=SheetsClient)
+        sheets.update_by_url.return_value = row
+        store = _store_with_broadcast(None)
+
+        await et._edit_and_announce(
+            interaction,
+            sheets,
+            store=store,
+            inputs=_inputs(
+                url="https://pokepast.es/abc",
+                description="new desc",
+                paste_type="Exact",
+            ),
+            target_url="https://pokepast.es/abc",
+        )
+
+        (content,), _ = interaction.followup.send.call_args
+        assert '"(no description)" → "new desc"' in content
+        assert "paste type: Unspecified → Exact" in content
 
     async def test_team_not_found_skips_broadcast(self):
         interaction = _make_interaction()
