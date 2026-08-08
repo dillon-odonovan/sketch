@@ -224,8 +224,8 @@ def register(
     @tree.command(
         name="edit-team",
         description=(
-            "Fix a team's description and/or paste type — identify it by "
-            "Pokepaste URL, VRPaste URL, or Champions Team ID."
+            "Fix a team's description and/or paste type — identify it by URL "
+            "or Team ID."
         ),
     )
     @app_commands.describe(
