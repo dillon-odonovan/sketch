@@ -36,13 +36,14 @@ DEV_GUILD_ID = _optional("DEV_GUILD_ID")
 FORMAT_SHEETS: dict[str, str] = {
     "Reg M-A": "Regulation M-A",
     "Reg M-B": "Regulation M-B",
+    "Reg M-C": "Regulation M-C",
 }
 
 # Regulation /add-team, /delete-team, and /search-teams assume when `format` is
 # omitted. Bump this DELIBERATELY on rotation — separately from registering the
 # new format in FORMAT_SHEETS above — so the default never moves the instant a
 # not-yet-live regulation is registered.
-DEFAULT_FORMAT = "Reg M-B"
+DEFAULT_FORMAT = "Reg M-C"
 
 DEX_SHEET_NAME = "DEX"
 DEX_NAME_RANGE = f"{DEX_SHEET_NAME}!B3:B"
