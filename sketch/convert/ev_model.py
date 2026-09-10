@@ -40,6 +40,7 @@ class Format(StrEnum):
 
     REG_M_A = "Reg M-A"
     REG_M_B = "Reg M-B"
+    REG_M_C = "Reg M-C"
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,7 @@ LEGACY = EvModel(
 FORMAT_EV_MODELS: dict[Format, EvModel] = {
     Format.REG_M_A: CHAMPIONS,
     Format.REG_M_B: CHAMPIONS,
+    Format.REG_M_C: CHAMPIONS,
 }
 
 

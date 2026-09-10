@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+from sketch import config
 from sketch.convert.ev_model import (
     CHAMPIONS,
     LEGACY,
@@ -29,6 +30,10 @@ class TestEvModelForFormat(unittest.TestCase):
         self.assertIs(model, CHAMPIONS)
         self.assertEqual(model.max_per_stat, 32)
 
+    def test_reg_m_c_returns_champions_model(self) -> None:
+        model = ev_model_for_format(Format.REG_M_C)
+        self.assertIs(model, CHAMPIONS)
+
     def test_champions_model_has_total_budget(self) -> None:
         self.assertIsNotNone(CHAMPIONS.max_total)
         self.assertGreater(CHAMPIONS.max_total, 0)  # type: ignore[operator]
@@ -40,6 +45,13 @@ class TestEvModelForFormat(unittest.TestCase):
     def test_legacy_model_has_correct_caps(self) -> None:
         self.assertEqual(LEGACY.max_per_stat, 252)
         self.assertIsNotNone(LEGACY.max_total)
+
+    def test_every_registered_format_has_an_ev_model(self) -> None:
+        # Guards against registering a new format in config.FORMAT_SHEETS
+        # without also wiring its EvModel here, which would raise
+        # UnsupportedFormatError the first time /convert-ots hit it.
+        for fmt_name in config.FORMAT_SHEETS:
+            ev_model_for_format(fmt_name)
 
 
 if __name__ == "__main__":

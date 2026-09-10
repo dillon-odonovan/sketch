@@ -64,6 +64,9 @@ USAGE_PRIOR_FORMATS: dict[Format, UsageFormatSpec] = {
     Format.REG_M_B: UsageFormatSpec(
         smogon_id="gen9championsvgc2026regmb", slug="reg-m-b"
     ),
+    Format.REG_M_C: UsageFormatSpec(
+        smogon_id="gen9championsvgc2026regmc", slug="reg-m-c"
+    ),
 }
 
 
